@@ -1,0 +1,28 @@
+# Preset poses for the dog. Each pose is a map of motor_id -> target angle,
+# in degrees, RELATIVE TO THE HOME/REFERENCE POSITION captured by the
+# set_home service this session (not an absolute encoder reading — the
+# GO-M8010-6 has no absolute position memory across power cycles). Before
+# go_to_pose will move anything, physically pose the robot in the home
+# stance and call set_home.
+#
+# Add new poses here as they're tuned — go_to_pose re-reads this file on
+# every call, so no rebuild/restart is needed to pick up additions or edits.
+poses:
+  home:
+    1: 0.0
+    2: 0.0
+    3: 0.0
+    4: 0.0
+    5: 0.0
+    6: 0.0
+    7: 0.0
+    8: 0.0
+  standing:
+    1: 107.41
+    2: 5.91
+    3: 0.49
+    4: -107.62
+    5: 113.66
+    6: 4.68
+    7: -1.14
+    8: -107.25

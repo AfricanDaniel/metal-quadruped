@@ -1,0 +1,5 @@
+string pose_name
+float32 speed_deg_s
+---
+bool success
+string message
