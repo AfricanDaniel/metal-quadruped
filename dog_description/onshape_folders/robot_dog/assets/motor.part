@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "dc683153f135a2acebbf2e79",
+    "documentMicroversion": "9a97d3dcaaab0ff6d28d89e5",
+    "elementId": "95b0b2ee4ffab642af9813f6",
+    "fullConfiguration": "default",
+    "id": "MtvMO5cAUk9VhswMC",
+    "isStandardContent": false,
+    "name": "motor <1>",
+    "partId": "JGD",
+    "suppressed": false,
+    "type": "Part"
+}

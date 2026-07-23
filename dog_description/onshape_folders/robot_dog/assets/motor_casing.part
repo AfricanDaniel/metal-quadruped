@@ -1,0 +1,13 @@
+{
+    "configuration": "default",
+    "documentId": "dc683153f135a2acebbf2e79",
+    "documentMicroversion": "9a97d3dcaaab0ff6d28d89e5",
+    "elementId": "9722f9a9a84e7c8c1d5da28a",
+    "fullConfiguration": "default",
+    "id": "MsCK0WSv3cGHpD/yu",
+    "isStandardContent": false,
+    "name": "motor_casing <8>",
+    "partId": "JJD",
+    "suppressed": false,
+    "type": "Part"
+}

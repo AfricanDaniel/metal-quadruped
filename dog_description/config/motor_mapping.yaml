@@ -1,0 +1,63 @@
+# Canonical motor_id -> leg/joint mapping for the 8-DOF dog (no hip motors).
+#
+# Both dog_gym (simulation) and dog_deploy (real-hardware bridge) load this
+# file so action ordering and sign conventions can never drift out of sync
+# between the two. Do not duplicate/hardcode this mapping anywhere else.
+#
+# Convention:
+#   - In dog.mjcf.xml, every "thigh" joint's positive direction means
+#     "thigh swings away from the front", and every "calf" joint's positive
+#     direction means "calf swings towards the front" -- the same physical
+#     meaning for all four legs.
+#   - `sign` says whether that motor's real firmware "increase commanded
+#     degrees" direction matches the sim convention above (sign: 1) or is
+#     inverted relative to it (sign: -1). dog_deploy multiplies the
+#     policy's per-motor output by `sign` before sending it to
+#     actuator/SetMotorTargets, and multiplies a motor's real reading by
+#     `sign` before treating it as a sim-convention angle.
+#   - This came directly from bench testing each motor by hand (see
+#     claude_context.md for the raw notes); it has not been re-verified
+#     since.
+#
+# leg_a/b/c/d are internal names (also used as dog.mjcf.xml body/joint name
+# prefixes, e.g. "leg_a_thigh") -- their physical corners are confirmed
+# below in `legs:`.
+legs:
+  leg_a: front_right
+  leg_b: front_left
+  leg_c: back_right
+  leg_d: back_left
+
+motors:
+  1:
+    leg: leg_a
+    joint: thigh
+    sign: 1
+  2:
+    leg: leg_a
+    joint: calf
+    sign: 1
+  3:
+    leg: leg_b
+    joint: calf
+    sign: -1
+  4:
+    leg: leg_b
+    joint: thigh
+    sign: -1
+  5:
+    leg: leg_c
+    joint: thigh
+    sign: 1
+  6:
+    leg: leg_c
+    joint: calf
+    sign: 1
+  7:
+    leg: leg_d
+    joint: calf
+    sign: -1
+  8:
+    leg: leg_d
+    joint: thigh
+    sign: -1

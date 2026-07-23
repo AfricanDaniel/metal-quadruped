@@ -1,0 +1,319 @@
+<?xml version="1.0" ?>
+<!-- Generated using onshape-to-robot -->
+<!-- Onshape https://cad.onshape.com/documents/dc683153f135a2acebbf2e79/w/bacb782b4e426fe87a0755e7/e/b7993f2da7e1529e1232288f -->
+<mujoco model="robot_dog">
+  <compiler angle="radian" meshdir="assets" autolimits="true"/>
+  <default>
+    <default class="robot_dog">
+      <joint frictionloss="0.1" armature="0.005"/>
+      <position kp="50" dampratio="1"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2"/>
+      </default>
+      <default class="collision">
+        <geom group="3"/>
+      </default>
+    </default>
+  </default>
+  <worldbody>
+    <!-- Link torso -->
+    <body name="torso" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <inertial pos="0.000796434 0.000837545 -0.0352509" mass="4.72603" fullinertia="0.114844 0.0486358 0.151226 -5.8226e-08 -1.0884e-08 1.34218e-05"/>
+      <!-- Part motor -->
+      <geom type="mesh" class="visual" pos="0.0757964 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 -0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="0.0757964 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 -0.5" mesh="motor" material="motor_material"/>
+      <!-- Part motor_2 -->
+      <geom type="mesh" class="visual" pos="-0.0742036 0.19547 -0.0977405" quat="0.5 0.5 -0.5 0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="-0.0742036 0.19547 -0.0977405" quat="0.5 0.5 -0.5 0.5" mesh="motor" material="motor_material"/>
+      <!-- Part shoulder -->
+      <geom type="mesh" class="visual" pos="0.000796373 -0.192903 -0.0101" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
+      <geom type="mesh" class="collision" pos="0.000796373 -0.192903 -0.0101" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
+      <!-- Part motor_casing_spacers -->
+      <geom type="mesh" class="visual" pos="-0.195154 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.195154 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing -->
+      <geom type="mesh" class="visual" pos="0.0634964 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="0.0634964 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_casing_2 -->
+      <geom type="mesh" class="visual" pos="0.196746 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="0.196746 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_casing_3 -->
+      <geom type="mesh" class="visual" pos="0.0699964 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="0.0699964 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_casing_spacers_2 -->
+      <geom type="mesh" class="visual" pos="0.0699964 0.19547 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.0699964 0.19547 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part battery -->
+      <geom type="mesh" class="visual" pos="0.0385464 0.000597279 -0.03435" quat="0.707107 0 -0.707107 0" mesh="battery" material="battery_material"/>
+      <geom type="mesh" class="collision" pos="0.0385464 0.000597279 -0.03435" quat="0.707107 0 -0.707107 0" mesh="battery" material="battery_material"/>
+      <!-- Part motor_casing_4 -->
+      <geom type="mesh" class="visual" pos="-0.0684036 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="-0.0684036 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_casing_5 -->
+      <geom type="mesh" class="visual" pos="0.203246 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="0.203246 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_casing_spacers_3 -->
+      <geom type="mesh" class="visual" pos="0.0699964 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.0699964 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part torso -->
+      <geom type="mesh" class="visual" pos="0.000796373 0.000597279 -0.0036" quat="1 0 0 0" mesh="torso" material="torso_material"/>
+      <geom type="mesh" class="collision" pos="0.000796373 0.000597279 -0.0036" quat="1 0 0 0" mesh="torso" material="torso_material"/>
+      <!-- Part imu -->
+      <geom type="mesh" class="visual" pos="0.000797524 0.000380582 0.0036" quat="1 0 0 0" mesh="imu" material="imu_material"/>
+      <geom type="mesh" class="collision" pos="0.000797524 0.000380582 0.0036" quat="1 0 0 0" mesh="imu" material="imu_material"/>
+      <!-- Part motor_casing_spacers_4 -->
+      <geom type="mesh" class="visual" pos="0.0737964 -0.193276 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.0737964 -0.193276 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_3 -->
+      <geom type="mesh" class="visual" pos="-0.189354 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 -0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="-0.189354 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 -0.5" mesh="motor" material="motor_material"/>
+      <!-- Part motor_casing_6 -->
+      <geom type="mesh" class="visual" pos="-0.201654 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="-0.201654 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_4 -->
+      <geom type="mesh" class="visual" pos="-0.0742036 -0.193276 -0.0977405" quat="0.5 -0.5 0.5 0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="-0.0742036 -0.193276 -0.0977405" quat="0.5 -0.5 0.5 0.5" mesh="motor" material="motor_material"/>
+      <!-- Part timing_belt_pulley_upper -->
+      <geom type="mesh" class="visual" pos="0.135521 -0.193276 -0.0977405" quat="0 -0.707107 -0 -0.707107" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <geom type="mesh" class="collision" pos="0.135521 -0.193276 -0.0977405" quat="0 -0.707107 -0 -0.707107" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <!-- Part motor_casing_spacers_5 -->
+      <geom type="mesh" class="visual" pos="0.196746 -0.193276 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.196746 -0.193276 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing_spacers_6 -->
+      <geom type="mesh" class="visual" pos="-0.195154 -0.193276 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.195154 -0.193276 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_5 -->
+      <geom type="mesh" class="visual" pos="-0.189354 0.19547 -0.0977405" quat="0.5 0.5 0.5 -0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="-0.189354 0.19547 -0.0977405" quat="0.5 0.5 0.5 -0.5" mesh="motor" material="motor_material"/>
+      <!-- Part motor_casing_7 -->
+      <geom type="mesh" class="visual" pos="-0.0619036 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="-0.0619036 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_casing_spacers_7 -->
+      <geom type="mesh" class="visual" pos="-0.0722036 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.0722036 0.19547 -0.0977405" quat="0.5 -0.5 0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing_spacers_8 -->
+      <geom type="mesh" class="visual" pos="-0.195154 -0.193276 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.195154 -0.193276 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_6 -->
+      <geom type="mesh" class="visual" pos="0.190946 -0.193276 -0.0977405" quat="0.5 -0.5 0.5 0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="0.190946 -0.193276 -0.0977405" quat="0.5 -0.5 0.5 0.5" mesh="motor" material="motor_material"/>
+      <!-- Part shoulder_2 -->
+      <geom type="mesh" class="visual" pos="0.000796373 0.195097 -0.0101" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
+      <geom type="mesh" class="collision" pos="0.000796373 0.195097 -0.0101" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
+      <!-- Part timing_belt_pulley_upper_2 -->
+      <geom type="mesh" class="visual" pos="-0.133929 -0.193276 -0.0977405" quat="0 -0.707107 0 0.707107" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <geom type="mesh" class="collision" pos="-0.133929 -0.193276 -0.0977405" quat="0 -0.707107 0 0.707107" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <!-- Part motor_casing_spacers_9 -->
+      <geom type="mesh" class="visual" pos="0.196746 0.19547 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.196746 0.19547 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing_spacers_10 -->
+      <geom type="mesh" class="visual" pos="0.196746 0.19547 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.196746 0.19547 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_7 -->
+      <geom type="mesh" class="visual" pos="0.0757964 0.19547 -0.0977405" quat="0.5 0.5 0.5 -0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="0.0757964 0.19547 -0.0977405" quat="0.5 0.5 0.5 -0.5" mesh="motor" material="motor_material"/>
+      <!-- Part motor_casing_spacers_11 -->
+      <geom type="mesh" class="visual" pos="0.196746 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.196746 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing_8 -->
+      <geom type="mesh" class="visual" pos="-0.195154 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom type="mesh" class="collision" pos="-0.195154 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <!-- Part motor_casing_spacers_12 -->
+      <geom type="mesh" class="visual" pos="0.0737964 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="0.0737964 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_8 -->
+      <geom type="mesh" class="visual" pos="0.190946 0.19547 -0.0977405" quat="0.5 0.5 -0.5 0.5" mesh="motor" material="motor_material"/>
+      <geom type="mesh" class="collision" pos="0.190946 0.19547 -0.0977405" quat="0.5 0.5 -0.5 0.5" mesh="motor" material="motor_material"/>
+      <!-- Part timing_belt_pulley_upper_3 -->
+      <geom type="mesh" class="visual" pos="-0.133929 0.19547 -0.0977405" quat="0.707107 0 -0.707107 0" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <geom type="mesh" class="collision" pos="-0.133929 0.19547 -0.0977405" quat="0.707107 0 -0.707107 0" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <!-- Part timing_belt_pulley_upper_4 -->
+      <geom type="mesh" class="visual" pos="0.135521 0.19547 -0.0977405" quat="0.707107 0 0.707107 -0" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <geom type="mesh" class="collision" pos="0.135521 0.19547 -0.0977405" quat="0.707107 0 0.707107 -0" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <!-- Part motor_casing_spacers_13 -->
+      <geom type="mesh" class="visual" pos="-0.0684036 -0.193276 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.0684036 -0.193276 -0.0977405" quat="0.5 0.5 -0.5 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing_spacers_14 -->
+      <geom type="mesh" class="visual" pos="-0.0684036 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.0684036 -0.193276 -0.0977405" quat="0.5 -0.5 -0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing_spacers_15 -->
+      <geom type="mesh" class="visual" pos="-0.195154 0.19547 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.195154 0.19547 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <!-- Part motor_casing_spacers_16 -->
+      <geom type="mesh" class="visual" pos="-0.0722036 0.19547 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom type="mesh" class="collision" pos="-0.0722036 0.19547 -0.0977405" quat="0.5 0.5 0.5 0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+    </body>
+    <!-- Link thigh_connecor_full -->
+    <body name="thigh_connecor_full" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="thigh_connecor_full_freejoint"/>
+      <inertial pos="0.139779 0.226341 -0.0868919" mass="0.227462" fullinertia="0.000836589 0.000312689 0.000701374 1.6239e-05 4.92636e-06 -0.000130774"/>
+      <!-- Part spacer_between_thigh_connector -->
+      <geom type="mesh" class="visual" pos="0.119246 0.14465 -0.111838" quat="0.104367 -0.699362 0.104367 -0.699362" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+      <geom type="mesh" class="collision" pos="0.119246 0.14465 -0.111838" quat="0.104367 -0.699362 0.104367 -0.699362" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+      <!-- Part thigh_connecor_full -->
+      <geom type="mesh" class="visual" pos="0.159246 0.194106 -0.100872" quat="0.568323 -0.420725 -0.568323 0.420725" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+      <geom type="mesh" class="collision" pos="0.159246 0.194106 -0.100872" quat="0.568323 -0.420725 -0.568323 0.420725" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+      <!-- Part thigh_connector_hollow -->
+      <geom type="mesh" class="visual" pos="0.119246 0.194106 -0.100872" quat="0.568323 -0.420725 -0.568323 0.420725" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+      <geom type="mesh" class="collision" pos="0.119246 0.194106 -0.100872" quat="0.568323 -0.420725 -0.568323 0.420725" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+    </body>
+    <!-- Link timing_belt_pulley_lower_shaft -->
+    <body name="timing_belt_pulley_lower_shaft" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="timing_belt_pulley_lower_shaft_freejoint"/>
+      <inertial pos="0.136966 0.320757 -0.0800069" mass="0.183568" fullinertia="0.000212464 0.000261537 8.22203e-05 -1.1031e-08 -4.00347e-07 -4.95024e-06"/>
+      <!-- Part timing_belt_pulley_lower_shaft -->
+      <geom type="mesh" class="visual" pos="0.136996 0.321349 -0.0585461" quat="0.0137888 0.999905 0 0" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <geom type="mesh" class="collision" pos="0.136996 0.321349 -0.0585461" quat="0.0137888 0.999905 0 0" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <!-- Part timing_belt_pulley_lower -->
+      <geom type="mesh" class="visual" pos="0.137496 0.321349 -0.0585461" quat="0.493058 -0.506847 0.493058 -0.506847" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+      <geom type="mesh" class="collision" pos="0.137496 0.321349 -0.0585461" quat="0.493058 -0.506847 0.493058 -0.506847" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+      <!-- Part feet_connector -->
+      <geom type="mesh" class="visual" pos="0.136842 0.319272 -0.133812" quat="0.999905 -0.0137888 -0 0" mesh="feet_connector" material="feet_connector_material"/>
+      <geom type="mesh" class="collision" pos="0.136842 0.319272 -0.133812" quat="0.999905 -0.0137888 -0 0" mesh="feet_connector" material="feet_connector_material"/>
+      <!-- Part ball_for_feet -->
+      <geom type="mesh" class="visual" pos="0.136842 0.318721 -0.153804" quat="0.999905 -0.0137888 -0 0" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <geom type="mesh" class="collision" pos="0.136842 0.318721 -0.153804" quat="0.999905 -0.0137888 -0 0" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <!-- Part lower_shaft_connector_to_feet -->
+      <geom type="mesh" class="visual" pos="0.136996 0.317035 -0.0934404" quat="0.697289 -0.71679 -0 0" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+      <geom type="mesh" class="collision" pos="0.136996 0.317035 -0.0934404" quat="0.697289 -0.71679 -0 0" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+    </body>
+    <!-- Link thigh_connecor_full_2 -->
+    <body name="thigh_connecor_full_2" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="thigh_connecor_full_2_freejoint"/>
+      <inertial pos="-0.137986 0.226311 -0.0868055" mass="0.227462" fullinertia="0.000836589 0.000313424 0.000700638 -1.62315e-05 -4.97319e-06 -0.000131861"/>
+      <!-- Part thigh_connector_hollow_2 -->
+      <geom type="mesh" class="visual" pos="-0.113954 0.194114 -0.100876" quat="0.568911 -0.419928 -0.568911 0.419928" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+      <geom type="mesh" class="collision" pos="-0.113954 0.194114 -0.100876" quat="0.568911 -0.419928 -0.568911 0.419928" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+      <!-- Part spacer_between_thigh_connector_2 -->
+      <geom type="mesh" class="visual" pos="-0.153954 0.144689 -0.11198" quat="0.105347 -0.699215 0.105347 -0.699215" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+      <geom type="mesh" class="collision" pos="-0.153954 0.144689 -0.11198" quat="0.105347 -0.699215 0.105347 -0.699215" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+      <!-- Part thigh_connecor_full_2 -->
+      <geom type="mesh" class="visual" pos="-0.153954 0.194114 -0.100876" quat="0.568911 -0.419928 -0.568911 0.419928" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+      <geom type="mesh" class="collision" pos="-0.153954 0.194114 -0.100876" quat="0.568911 -0.419928 -0.568911 0.419928" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+    </body>
+    <!-- Link timing_belt_pulley_lower_shaft_2 -->
+    <body name="timing_belt_pulley_lower_shaft_2" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="timing_belt_pulley_lower_shaft_2_freejoint"/>
+      <inertial pos="-0.136234 0.320415 -0.0784734" mass="0.183568" fullinertia="0.000212464 0.000261592 8.21655e-05 -8.531e-09 -4.00408e-07 -3.83038e-06"/>
+      <!-- Part timing_belt_pulley_lower_shaft_2 -->
+      <geom type="mesh" class="visual" pos="-0.136204 0.320873 -0.0570093" quat="0.0106675 0.999943 -0 0" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <geom type="mesh" class="collision" pos="-0.136204 0.320873 -0.0570093" quat="0.0106675 0.999943 -0 0" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <!-- Part lower_shaft_connector_to_feet_2 -->
+      <geom type="mesh" class="visual" pos="-0.136204 0.316777 -0.0919298" quat="0.699523 -0.71461 0 -0" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+      <geom type="mesh" class="collision" pos="-0.136204 0.316777 -0.0919298" quat="0.699523 -0.71461 0 -0" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+      <!-- Part timing_belt_pulley_lower_2 -->
+      <geom type="mesh" class="visual" pos="-0.135704 0.320873 -0.0570093" quat="0.494638 -0.505305 0.494638 -0.505305" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+      <geom type="mesh" class="collision" pos="-0.135704 0.320873 -0.0570093" quat="0.494638 -0.505305 0.494638 -0.505305" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+      <!-- Part ball_for_feet_2 -->
+      <geom type="mesh" class="visual" pos="-0.136358 0.31884 -0.152282" quat="0.999943 -0.0106675 -0 -0" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <geom type="mesh" class="collision" pos="-0.136358 0.31884 -0.152282" quat="0.999943 -0.0106675 -0 -0" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <!-- Part feet_connector_2 -->
+      <geom type="mesh" class="visual" pos="-0.136358 0.319267 -0.132286" quat="0.999943 -0.0106675 -0 -0" mesh="feet_connector" material="feet_connector_material"/>
+      <geom type="mesh" class="collision" pos="-0.136358 0.319267 -0.132286" quat="0.999943 -0.0106675 -0 -0" mesh="feet_connector" material="feet_connector_material"/>
+    </body>
+    <!-- Link spacer_between_thigh_connector -->
+    <body name="spacer_between_thigh_connector" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="spacer_between_thigh_connector_freejoint"/>
+      <inertial pos="0.139579 -0.161567 -0.0896616" mass="0.227462" fullinertia="0.000836589 0.000311417 0.000702645 1.62532e-05 4.90159e-06 -0.000128864"/>
+      <!-- Part thigh_connector_hollow_3 -->
+      <geom type="mesh" class="visual" pos="0.115546 -0.196147 -0.0958904" quat="0.422185 0.567239 0.422185 0.567239" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+      <geom type="mesh" class="collision" pos="0.115546 -0.196147 -0.0958904" quat="0.422185 0.567239 0.422185 0.567239" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+      <!-- Part thigh_connecor_full_3 -->
+      <geom type="mesh" class="visual" pos="0.155546 -0.196147 -0.0958904" quat="0.422185 0.567239 0.422185 0.567239" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+      <geom type="mesh" class="collision" pos="0.155546 -0.196147 -0.0958904" quat="0.422185 0.567239 0.422185 0.567239" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+      <!-- Part spacer_between_thigh_connector_3 -->
+      <geom type="mesh" class="visual" pos="0.155546 -0.243391 -0.114171" quat="0.102568 -0.699628 -0.102568 0.699628" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+      <geom type="mesh" class="collision" pos="0.155546 -0.243391 -0.114171" quat="0.102568 -0.699628 -0.102568 0.699628" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+    </body>
+    <!-- Link timing_belt_pulley_lower_shaft_3 -->
+    <body name="timing_belt_pulley_lower_shaft_3" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="timing_belt_pulley_lower_shaft_3_freejoint"/>
+      <inertial pos="0.137827 -0.0674443 -0.0832341" mass="0.183568" fullinertia="0.000212464 0.000261265 8.24926e-05 1.9122e-08 4.00042e-07 -8.55913e-06"/>
+      <!-- Part feet_connector_3 -->
+      <geom type="mesh" class="visual" pos="0.137951 -0.0700125 -0.136998" quat="0 0 0.0238634 0.999715" mesh="feet_connector" material="feet_connector_material"/>
+      <geom type="mesh" class="collision" pos="0.137951 -0.0700125 -0.136998" quat="0 0 0.0238634 0.999715" mesh="feet_connector" material="feet_connector_material"/>
+      <!-- Part lower_shaft_connector_to_feet_3 -->
+      <geom type="mesh" class="visual" pos="0.137796 -0.0647437 -0.0969096" quat="0 -0 -0.690031 0.723779" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+      <geom type="mesh" class="collision" pos="0.137796 -0.0647437 -0.0969096" quat="0 -0 -0.690031 0.723779" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+      <!-- Part ball_for_feet_3 -->
+      <geom type="mesh" class="visual" pos="0.137951 -0.0709667 -0.156975" quat="0 0 0.0238634 0.999715" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <geom type="mesh" class="collision" pos="0.137951 -0.0709667 -0.156975" quat="0 0 0.0238634 0.999715" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <!-- Part timing_belt_pulley_lower_shaft_3 -->
+      <geom type="mesh" class="visual" pos="0.137796 -0.0664199 -0.0617896" quat="0 -0 -0.999715 0.0238634" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <geom type="mesh" class="collision" pos="0.137796 -0.0664199 -0.0617896" quat="0 -0 -0.999715 0.0238634" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <!-- Part timing_belt_pulley_lower_3 -->
+      <geom type="mesh" class="visual" pos="0.137296 -0.0664199 -0.0617896" quat="0.487926 -0.511789 -0.487926 0.511789" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+      <geom type="mesh" class="collision" pos="0.137296 -0.0664199 -0.0617896" quat="0.487926 -0.511789 -0.487926 0.511789" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+    </body>
+    <!-- Link spacer_between_thigh_connector_2 -->
+    <body name="spacer_between_thigh_connector_2" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="spacer_between_thigh_connector_2_freejoint"/>
+      <inertial pos="-0.138186 -0.161554 -0.0897149" mass="0.227462" fullinertia="0.000836589 0.000310986 0.000703077 -1.62554e-05 -4.8719e-06 -0.000128206"/>
+      <!-- Part thigh_connector_hollow_4 -->
+      <geom type="mesh" class="visual" pos="-0.117654 -0.196144 -0.0958856" quat="0.422662 0.566884 0.422662 0.566884" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+      <geom type="mesh" class="collision" pos="-0.117654 -0.196144 -0.0958856" quat="0.422662 0.566884 0.422662 0.566884" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+      <!-- Part spacer_between_thigh_connector_4 -->
+      <geom type="mesh" class="visual" pos="-0.117654 -0.243418 -0.114087" quat="0.10198 -0.699714 -0.10198 0.699714" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+      <geom type="mesh" class="collision" pos="-0.117654 -0.243418 -0.114087" quat="0.10198 -0.699714 -0.10198 0.699714" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+      <!-- Part thigh_connecor_full_4 -->
+      <geom type="mesh" class="visual" pos="-0.157654 -0.196144 -0.0958856" quat="0.422662 0.566884 0.422662 0.566884" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+      <geom type="mesh" class="collision" pos="-0.157654 -0.196144 -0.0958856" quat="0.422662 0.566884 0.422662 0.566884" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+    </body>
+    <!-- Link timing_belt_pulley_lower_shaft_4 -->
+    <body name="timing_belt_pulley_lower_shaft_4" pos="0 0 0" quat="1 0 0 0" childclass="robot_dog">
+      <freejoint name="timing_belt_pulley_lower_shaft_4_freejoint"/>
+      <inertial pos="-0.135373 -0.0676012 -0.0822655" mass="0.183568" fullinertia="0.000212464 0.000261367 8.23908e-05 1.6573e-08 4.00156e-07 -7.41947e-06"/>
+      <!-- Part lower_shaft_connector_to_feet_4 -->
+      <geom type="mesh" class="visual" pos="-0.135404 -0.0648135 -0.0959234" quat="0 -0 0.692334 -0.721578" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+      <geom type="mesh" class="collision" pos="-0.135404 -0.0648135 -0.0959234" quat="0 -0 0.692334 -0.721578" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+      <!-- Part timing_belt_pulley_lower_shaft_4 -->
+      <geom type="mesh" class="visual" pos="-0.135404 -0.0667135 -0.0608149" quat="0 0 -0.999786 0.0206786" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <geom type="mesh" class="collision" pos="-0.135404 -0.0667135 -0.0608149" quat="0 0 -0.999786 0.0206786" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+      <!-- Part ball_for_feet_4 -->
+      <geom type="mesh" class="visual" pos="-0.135249 -0.0706537 -0.156028" quat="0 -0 -0.0206786 -0.999786" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <geom type="mesh" class="collision" pos="-0.135249 -0.0706537 -0.156028" quat="0 -0 -0.0206786 -0.999786" mesh="ball_for_feet" material="ball_for_feet_material"/>
+      <!-- Part feet_connector_4 -->
+      <geom type="mesh" class="visual" pos="-0.135249 -0.0698268 -0.136045" quat="0 -0 -0.0206786 -0.999786" mesh="feet_connector" material="feet_connector_material"/>
+      <geom type="mesh" class="collision" pos="-0.135249 -0.0698268 -0.136045" quat="0 -0 -0.0206786 -0.999786" mesh="feet_connector" material="feet_connector_material"/>
+      <!-- Part timing_belt_pulley_lower_4 -->
+      <geom type="mesh" class="visual" pos="-0.135904 -0.0667135 -0.0608149" quat="0.489554 -0.510232 -0.489554 0.510232" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+      <geom type="mesh" class="collision" pos="-0.135904 -0.0667135 -0.0608149" quat="0.489554 -0.510232 -0.489554 0.510232" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+    </body>
+  </worldbody>
+  <asset>
+    <mesh file="timing_belt_pulley_lower_shaft.stl"/>
+    <mesh file="motor_casing.stl"/>
+    <mesh file="thigh_connector_hollow.stl"/>
+    <mesh file="lower_shaft_connector_to_feet.stl"/>
+    <mesh file="ball_for_feet.stl"/>
+    <mesh file="imu.stl"/>
+    <mesh file="battery.stl"/>
+    <mesh file="feet_connector.stl"/>
+    <mesh file="thigh_connecor_full.stl"/>
+    <mesh file="motor_casing_spacers.stl"/>
+    <mesh file="spacer_between_thigh_connector.stl"/>
+    <mesh file="timing_belt_pulley_lower.stl"/>
+    <mesh file="shoulder.stl"/>
+    <mesh file="timing_belt_pulley_upper.stl"/>
+    <mesh file="motor.stl"/>
+    <mesh file="torso.stl"/>
+    <material name="motor_material" rgba="0.647059 0.647059 0.647059 1"/>
+    <material name="shoulder_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="motor_casing_spacers_material" rgba="0 0 0 1"/>
+    <material name="motor_casing_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="battery_material" rgba="0.301961 0.290196 0.262745 1"/>
+    <material name="torso_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="imu_material" rgba="0 0 0 1"/>
+    <material name="timing_belt_pulley_upper_material" rgba="0.541176 0.682353 0.839216 1"/>
+    <material name="spacer_between_thigh_connector_material" rgba="0.764706 0.545098 0.803922 1"/>
+    <material name="thigh_connecor_full_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="thigh_connector_hollow_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="timing_belt_pulley_lower_shaft_material" rgba="0.701961 0.701961 0.701961 1"/>
+    <material name="timing_belt_pulley_lower_material" rgba="0.541176 0.682353 0.839216 1"/>
+    <material name="feet_connector_material" rgba="0 0 0 1"/>
+    <material name="ball_for_feet_material" rgba="0 0 0 1"/>
+    <material name="lower_shaft_connector_to_feet_material" rgba="0.6 0.6 0.6 1"/>
+  </asset>
+  <actuator/>
+  <equality/>
+</mujoco>
