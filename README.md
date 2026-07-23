@@ -72,7 +72,7 @@ deprecated `mujoco_py`). See `dog_gym/README.md` and
 
 ## Status / open items
 
-See `claude_context.md` (gitignored, not shared/committed — personal
+See `daniel_cl_context.md` (gitignored, not shared/committed — personal
 working notes) for a running log of design decisions, what's built, and
 what's still open (placeholder robot geometry, unconfirmed leg-corner
 naming, IMU mounting-orientation calibration, no trained policy yet).
