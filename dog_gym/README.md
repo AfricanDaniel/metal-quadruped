@@ -1,0 +1,188 @@
+# dog_gym
+
+MuJoCo/Gymnasium simulation environment and RL training pipeline for the
+dog. Runs on a dev machine (GPU recommended for training) — the heavy deps
+(`mujoco`, `torch`, `stable_baselines3`) are not meant to run on the Jetson;
+see `dog_deploy` for what actually ships to the robot.
+
+Rewritten on the modern `mujoco` Python bindings + current Gymnasium API,
+**not** a port of the `mujoco_py`-based training code it's derived from
+(`shane_ws/Fast-Quadruped-`) — `mujoco_py` is unmaintained and painful to
+install (see that repo's `additional_steps.md` for the GLEW/patchelf/numpy
+pinning it required). This package has none of that.
+
+```
+dog_gym/
+├── package.xml
+├── setup.py / setup.cfg
+├── requirements.txt
+├── resource/dog_gym
+└── dog_gym/
+    ├── __init__.py       # registers "Dog-Stand-v0" and "Dog-Walk-v0"
+    ├── envs/
+    │   └── dog_env.py    # DogEnv: the actual sim environment, both tasks
+    ├── train.py           # PPO/SAC/A2C training + testing CLI
+    └── export_policy.py   # SB3 checkpoint -> TorchScript, for dog_deploy
+```
+
+## Setup
+
+```bash
+cd dog_ros2_ws
+colcon build --packages-select dog_description dog_gym
+source install/setup.bash
+# --system-site-packages: DogEnv imports ament_index_python (from the ROS
+# install) to locate dog_description's share directory, so the venv still
+# needs to see it alongside the heavier pip-only deps below.
+python3 -m venv --system-site-packages .venv && source .venv/bin/activate
+pip install -r src/dog_gym/requirements.txt
+```
+
+**Use `python3 -m dog_gym.<module>`, not `ros2 run dog_gym <module>`, once the
+venv is active.** `ros2 run` executes the *installed script file*, whose
+shebang line is fixed to whatever Python built it — and `colcon`/`ros2`
+themselves always run under system Python (their own shebang), regardless
+of whether a venv is active in your shell. So the installed script's
+shebang always points at system Python, which doesn't have `mujoco`/
+`torch`/`stable_baselines3` — you'd get `ModuleNotFoundError` even with the
+venv active and even after rebuilding. `python3 -m dog_gym.train` instead
+uses *your shell's* `python3` (the venv's, once activated), which is what
+you actually want. Both commands below assume `source install/setup.bash`
+**and** `source .venv/bin/activate` are done first, in that order.
+
+## `DogEnv` (`dog_gym/envs/dog_env.py`)
+
+- Loads `dog_description`'s `mjcf/dog.mjcf.xml` via
+  `ament_index_python` — **remember the geometry in that model is
+  placeholder**, see `dog_description/README.md`.
+- **Action**: 8 target joint angles (radians), in `motor_1..motor_8` order
+  — directly usable by `dog_deploy` after the `motor_mapping.yaml` sign
+  flip, no unit conversion needed (see "Why `<position>` actuators" in
+  `dog_description/README.md`).
+- **Observation**: deliberately proprioceptive-only, matching what's
+  actually available on the real robot — no absolute torso position or
+  orientation (there's no motion-capture/localization system). 8 motor
+  joint angles + 8 joint velocities (gathered explicitly in `motor_1`..
+  `motor_8` order via `motor_mapping.yaml` — raw MuJoCo `qpos`/`qvel` array
+  order follows body-tree order, not motor order, so it can't be sliced
+  directly) + simulated IMU (`accelerometer`/`gyro` sensordata, matching
+  what `dog_imu`'s real driver publishes) + the previous action (so a
+  policy can be penalized for jerky control, which matters for the real
+  gearboxes). `dog_deploy` builds this exact vector from
+  `actuator/read_motor_positions` + `dog_imu` on real hardware. Reward
+  computation is still free to use privileged sim-only state (true torso
+  height/tilt/velocity) since reward never runs at deployment time.
+- **Two tasks, one env class** (`task='stand'`/`'walk'`, registered as
+  `Dog-Stand-v0`/`Dog-Walk-v0` in `__init__.py`): stand-up-in-place and
+  walk-forward are trained as separate policies rather than one policy
+  learning both at once. Both share the observation/action space and
+  physics-stepping code; only `reset()`'s initial pose and
+  `_compute_reward()` differ per task. See `dog_env.py`'s module
+  docstring for the reasoning.
+  - `Dog-Stand-v0`: starts from the sitting/home pose (qpos=0). Reward:
+    height error to `STAND_HEIGHT_M` (+ a bonus once within
+    `STAND_HEIGHT_TOLERANCE_M`) + uprightness + a symmetry penalty across
+    matching thigh/calf joints + a stay-in-place penalty. No
+    forward-velocity term.
+  - `Dog-Walk-v0`: starts already standing (`STANDING_QPOS_DEG`) and
+    rewards forward velocity, with height/upright kept only as loose
+    regularizers.
+  - Both also carry an IMU-based stability penalty (shock/angular-velocity
+    spikes) + a small effort/action-rate penalty (discourages jerky,
+    hardware-unfriendly control) + a per-step survival bonus. Weights in
+    `_compute_reward_stand`/`_compute_reward_walk` are a starting point,
+    not tuned.
+  - **Unresolved, real (not just sim) discrepancy**: the walk task's
+    standing pose required flipping the sign of leg_a/leg_c's thigh angle
+    relative to what a naive conversion of the real hardware's
+    `preset_pose.yaml` "standing" values would give — this sim's own
+    kinematics disagree with the real robot for those two legs
+    specifically, and the cause hasn't been identified yet (CAD mounting
+    difference vs. a `motor_mapping.yaml` sign error vs. something else).
+    `motor_mapping.yaml` was deliberately left unchanged since it's
+    shared with `dog_deploy` (hardware-facing) and this hasn't been
+    verified on hardware — see the long comment at `STANDING_QPOS_DEG` in
+    `dog_env.py` for the full derivation. **Check this on real hardware
+    before trusting any sim-trained policy's leg_a/leg_c sign at
+    deployment time.**
+- **Termination**: torso falls below `FALL_HEIGHT_M` or tips past
+  `MAX_TILT_RAD`. **Truncation**: `MAX_EPISODE_STEPS`.
+- `domain_randomization=True` randomizes ground friction on every reset
+  (ported from the reference repo's domain-randomization script) — opt-in,
+  off by default.
+
+## Training
+
+```bash
+python3 -m dog_gym.train --train --env-id Dog-Stand-v0 --algo PPO --env-type subproc \
+  --num-envs 8 --fname stand_policy
+
+python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO --env-type subproc \
+  --num-envs 8 --fname walk_policy
+```
+
+`--env-id` defaults to `Dog-Stand-v0`.
+
+Saves checkpoints to `models/` and TensorBoard logs to `logs/` (both
+relative to the current directory — override with `--model-dir`/
+`--log-dir`). Runs indefinitely, saving a new checkpoint every
+`--timesteps-per-iter` (default 1,000,000) — stop with Ctrl+C once you're
+happy with a checkpoint.
+
+Watch training progress:
+
+```bash
+tensorboard --logdir logs/
+```
+
+Visualize a trained checkpoint (paced to real time, so it's actually
+watchable — a falls-quickly policy otherwise finishes an episode in a
+fraction of a second):
+
+```bash
+python3 -m dog_gym.train --test models/PPO_1000000_stand_policy.zip --env-id Dog-Stand-v0 --episodes 5
+```
+
+Without `--domain-randomization`, every episode is bit-for-bit identical
+(deterministic policy + deterministic `reset()`, no initial-state noise) —
+add the flag for varied episodes:
+
+```bash
+python3 -m dog_gym.train --test models/PPO_1000000_stand_policy.zip --env-id Dog-Stand-v0 --episodes 5 --domain-randomization
+```
+
+**Spacebar pauses/resumes** in the viewer window (needs the window
+focused). Mouse still orbits/pans/zooms as usual either way.
+
+**No pretrained model ships in this package.** The reference repo's
+`.PPO` file was trained on a different action/observation space
+(`mujoco_py`, torque actuators, no IMU-in-observation) and is not
+compatible with `DogEnv`.
+
+## Exporting for deployment
+
+```bash
+python3 -m dog_gym.export_policy models/PPO_1000000_dog_policy.zip models/dog_policy.pt
+```
+
+Produces a TorchScript module `dog_deploy` can load with just `torch` — no
+`stable_baselines3`/`gymnasium`/`mujoco` needed on the Jetson.
+
+## Smoke-testing without training
+
+Before spending compute on a real training run, confirm the environment
+itself is sound:
+
+```python
+import dog_gym
+import gymnasium as gym
+
+env = gym.make('Dog-Stand-v0')  # or 'Dog-Walk-v0'
+obs, _ = env.reset()
+for _ in range(500):
+    obs, reward, terminated, truncated, _ = env.step(env.action_space.sample())
+    if terminated or truncated:
+        obs, _ = env.reset()
+env.close()
+print("ok")
+```
