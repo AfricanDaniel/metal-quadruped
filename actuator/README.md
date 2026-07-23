@@ -193,13 +193,20 @@ float32 resulting_position_deg
 ### Service: `read_motor_positions` (`actuator/srv/ReadMotorPositions`)
 
 ```
+int32[] motor_id
 ---
 int32[] motor_id
 float32[] position_deg
+float32[] velocity_deg_s
 ```
 
-Returns the current angle of motors 1–8, in the same order each time.
-`motor_id[i]`/`position_deg[i]` are parallel arrays. Motors already active
+An empty request `motor_id` (or omitting it) reads all of motors 1–8;
+otherwise only the listed IDs are read (see `{motor_id: [1]}` example
+below). Response `motor_id[i]`/`position_deg[i]`/`velocity_deg_s[i]` are
+parallel arrays, in the order requested (or 1–8 order if the request was
+empty). `velocity_deg_s` is `dog_deploy`'s reason for existing — it's what
+lets a real-hardware observation match the joint-velocity half of
+`dog_gym`'s training observation. Motors already active
 (velocity or position mode) report their latest reading from the 100 Hz
 control loop; a motor seen for the first time gets registered with a
 zero-effort probe read (kp/kd/tau/velocity all 0, so it can't move) purely to
@@ -288,6 +295,33 @@ position (used by `go_to_pose` to resolve pose offsets — see
 [Homing](#homing--reference-position)). Call this only after physically
 posing the robot in its reference stance. Not persisted — a node restart
 clears it and `set_home` must be called again.
+
+### Service: `set_motor_targets` (`actuator/srv/SetMotorTargets`)
+
+```
+int32[] motor_id
+float32[] position_deg
+---
+bool success
+```
+
+Batch, absolute, **immediate** position control: sets each listed motor's
+target to `position_deg` (output-shaft degrees) with no ramp — unlike
+`adjust_motor_position` (relative, ramped) and `go_to_pose` (ramped,
+YAML-driven), this jumps straight to the target on the very next control
+cycle. Intended for a caller that already commands a full trajectory at a
+fixed rate itself (e.g. an RL policy in `dog_deploy`), where ramping inside
+this node would just fight the caller's own timing.
+
+`motor_id` and `position_deg` must be the same length (parallel arrays,
+like `read_motor_positions`'s response) or the call fails
+(`success: false`) without moving anything. Registers any motor_id not
+already active, same as the other services.
+
+```bash
+ros2 service call /set_motor_targets actuator/srv/SetMotorTargets \
+  "{motor_id: [1, 2], position_deg: [10.0, -5.0]}"
+```
 
 ## Building
 

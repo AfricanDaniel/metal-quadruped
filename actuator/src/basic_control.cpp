@@ -19,6 +19,7 @@
 #include "actuator/srv/read_motor_positions.hpp"
 #include "actuator/srv/go_to_pose.hpp"
 #include "actuator/srv/set_home.hpp"
+#include "actuator/srv/set_motor_targets.hpp"
 
 namespace {
 const std::string kDataDir         = std::string(ACTUATOR_PACKAGE_DIR) + "/data";
@@ -154,6 +155,11 @@ public:
         home_service_ = this->create_service<actuator::srv::SetHome>(
             "set_home",
             std::bind(&MotorTestNode::handle_set_home, this,
+                       std::placeholders::_1, std::placeholders::_2));
+
+        set_targets_service_ = this->create_service<actuator::srv::SetMotorTargets>(
+            "set_motor_targets",
+            std::bind(&MotorTestNode::handle_set_motor_targets, this,
                        std::placeholders::_1, std::placeholders::_2));
 
         RCLCPP_INFO(get_logger(),
@@ -373,12 +379,40 @@ private:
             // gets registered here, which does a one-off zero-effort read.
             MotorState &motor = get_or_create_motor(motor_id);
 
-            float position_deg = (motor.data.q / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+            float position_deg    = (motor.data.q  / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+            float velocity_deg_s  = (motor.data.dq / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
             response->motor_id.push_back(motor_id);
             response->position_deg.push_back(position_deg);
+            response->velocity_deg_s.push_back(velocity_deg_s);
 
             RCLCPP_INFO(get_logger(), "  Motor %d: %.2f deg", motor_id, position_deg);
         }
+    }
+
+    // Sets an absolute output-shaft target for each listed motor, jumping
+    // immediately (no ramp) rather than interpolating like
+    // adjust_motor_position/go_to_pose do. Meant for callers that already
+    // command a full trajectory at a fixed rate (e.g. an RL policy), where
+    // ramping would just fight the caller's own timing.
+    void handle_set_motor_targets(
+        const std::shared_ptr<actuator::srv::SetMotorTargets::Request> request,
+        std::shared_ptr<actuator::srv::SetMotorTargets::Response> response) {
+        if (request->motor_id.size() != request->position_deg.size()) {
+            RCLCPP_ERROR(get_logger(),
+                "set_motor_targets: motor_id (%zu) and position_deg (%zu) size mismatch",
+                request->motor_id.size(), request->position_deg.size());
+            response->success = false;
+            return;
+        }
+
+        for (size_t i = 0; i < request->motor_id.size(); ++i) {
+            int32_t motor_id  = request->motor_id[i];
+            float   target_deg = request->position_deg[i];
+            MotorState &motor = get_or_create_motor(motor_id);
+            command_absolute_position(motor, motor_id, target_deg, /*speed_deg_s=*/0.0f);
+        }
+
+        response->success = true;
     }
 
     void control_loop() {
@@ -435,6 +469,7 @@ private:
     rclcpp::Service<actuator::srv::ReadMotorPositions>::SharedPtr  read_positions_service_;
     rclcpp::Service<actuator::srv::GoToPose>::SharedPtr            pose_service_;
     rclcpp::Service<actuator::srv::SetHome>::SharedPtr             home_service_;
+    rclcpp::Service<actuator::srv::SetMotorTargets>::SharedPtr     set_targets_service_;
 
     // motor_id -> output-shaft degrees captured by the last set_home call.
     // Empty until set_home is called; not persisted across node restarts —

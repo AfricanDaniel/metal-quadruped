@@ -1,0 +1,4 @@
+int32[] motor_id
+float32[] position_deg
+---
+bool success

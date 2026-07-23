@@ -3,3 +3,4 @@ int32[] motor_id
 ---
 int32[] motor_id
 float32[] position_deg
+float32[] velocity_deg_s
