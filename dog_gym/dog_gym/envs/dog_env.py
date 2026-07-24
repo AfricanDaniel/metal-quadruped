@@ -55,58 +55,57 @@ DOG_DESCRIPTION_SHARE = get_package_share_directory('dog_description')
 DEFAULT_MODEL_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'mjcf', 'dog.mjcf.xml')
 DEFAULT_MOTOR_MAPPING_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'config', 'motor_mapping.yaml')
 
-# Standing height: measured 2026-07-23 by setting qpos to STANDING_QPOS_DEG
-# below (the real "standing" preset from actuator/config/preset_pose.yaml,
-# converted through motor_mapping.yaml's sign) and reading the settled
-# torso height back via mjcf/save_pose.py -- 0.277m. Replaces an earlier
-# 0.340m guess (a hand-measured bracket+thigh+calf sum against the old,
-# since-rebuilt CAD -- stale, no longer matches this model's link lengths).
-STAND_HEIGHT_M = 0.277
+# Standing height and STANDING_QPOS_DEG below: measured 2026-07-23 by
+# directly hand-posing the robot in the interactive viewer (mjcf/
+# save_pose.py) until all 4 limbs looked fully extended down and the
+# robot was near its max height, then reading qpos back -- NOT derived
+# from actuator/config/preset_pose.yaml's real hardware values this time
+# (an earlier version of this file was, and got the calf angles wrong,
+# see below). This is real, directly-observed sim ground truth, the most
+# reliable source available without hardware access.
+STAND_HEIGHT_M = 0.313
 STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
+# Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
+# "0% standing progress" reference point for gating the uprightness
+# reward, so it can't be collected just by sitting still and level.
+# Matches the user's own hand-posed "home" capture almost exactly
+# (0.1405m, qpos~0 on every joint -- consistent with preset_pose.yaml's
+# "home" preset being all-zero too).
+SIT_HEIGHT_M = 0.14
 
-# Same "standing" preset, motor-id order (1..8), magnitudes taken from
-# actuator/config/preset_pose.yaml's real "standing" values (sign-converted
-# through motor_mapping.yaml where that convention is verified correct),
-# used as the walk task's reset pose.
+# Motor-id order (1..8), hand-verified sim qpos at the standing pose
+# above (NOT converted from real hardware degrees -- see the note above).
 #
-# IMPORTANT, UNRESOLVED (2026-07-23): motor_mapping.yaml documents thigh
-# "positive = away from front" as the same physical meaning for all 4
-# legs, and that IS verified true in the current dog.mjcf.xml (checked
-# directly -- every leg's foot moves in the away-from-front direction for
-# positive thigh qpos). But a hinge sweeps an arc, and a full +-180deg
-# sweep found each leg's actual foot-height MINIMUM (i.e. the standing-
-# extended configuration) at asymmetric signs: leg_a/leg_c (the two
-# right-side legs) minimize around thigh=-75deg, leg_b/leg_d (left-side)
-# around thigh=+75deg -- traced to the two sides having mirrored world-
-# frame rotation axes (+X vs -X), an expected property of a mirror-
-# symmetric leg mount. Converting the real "standing" preset through
-# motor_mapping.yaml's documented sign gives POSITIVE angles for legs
-# a/c too, which -- per this sim's own kinematics -- would fold those two
-# legs up instead of standing on them. Since the real "standing" preset
-# is a working pose on the actual hardware, real hardware and the current
-# CAD-derived sim kinematics disagree for the two right-side legs
-# specifically. Root cause not identified (CAD mounting difference for
-# the right side vs. a motor_mapping.yaml sign error vs. something else)
-# -- deliberately NOT changing motor_mapping.yaml (shared with dog_deploy,
-# hardware-facing) on this unverified a guess. Per user decision
-# (2026-07-23): use the real preset's per-motor MAGNITUDES (a
-# hardware-calibrated fact) but flip the SIGN of the thigh angle for
-# leg_a/leg_c specifically, matching what this sim's own verified
-# kinematics require to actually stand -- i.e. trust real magnitudes,
-# trust this sim's own verified sign, don't trust the cross-referenced
-# motor_mapping.yaml sign for these two joints until the real
-# discrepancy above is investigated on hardware/CAD.
-STANDING_QPOS_DEG = np.array([-107.41, 5.91, -0.49, 107.62, -113.66, 4.68, 1.14, 107.25])
+# IMPORTANT, UNRESOLVED (2026-07-23): this replaced an earlier version
+# derived from actuator/config/preset_pose.yaml's real "standing" preset,
+# converted through motor_mapping.yaml's documented sign. That version
+# had the right idea for the thighs (see THIGH_SYMMETRY_SIGN -- the
+# left/right mirrored-axis finding still holds and is confirmed again by
+# this new data) but was flat wrong for the calves: it assumed calves
+# barely move (~0-6deg, taken straight from the real preset) when hand-
+# posing the sim shows they need to rotate almost as much as the thighs
+# (~100-120deg) to reach a fully extended stance. The calves ALSO turned
+# out to have a non-uniform sign across legs, just split front/back
+# instead of left/right: leg_a/leg_b (front) go negative, leg_c/leg_d
+# (back) go positive, consistent across both the semi-standing and full-
+# standing hand-posed captures (not noise). See CALF_SYMMETRY_SIGN below.
+# Root cause of why real-hardware-preset-converted values don't match
+# this sim's own kinematics is still not identified for either joint --
+# deliberately NOT touching motor_mapping.yaml (shared with dog_deploy,
+# hardware-facing) on unverified sim-only findings. Check both thigh AND
+# calf signs on real hardware before trusting a sim-trained policy's
+# action signs at deployment time.
+STANDING_QPOS_DEG = np.array([-116.970, -120.650, -105.144, 97.769, -110.876, 104.772, 98.950, 104.126])
 
 # Motor-order (0-indexed, i.e. motor_id - 1) indices of the 4 thigh and 4
-# calf joints -- used by the stand task's symmetry penalty. Calf axis is
-# uniform across all 4 legs (verified), so raw qpos compares directly.
-# Thigh axis is NOT uniform (see the note above) -- THIGH_SYMMETRY_SIGN
-# corrects for it before comparing, so the penalty rewards the real
-# symmetric standing configuration instead of fighting it.
+# calf joints -- used by the stand task's symmetry penalty. Neither axis
+# is uniform across all 4 legs (see the note above) -- THIGH_SYMMETRY_SIGN/
+# CALF_SYMMETRY_SIGN correct for it before comparing, so the penalty
+# rewards the real symmetric standing configuration instead of fighting it.
 SYMMETRIC_THIGH_IDX = [0, 3, 4, 7]  # motors 1, 4, 5, 8 (leg_a, leg_b, leg_c, leg_d)
-THIGH_SYMMETRY_SIGN = np.array([-1, 1, -1, 1])  # leg_a/leg_c flipped, see note above
-SYMMETRIC_CALF_IDX = [1, 2, 5, 6]   # motors 2, 3, 6, 7
+THIGH_SYMMETRY_SIGN = np.array([-1, 1, -1, 1])  # left/right split, see note above
+SYMMETRIC_CALF_IDX = [1, 2, 5, 6]   # motors 2, 3, 6, 7 (leg_a, leg_b, leg_c, leg_d)
+CALF_SYMMETRY_SIGN = np.array([-1, -1, 1, 1])   # front/back split, see note above
 
 # Sitting/home height settles around 0.14m (measured the same way as
 # STAND_HEIGHT_M, at qpos=0) -- FALL_HEIGHT_M must stay below that or the
@@ -115,6 +114,11 @@ FALL_HEIGHT_M = 0.10
 MAX_TILT_RAD = 0.9  # ~51 degrees from vertical before an episode ends
 MAX_EPISODE_STEPS = 1000
 NUM_MOTORS = 8
+
+# Per-motor max target slew rate, applied every step() -- see the long
+# comment where it's used. Matches dog_deploy/policy_node.py's real
+# safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
+MAX_SLEW_DEG_PER_S = 100.0
 
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
@@ -155,6 +159,16 @@ class DogEnv(gym.Env):
             self.model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
         self.default_floor_friction = self.model.geom_friction[self.floor_geom_id].copy()
 
+        # Each leg's collision capsule is named "<leg>_calf" (same name as
+        # the calf joint, different MuJoCo namespace) and runs knee->foot,
+        # so ground contact on this geom is the real physical signal for
+        # "this foot is on the floor" -- used by the stand task's
+        # feet-grounded reward.
+        self.calf_geom_ids = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, f'{leg}_calf')
+            for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
+        ]
+
         # motor_1..motor_8 -> this joint's qpos/qvel address, so the
         # observation is built in a fixed, motor-id order regardless of
         # the MJCF's body-tree traversal order.
@@ -194,6 +208,13 @@ class DogEnv(gym.Env):
             if self.domain_randomization:
                 qpos_rad = qpos_rad + self.np_random.uniform(-0.02, 0.02, size=NUM_MOTORS)
             self.data.qpos[self.motor_qpos_adr] = qpos_rad
+            # step()'s slew-rate limiter clips each new action around
+            # prev_action -- leaving prev_action at its zero default here
+            # while the legs are actually at the standing pose would make
+            # the very first step() think the last commanded target was 0
+            # and yank every leg toward 0 (rate-limited, so a slow fake
+            # "collapse" rather than an instant snap, but still wrong).
+            self.prev_action = qpos_rad.astype(np.float32)
             # The free joint's own z (qpos[2]) still defaults to the
             # model's qpos=0 spawn height (0.287m, chosen to clear the
             # floor at the CAD-captured/sitting leg pose) -- leaving it
@@ -227,6 +248,19 @@ class DogEnv(gym.Env):
 
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)
+        # Rate-limit how far any single motor's target can move per step,
+        # same idea (and same underlying number) as dog_deploy/policy_node.py's
+        # real-hardware safety clamp: that clamps 5deg per 20Hz control tick
+        # = 100deg/s. Sim steps at 100Hz (dog.mjcf.xml's 0.01s timestep, one
+        # physics step per env.step(), no frame-skip), so the equivalent
+        # per-sim-step limit is 100deg/s / 100Hz = 1deg/step -- same overall
+        # speed limit, just expressed at the sim's own step rate. Without
+        # this, a policy is free to snap straight to any target every step
+        # (visibly "stands up too fast"), which also doesn't reflect what
+        # the real, rate-limited deployment path will actually allow --
+        # training under the same limit avoids that train/deploy mismatch.
+        max_delta_rad = np.radians(MAX_SLEW_DEG_PER_S) * self.model.opt.timestep
+        action = np.clip(action, self.prev_action - max_delta_rad, self.prev_action + max_delta_rad)
         self.data.ctrl[:] = action
 
         if self.render_mode == 'human':
@@ -272,6 +306,19 @@ class DogEnv(gym.Env):
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         return xmat[2, 2]
 
+    def _num_feet_grounded(self):
+        """How many of the 4 calf capsules are in actual contact with the
+        floor geom right now (0-4) -- a real physical ground-contact
+        check via MuJoCo's own contact list, not a height-based guess."""
+        grounded = set()
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if c.geom1 == self.floor_geom_id and c.geom2 in self.calf_geom_ids:
+                grounded.add(c.geom2)
+            elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
+                grounded.add(c.geom1)
+        return len(grounded)
+
     def _is_fallen(self):
         if self._torso_height() < FALL_HEIGHT_M:
             return True
@@ -311,23 +358,44 @@ class DogEnv(gym.Env):
         # than "still closing in", per the requested error tolerance.
         height_bonus = 0.2 if height_error < STAND_HEIGHT_TOLERANCE_M else 0.0
 
-        upright_reward = self._torso_up_z()  # 1.0 = perfectly level ("flat")
+        # Gate uprightness by standing progress (0 at sitting height, 1 at
+        # the target) instead of paying it out unconditionally -- an
+        # unconditional +upright term made "sit still and level" collect
+        # most of the achievable reward on its own (observed: trained
+        # policy barely moved 2 of 8 motors, ep_rew_mean matched the
+        # sit-still-forever estimate almost exactly), removing any real
+        # pressure to actually climb to standing height. Now sitting
+        # level scores near zero on this term instead of the max.
+        height_progress = np.clip(
+            (self._torso_height() - SIT_HEIGHT_M) / (STAND_HEIGHT_M - SIT_HEIGHT_M), 0.0, 1.0)
+        upright_reward = self._torso_up_z() * height_progress  # 1.0 = perfectly level AND at height
 
         motor_qpos = self.data.qpos[self.motor_qpos_adr]
-        # THIGH_SYMMETRY_SIGN corrects for leg_a/leg_c's mirrored joint
-        # axis before comparing -- see STANDING_QPOS_DEG's comment.
+        # THIGH_SYMMETRY_SIGN/CALF_SYMMETRY_SIGN correct for the left/right
+        # (thigh) and front/back (calf) mirrored joint axes before
+        # comparing -- see STANDING_QPOS_DEG's comment.
         thigh_spread = np.var(motor_qpos[SYMMETRIC_THIGH_IDX] * THIGH_SYMMETRY_SIGN)
-        calf_spread = np.var(motor_qpos[SYMMETRIC_CALF_IDX])
+        calf_spread = np.var(motor_qpos[SYMMETRIC_CALF_IDX] * CALF_SYMMETRY_SIGN)
         symmetry_penalty = -1.0 * (thigh_spread + calf_spread)
 
         # Standing still means staying in place, not just staying up --
         # qvel[0:2] is the free joint's world-frame x/y linear velocity.
         drift_penalty = -0.1 * float(np.dot(self.data.qvel[0:2], self.data.qvel[0:2]))
 
+        # All 4 feet should be on the ground once actually standing (user
+        # observed a trained policy reaching the target height on only 3
+        # legs). Real contact check (see _num_feet_grounded), not a
+        # height-based guess -- gated by height_progress the same way
+        # upright_reward is, since feet legitimately leave the ground
+        # while still climbing from the sitting pose and shouldn't be
+        # penalized for that mid-climb, only once close to standing.
+        grounded_reward = (self._num_feet_grounded() / 4.0) * height_progress
+
         return (
             3.0 * height_reward
             + height_bonus
             + 2.0 * upright_reward
+            + 1.5 * grounded_reward
             + symmetry_penalty
             + drift_penalty
             + self._common_penalties(action)

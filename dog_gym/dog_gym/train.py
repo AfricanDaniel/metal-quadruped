@@ -63,13 +63,15 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.0,
+            ent_coef=0.01,  # was 0.0 -- no exploration pressure beyond the policy's own action noise,
+                             # which let training settle into a "sit still and level" local optimum
             vf_coef=0.5,
             max_grad_norm=0.5,
             tensorboard_log=log_dir,
             policy_kwargs=policy_kwargs,
             verbose=1,
-            device='cpu',
+            #device='cpu',  # dev machine (small MLP policy -- GPU transfer overhead isn't worth it here)
+            device='cuda',  # VM with a real GPU -- swap the line above for this one
         )
     elif algo in ('SAC', 'A2C'):
         model = ALGOS[algo]('MlpPolicy', env, verbose=1, tensorboard_log=log_dir)
@@ -87,7 +89,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         print(f'Completed iteration {iteration}, model saved to {save_path}')
 
 
-def test(env_id, algo, path_to_model, episodes, domain_randomization=False):
+def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None):
     env = gym.make(env_id, render_mode='human', domain_randomization=domain_randomization)
 
     if algo not in ALGOS:
@@ -99,16 +101,33 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False):
     # the viewer window closes before there's anything to watch.
     dt = env.unwrapped.model.opt.timestep
 
+    csv_file = csv_writer = None
+    if log_csv:
+        import csv
+        csv_file = open(log_csv, 'w', newline='')
+        csv_writer = csv.writer(csv_file)
+        csv_writer.writerow(['episode', 'step', 'height_m', 'upright', 'feet_grounded', 'reward', 'terminated'])
+
     for episode in range(episodes):
         obs, _ = env.reset()
         terminated = truncated = False
         total_reward = 0.0
+        step = 0
         while not (terminated or truncated):
             action, _ = model.predict(obs, deterministic=True)
             obs, reward, terminated, truncated, _ = env.step(action)
             total_reward += reward
+            if csv_writer:
+                u = env.unwrapped
+                csv_writer.writerow([episode, step, u._torso_height(), u._torso_up_z(),
+                                      u._num_feet_grounded(), reward, terminated])
+            step += 1
             time.sleep(dt)
         print(f'Episode {episode}: total_reward={total_reward:.2f}')
+
+    if csv_file:
+        csv_file.close()
+        print(f'Wrote per-step log to {log_csv}')
 
     env.close()
 
@@ -138,6 +157,8 @@ def main():
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', metavar='PATH_TO_MODEL')
     parser.add_argument('--episodes', type=int, default=3)
+    parser.add_argument('--log-csv', metavar='PATH',
+                         help='--test only: write per-step height/upright/feet-grounded/reward to this CSV')
     args = parser.parse_args()
 
     if args.train:
@@ -145,7 +166,7 @@ def main():
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization)
     elif args.test:
-        test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization)
+        test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 
