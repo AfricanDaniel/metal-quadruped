@@ -10,6 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/config', ['config/imu_calibration.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'imu_node = dog_imu.imu_node:main',
+            'calibrate_imu = dog_imu.calibrate_imu_node:main',
         ],
     },
 )
