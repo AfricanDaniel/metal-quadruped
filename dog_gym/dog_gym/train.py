@@ -106,7 +106,18 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
         import csv
         csv_file = open(log_csv, 'w', newline='')
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(['episode', 'step', 'height_m', 'upright', 'feet_grounded', 'reward', 'terminated'])
+        # x_m/y_m: world-frame torso position. dog.mjcf.xml is still in
+        # the CAD's own native frame (+y=front, +x=right), NOT ROS
+        # REP-103 -- so y_m is forward progress and x_m is sideways
+        # drift, not the other way around. See dog_env.py's
+        # _compute_reward_walk comment for why this matters.
+        # feet_grounded: any calf-capsule/floor contact, knee end included.
+        # feet_tip/feet_non_tip: same contacts, split by whether they're
+        # near the actual foot site (standing on the foot) or not
+        # (standing on the knee/shin) -- see dog_env.py's
+        # _foot_tip_contact_count().
+        csv_writer.writerow(['episode', 'step', 'x_m', 'y_m', 'height_m', 'upright',
+                              'feet_grounded', 'feet_tip', 'feet_non_tip', 'reward', 'terminated'])
 
     for episode in range(episodes):
         obs, _ = env.reset()
@@ -119,8 +130,11 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
             total_reward += reward
             if csv_writer:
                 u = env.unwrapped
-                csv_writer.writerow([episode, step, u._torso_height(), u._torso_up_z(),
-                                      u._num_feet_grounded(), reward, terminated])
+                torso_xy = u.data.xpos[u.torso_body_id][0:2]
+                num_tip, num_non_tip = u._foot_tip_contact_count()
+                csv_writer.writerow([episode, step, torso_xy[0], torso_xy[1], u._torso_height(),
+                                      u._torso_up_z(), u._num_feet_grounded(), num_tip, num_non_tip,
+                                      reward, terminated])
             step += 1
             time.sleep(dt)
         print(f'Episode {episode}: total_reward={total_reward:.2f}')

@@ -120,6 +120,13 @@ NUM_MOTORS = 8
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
 MAX_SLEW_DEG_PER_S = 100.0
 
+# How close a ground contact must be to a leg's foot site to count as
+# "standing on the foot" rather than "standing on the knee/shin" -- see
+# _foot_tip_contact_count(). The calf capsule (knee->foot) is ~0.077m
+# long (2x its half-length) with a 0.017m radius, so 0.03m is close to
+# the tip specifically, not a point along the middle of the segment.
+FOOT_CONTACT_RADIUS_M = 0.03
+
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
     """Returns MJCF joint names ["leg_a_thigh", ...] indexed motor 1..8,
@@ -160,12 +167,20 @@ class DogEnv(gym.Env):
         self.default_floor_friction = self.model.geom_friction[self.floor_geom_id].copy()
 
         # Each leg's collision capsule is named "<leg>_calf" (same name as
-        # the calf joint, different MuJoCo namespace) and runs knee->foot,
-        # so ground contact on this geom is the real physical signal for
-        # "this foot is on the floor" -- used by the stand task's
-        # feet-grounded reward.
+        # the calf joint, different MuJoCo namespace) and runs knee->foot
+        # as ONE capsule (no separate foot geom) -- so a contact anywhere
+        # along it, knee-end included, counts as "grounded" by geom alone.
+        # foot_site_ids (the existing "<leg>_foot" site, already at the
+        # true foot-tip position) lets contact position be compared
+        # against the tip specifically, to tell "standing on the foot"
+        # apart from "standing on the knee/shin" -- see
+        # _foot_tip_contact_count().
         self.calf_geom_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, f'{leg}_calf')
+            for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
+        ]
+        self.foot_site_ids = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, f'{leg}_foot')
             for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
         ]
 
@@ -309,7 +324,10 @@ class DogEnv(gym.Env):
     def _num_feet_grounded(self):
         """How many of the 4 calf capsules are in actual contact with the
         floor geom right now (0-4) -- a real physical ground-contact
-        check via MuJoCo's own contact list, not a height-based guess."""
+        check via MuJoCo's own contact list, not a height-based guess.
+        Doesn't distinguish WHERE on the capsule contact happens (knee
+        end counts the same as the foot tip) -- see
+        _foot_tip_contact_count() for that."""
         grounded = set()
         for i in range(self.data.ncon):
             c = self.data.contact[i]
@@ -318,6 +336,40 @@ class DogEnv(gym.Env):
             elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
                 grounded.add(c.geom1)
         return len(grounded)
+
+    def _foot_tip_contact_count(self):
+        """(num_tip, num_non_tip): of the calf-floor contacts right now,
+        how many are within FOOT_CONTACT_RADIUS_M of that leg's actual
+        foot site (standing on the foot, as intended) vs. further away
+        along the capsule (standing on the knee/shin -- e.g. a trained
+        walk policy observed doing exactly this, since
+        _num_feet_grounded() alone can't tell the two apart)."""
+        num_tip = 0
+        num_non_tip = 0
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if c.geom1 == self.floor_geom_id and c.geom2 in self.calf_geom_ids:
+                calf_geom_id = c.geom2
+            elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
+                calf_geom_id = c.geom1
+            else:
+                continue
+            leg_idx = self.calf_geom_ids.index(calf_geom_id)
+            foot_pos = self.data.site_xpos[self.foot_site_ids[leg_idx]]
+            if np.linalg.norm(np.array(c.pos) - foot_pos) < FOOT_CONTACT_RADIUS_M:
+                num_tip += 1
+            else:
+                num_non_tip += 1
+        return num_tip, num_non_tip
+
+    def _foot_placement_terms(self):
+        """(tip_reward, non_tip_penalty) shared by both tasks: tip_reward
+        in [0, 1] is the fraction of the 4 feet grounded at the actual
+        foot tip; non_tip_penalty is <=0, scaled by how many contacts are
+        happening away from the tip instead (knee/shin dragging -- e.g.
+        a trained walk policy observed doing exactly this)."""
+        num_tip, num_non_tip = self._foot_tip_contact_count()
+        return num_tip / 4.0, -1.0 * num_non_tip
 
     def _is_fallen(self):
         if self._torso_height() < FALL_HEIGHT_M:
@@ -382,14 +434,17 @@ class DogEnv(gym.Env):
         # qvel[0:2] is the free joint's world-frame x/y linear velocity.
         drift_penalty = -0.1 * float(np.dot(self.data.qvel[0:2], self.data.qvel[0:2]))
 
-        # All 4 feet should be on the ground once actually standing (user
-        # observed a trained policy reaching the target height on only 3
-        # legs). Real contact check (see _num_feet_grounded), not a
-        # height-based guess -- gated by height_progress the same way
-        # upright_reward is, since feet legitimately leave the ground
-        # while still climbing from the sitting pose and shouldn't be
-        # penalized for that mid-climb, only once close to standing.
-        grounded_reward = (self._num_feet_grounded() / 4.0) * height_progress
+        # All 4 feet should be on the ground AT THE FOOT TIP once actually
+        # standing (user observed a trained policy reaching the target
+        # height on only 3 legs, and separately a walk policy standing on
+        # its knees instead of its feet -- _foot_placement_terms()
+        # distinguishes tip contact from knee/shin contact, unlike a raw
+        # calf-capsule contact check). Gated by height_progress the same
+        # way upright_reward is, since feet legitimately leave the ground
+        # (and can brush the knee/shin) while still climbing from the
+        # sitting pose -- only penalize/reward this once close to standing.
+        tip_reward, non_tip_penalty = self._foot_placement_terms()
+        grounded_reward = (tip_reward + non_tip_penalty) * height_progress
 
         return (
             3.0 * height_reward
@@ -402,19 +457,37 @@ class DogEnv(gym.Env):
         )
 
     def _compute_reward_walk(self, action):
-        # qvel[0] is the free joint's world-frame x-linear-velocity --
-        # privileged sim state, fine to use for reward (see module docstring).
-        forward_velocity_reward = self.data.qvel[0]
+        # dog.mjcf.xml is still in the CAD's own native frame (+y=front,
+        # +x=right -- see the model's own header comment), NOT yet
+        # remapped to ROS REP-103 (+x=forward). qvel[1] is therefore the
+        # real forward velocity here, not qvel[0] (an earlier version of
+        # this line used qvel[0] under the wrong assumption that +x was
+        # already forward -- confirmed as the cause of a policy that
+        # leaned/drifted rightward instead of walking forward after a
+        # full 22M-timestep training run, since qvel[0] literally rewards
+        # rightward motion in this frame). Revisit this line together with
+        # the frame remap if that ever gets applied.
+        forward_velocity_reward = self.data.qvel[1]
         upright_reward = self._torso_up_z()
         # Loose height regularizer (much lower weight than the stand
         # task's) -- just discourages crawling/belly-flopping, doesn't
         # demand the exact standing height while walking.
         height_reward = -abs(self._torso_height() - STAND_HEIGHT_M)
 
+        # Walk on the feet, not the knees/shins -- this task previously had
+        # NO foot-placement term at all, which is exactly why a trained
+        # policy was observed walking on its knees: nothing in the reward
+        # distinguished that from walking on its feet. Not gated by height
+        # progress (unlike the stand task's version) since the walk task
+        # is always meant to be standing/walking, never mid-climb.
+        tip_reward, non_tip_penalty = self._foot_placement_terms()
+
         return (
             2.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 0.2 * height_reward
+            + 1.5 * tip_reward
+            + non_tip_penalty
             + self._common_penalties(action)
         )
 
