@@ -1,9 +1,9 @@
-root (free)  pos=[0.01935487 0.00631673 0.27700652]  quat=[ 0.99951341  0.02135905 -0.02133615 -0.00784295]
-leg_a_thigh       -1.31513 rad   -75.352 deg
-leg_a_calf        -0.55534 rad   -31.818 deg
-leg_b_thigh        1.22514 rad    70.195 deg
-leg_b_calf        -0.91776 rad   -52.584 deg
-leg_c_thigh       -1.49771 rad   -85.813 deg
-leg_c_calf         0.58159 rad    33.323 deg
-leg_d_thigh        1.39090 rad    79.693 deg
-leg_d_calf         0.36996 rad    21.197 deg
+root (free)  pos=[-0.03794885  0.09557555  0.31316078]  quat=[ 9.99892206e-01 -1.86201325e-03  2.74074029e-04  1.45614026e-02]
+leg_a_thigh       -2.04151 rad  -116.970 deg
+leg_a_calf        -2.10573 rad  -120.650 deg
+leg_b_thigh        1.70640 rad    97.769 deg
+leg_b_calf        -1.83510 rad  -105.144 deg
+leg_c_thigh       -1.93515 rad  -110.876 deg
+leg_c_calf         1.82861 rad   104.772 deg
+leg_d_thigh        1.81735 rad   104.126 deg
+leg_d_calf         1.72700 rad    98.950 deg
