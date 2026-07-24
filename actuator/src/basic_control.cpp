@@ -22,9 +22,9 @@
 #include "actuator/srv/set_motor_targets.hpp"
 
 namespace {
-const std::string kDataDir         = std::string(ACTUATOR_PACKAGE_DIR) + "/data";
-const std::string kVelocityLogDir  = kDataDir + "/velocity";
-const std::string kPositionLogDir  = kDataDir + "/position";
+// const std::string kDataDir         = std::string(ACTUATOR_PACKAGE_DIR) + "/data";
+// const std::string kVelocityLogDir  = kDataDir + "/velocity";
+// const std::string kPositionLogDir  = kDataDir + "/position";
 const std::string kPresetPoseFile  = std::string(ACTUATOR_PACKAGE_DIR) + "/config/preset_pose.yaml";
 
 // Loads a named pose (motor_id -> target angle in degrees) from
@@ -57,22 +57,24 @@ std::optional<std::map<int32_t, float>> load_pose(const std::string& pose_name,
 }
 
 // Opens a new timestamped CSV log file for a motor under the given directory.
-std::ofstream open_motor_log(const std::string& dir, int32_t motor_id) {
-    std::filesystem::create_directories(dir);
-
-    auto now        = std::chrono::system_clock::now();
-    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-    std::tm tm_buf{};
-    localtime_r(&now_c, &tm_buf);
-
-    std::ostringstream path;
-    path << dir << "/motor_" << motor_id << "_"
-         << std::put_time(&tm_buf, "%Y%m%d_%H%M%S") << ".csv";
-
-    std::ofstream file(path.str());
-    file << "timestamp,motor_id,position,velocity,torque\n";
-    return file;
-}
+// Motor data no longer needs to be saved to disk -- commented out rather
+// than deleted in case per-motor CSV logging is wanted again later.
+// std::ofstream open_motor_log(const std::string& dir, int32_t motor_id) {
+//     std::filesystem::create_directories(dir);
+//
+//     auto now        = std::chrono::system_clock::now();
+//     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+//     std::tm tm_buf{};
+//     localtime_r(&now_c, &tm_buf);
+//
+//     std::ostringstream path;
+//     path << dir << "/motor_" << motor_id << "_"
+//          << std::put_time(&tm_buf, "%Y%m%d_%H%M%S") << ".csv";
+//
+//     std::ofstream file(path.str());
+//     file << "timestamp,motor_id,position,velocity,torque\n";
+//     return file;
+// }
 }  // namespace
 
 enum class ControlMode { NONE, VELOCITY, POSITION };
@@ -217,7 +219,7 @@ private:
         MotorState &motor = get_or_create_motor(request->motor_id);
 
         if (motor.mode != ControlMode::VELOCITY) {
-            motor.log_file = open_motor_log(kVelocityLogDir, request->motor_id);
+            // motor.log_file = open_motor_log(kVelocityLogDir, request->motor_id);
             motor.mode = ControlMode::VELOCITY;
         }
 
@@ -250,7 +252,7 @@ private:
     void command_absolute_position(MotorState &motor, int32_t motor_id, float target_deg, float speed_deg_s) {
         if (motor.mode != ControlMode::POSITION) {
             motor.mode = ControlMode::POSITION;
-            motor.log_file = open_motor_log(kPositionLogDir, motor_id);
+            // motor.log_file = open_motor_log(kPositionLogDir, motor_id);
         }
 
         // Ramp from wherever the motor actually is right now (not the old
@@ -443,14 +445,15 @@ private:
             const float output_q  = motor.data.q / gear_ratio_;
             const float output_dq = motor.data.dq / gear_ratio_;
 
-            if (motor.mode != ControlMode::NONE && motor.log_file.is_open()) {
-                auto now         = std::chrono::system_clock::now().time_since_epoch();
-                double timestamp = std::chrono::duration<double>(now).count();
-                motor.log_file << std::fixed << std::setprecision(6)
-                                << timestamp << ',' << motor_id << ','
-                                << output_q << ',' << output_dq << ','
-                                << motor.data.tau << '\n';
-            }
+            // Motor data no longer needs to be saved to disk.
+            // if (motor.mode != ControlMode::NONE && motor.log_file.is_open()) {
+            //     auto now         = std::chrono::system_clock::now().time_since_epoch();
+            //     double timestamp = std::chrono::duration<double>(now).count();
+            //     motor.log_file << std::fixed << std::setprecision(6)
+            //                     << timestamp << ',' << motor_id << ','
+            //                     << output_q << ',' << output_dq << ','
+            //                     << motor.data.tau << '\n';
+            // }
 
             // Log the state (Useful for checking if it's hitting the target velocity/position).
             // DEBUG level so it doesn't spam the terminal at 100 Hz by default.
