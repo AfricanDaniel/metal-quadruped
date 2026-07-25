@@ -6,13 +6,13 @@ not `stable_baselines3`/`gymnasium`/`mujoco` -- so training-side artifacts
 (.zip SB3 checkpoints) get converted to a plain TorchScript module here.
 
 Usage:
-    ros2 run dog_gym export_policy models/PPO_1000000_dog_policy.zip \
-        models/dog_policy.pt
+    ros2 run dog_gym export_policy models/PPO_7000000_stand_policy_v4.zip \
+        models/stand_policy_v4.pt --env-id Dog-Stand-v0
 """
 
 import argparse
 
-import dog_gym  # noqa: F401  (registers Dog-v0, needed to load the model's env)
+import dog_gym  # noqa: F401  (registers Dog-Stand-v0/Dog-Walk-v0, needed to load the model's env)
 import gymnasium as gym
 import torch
 from stable_baselines3 import PPO
@@ -35,9 +35,14 @@ class DeterministicPolicy(torch.nn.Module):
         return self.policy(observation, deterministic=True)[0]
 
 
-def export(model_path, output_path):
-    env = gym.make('Dog-v0')
-    model = PPO.load(model_path, env=env)
+def export(model_path, output_path, env_id='Dog-Stand-v0'):
+    env = gym.make(env_id)
+    # Force CPU regardless of what device the checkpoint was trained/saved
+    # on (e.g. v4 was trained with device='cuda' on the VM) -- the exported
+    # TorchScript module is meant to run on the Jetson's CPU anyway, and
+    # torch.jit.trace below needs the model and its example input on the
+    # same device, which is simplest to guarantee by just forcing CPU here.
+    model = PPO.load(model_path, env=env, device='cpu')
 
     obs_dim = env.observation_space.shape[0]
     example_obs = torch.zeros(1, obs_dim)
@@ -57,8 +62,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('model_path', help='Path to the SB3 .zip checkpoint')
     parser.add_argument('output_path', help='Where to write the TorchScript .pt file')
+    parser.add_argument('--env-id', default='Dog-Stand-v0', choices=['Dog-Stand-v0', 'Dog-Walk-v0'])
     args = parser.parse_args()
-    export(args.model_path, args.output_path)
+    export(args.model_path, args.output_path, args.env_id)
 
 
 if __name__ == '__main__':
