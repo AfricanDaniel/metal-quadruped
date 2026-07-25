@@ -107,7 +107,7 @@ public:
         this->declare_parameter("kd_gain", 0.05); // Velocity stiffness
 
         // Declare position control parameters (used by the adjust_motor_position service)
-        this->declare_parameter("position_kp", 16.0);
+        this->declare_parameter("position_kp", 32.0);
         this->declare_parameter("position_kd", 0.2);
 
         // Default speed (output-shaft degrees/sec) for position-mode moves.
