@@ -200,6 +200,94 @@ class DogEnv(gym.Env):
         self.motor_dof_adr = np.array(
             [self.model.joint(name).dofadr[0] for name in joint_names])
 
+        # Belt/pulley coupling compensation (real robot confirmed
+        # 2026-07-25): each leg's calf motor drives its lower pulley
+        # through a timing belt to an upper pulley mounted on the
+        # (non-rotating-with-the-thigh) torso/shoulder; the lower pulley
+        # itself free-spins on a bearing relative to the thigh. Net
+        # effect: rotating ONLY the thigh does not change the calf's real
+        # orientation at all -- the belt cancels the "carried along"
+        # rotation a plain serial hinge would otherwise apply. Only the
+        # calf motor's own rotation changes the calf's real (torso-
+        # relative, i.e. ABSOLUTE) angle. dog.mjcf.xml's calf joint is a
+        # plain hinge relative to the thigh body (a normal serial elbow)
+        # -- the opposite behavior. Rather than rebuild the belt/pulley
+        # physically (two more bodies + a tendon per leg, real pulley
+        # radii not measured), this compensates at the control/
+        # observation layer: action[calf]/obs[calf] represent the same
+        # ABSOLUTE angle the real motor's own encoder reports (matching
+        # actuator/dog_deploy, which read/command that motor directly and
+        # need no change at all -- the real hardware already behaves this
+        # way natively). Only the raw ctrl sent to the MJCF's
+        # thigh-relative position actuator, and the raw qpos/qvel read
+        # back from it, need converting -- see step()/_get_obs(). qpos
+        # itself (physical DOF, reward/contact/geometry code) is
+        # completely unaffected, still the same MuJoCo tree-composed
+        # hinge angle it always was.
+        #
+        # Sign, corrected 2026-07-25, and NOT uniform across legs: ctrl_calf
+        # = action_calf + calf_belt_sign*qpos_thigh. An initial
+        # from-first-principles derivation assumed a single global minus
+        # sign; user caught by eye (dog_gym.manual_motor_control) that the
+        # calf was visibly rotating the SAME way as the thigh instead of
+        # counter-rotating. Verified with a proper metric this time (the
+        # calf body's FULL 3D orientation change via the rotation-matrix
+        # angle -- comparing only one axis vector, as an earlier check did,
+        # silently missed rotation about that same axis, which is exactly
+        # what was happening): the minus sign leaves ~48deg of real drift
+        # at thigh=20deg on leg_a specifically (thigh and calf rotations
+        # ADDING instead of cancelling), while plus cuts it to ~2deg
+        # (matching ordinary PD droop under load). But testing all 4 legs
+        # the same way showed leg_a/leg_d need PLUS while leg_b/leg_c need
+        # MINUS -- flipping to a single global plus (the first fix
+        # attempted) would have fixed leg_a/leg_d while breaking leg_b/
+        # leg_c, which were already correct.
+        #
+        # calf_belt_sign is therefore computed per leg, not hardcoded,
+        # from the actual loaded geometry -- robust to the CAD
+        # regeneration this is about to go through (cylindrical-mate fix
+        # rolling out to all 4 legs) rather than a guessed per-leg-letter
+        # table that would silently go stale on the next re-export. The
+        # sign only depends on whether the knee axis, expressed in the
+        # thigh's own frame (rotate by the calf body's quat, which is
+        # relative to its thigh parent), points the same way as the hip
+        # axis (same direction -> rotations in thigh-frame ADD for a
+        # fixed calf qpos, so cancelling needs MINUS) or the opposite way
+        # (needs PLUS). Confirmed this closed form reproduces the
+        # empirically-measured per-leg signs above exactly (see
+        # daniel_cl_context.md's "flip the sign" section for the
+        # verification script).
+        self.calf_idx = np.array(
+            [i for i, n in enumerate(joint_names) if n.endswith('_calf')])
+        self.calf_thigh_idx = np.array([
+            joint_names.index(joint_names[i][:-len('_calf')] + '_thigh')
+            for i in self.calf_idx
+        ])
+        self.calf_thigh_qpos_adr = self.motor_qpos_adr[self.calf_thigh_idx]
+        self.calf_thigh_dof_adr = self.motor_dof_adr[self.calf_thigh_idx]
+
+        calf_belt_sign = []
+        for i in self.calf_idx:
+            calf_joint_id = self.model.joint(joint_names[i]).id
+            hip_joint_id = self.model.joint(joint_names[joint_names.index(
+                joint_names[i][:-len('_calf')] + '_thigh')]).id
+            calf_body_id = self.model.jnt_bodyid[calf_joint_id]
+            knee_axis_in_thigh_frame = np.zeros(3)
+            mujoco.mju_rotVecQuat(
+                knee_axis_in_thigh_frame, self.model.jnt_axis[calf_joint_id],
+                self.model.body_quat[calf_body_id])
+            same_direction = np.dot(knee_axis_in_thigh_frame, self.model.jnt_axis[hip_joint_id]) > 0
+            calf_belt_sign.append(-1.0 if same_direction else 1.0)
+        self.calf_belt_sign = np.array(calf_belt_sign)
+
+        # NOTE: for calf motors, this is the raw MJCF actuator's
+        # thigh-relative ctrlrange, used as-is for the ABSOLUTE action
+        # space too (see calf_idx's comment above) -- an approximation,
+        # since the true reachable absolute range shifts with the
+        # paired thigh's current angle. Not a safety gap: the joint's own
+        # <joint range>/limited="true"> in dog.mjcf.xml is the real hard
+        # clamp MuJoCo enforces regardless of what ctrl requests, this
+        # box is only PPO's action-distribution bound.
         ctrlrange = self.model.actuator_ctrlrange.copy()
         self.action_space = spaces.Box(
             low=ctrlrange[:, 0].astype(np.float32),
@@ -236,7 +324,13 @@ class DogEnv(gym.Env):
             # the very first step() think the last commanded target was 0
             # and yank every leg toward 0 (rate-limited, so a slow fake
             # "collapse" rather than an instant snap, but still wrong).
-            self.prev_action = qpos_rad.astype(np.float32)
+            # prev_action lives in the policy's ABSOLUTE action space (see
+            # calf_idx's comment in __init__), so the calf entries of this
+            # raw (thigh-relative) qpos snapshot need the same
+            # qpos[calf]-qpos[paired thigh] conversion _get_obs() uses.
+            prev_action = qpos_rad.copy()
+            prev_action[self.calf_idx] -= self.calf_belt_sign * qpos_rad[self.calf_thigh_idx]
+            self.prev_action = prev_action.astype(np.float32)
             # The free joint's own z (qpos[2]) still defaults to the
             # model's qpos=0 spawn height (0.287m, chosen to clear the
             # floor at the CAD-captured/sitting leg pose) -- leaving it
@@ -283,7 +377,15 @@ class DogEnv(gym.Env):
         # training under the same limit avoids that train/deploy mismatch.
         max_delta_rad = np.radians(MAX_SLEW_DEG_PER_S) * self.model.opt.timestep
         action = np.clip(action, self.prev_action - max_delta_rad, self.prev_action + max_delta_rad)
-        self.data.ctrl[:] = action
+
+        # Belt/pulley compensation (see calf_idx's comment in __init__,
+        # including the sign note): action[calf] is an ABSOLUTE angle;
+        # dog.mjcf.xml's calf actuator servos a thigh-RELATIVE hinge, so
+        # ADD the thigh's current angle before writing ctrl. Thigh entries
+        # (and any non-calf motor) pass through unchanged.
+        ctrl = action.copy()
+        ctrl[self.calf_idx] = action[self.calf_idx] + self.calf_belt_sign * self.data.qpos[self.calf_thigh_qpos_adr]
+        self.data.ctrl[:] = ctrl
 
         if self.render_mode == 'human':
             self._ensure_viewer()
@@ -310,8 +412,16 @@ class DogEnv(gym.Env):
         return obs, reward, terminated, truncated, {}
 
     def _get_obs(self):
-        motor_qpos = self.data.qpos[self.motor_qpos_adr]
-        motor_qvel = self.data.qvel[self.motor_dof_adr]
+        # Belt/pulley compensation (see calf_idx's comment in __init__):
+        # convert the calf hinge's raw, thigh-relative qpos/qvel into the
+        # ABSOLUTE angle/rate the real motor's own encoder would report,
+        # so the policy's observation matches actuator/dog_deploy's
+        # read_motor_positions on real hardware with no further change
+        # needed there.
+        motor_qpos = self.data.qpos[self.motor_qpos_adr].copy()
+        motor_qvel = self.data.qvel[self.motor_dof_adr].copy()
+        motor_qpos[self.calf_idx] -= self.calf_belt_sign * self.data.qpos[self.calf_thigh_qpos_adr]
+        motor_qvel[self.calf_idx] -= self.calf_belt_sign * self.data.qvel[self.calf_thigh_dof_adr]
         return np.concatenate([
             motor_qpos,
             motor_qvel,
@@ -415,6 +525,29 @@ class DogEnv(gym.Env):
             else:
                 num_non_tip += 1
         return num_tip, num_non_tip
+
+    def _foot_contact_state_per_leg(self):
+        """['air'|'tip'|'nontip'] x4, in (leg_a, leg_b, leg_c, leg_d)
+        order -- per-leg breakdown of _foot_tip_contact_count(), for
+        diagnosing asymmetric issues (e.g. "front legs dragging, back
+        legs fine") that the aggregate counts alone can't show. If a leg
+        somehow registers more than one contact this step, the LAST one
+        found wins -- rare (a capsule vs. a plane is usually one contact
+        point) and only matters for this diagnostic, not for reward."""
+        state = ['air'] * len(self.calf_geom_ids)
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if c.geom1 == self.floor_geom_id and c.geom2 in self.calf_geom_ids:
+                calf_geom_id = c.geom2
+            elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
+                calf_geom_id = c.geom1
+            else:
+                continue
+            leg_idx = self.calf_geom_ids.index(calf_geom_id)
+            foot_pos = self.data.site_xpos[self.foot_site_ids[leg_idx]]
+            is_tip = np.linalg.norm(np.array(c.pos) - foot_pos) < FOOT_CONTACT_RADIUS_M
+            state[leg_idx] = 'tip' if is_tip else 'nontip'
+        return state
 
     def _foot_placement_terms(self):
         """(tip_reward, non_tip_penalty) shared by both tasks: tip_reward
