@@ -127,6 +127,13 @@ MAX_SLEW_DEG_PER_S = 100.0
 # the tip specifically, not a point along the middle of the segment.
 FOOT_CONTACT_RADIUS_M = 0.03
 
+# Target foot height (world z, meters) during swing phase for
+# _foot_clearance_reward() -- borrowed from the standard "foot clearance"
+# reward pattern in quadruped locomotion RL. Placeholder, not derived from
+# a real measured gait -- a few cm is enough to clear the ground without
+# demanding an unnaturally high step.
+FOOT_CLEARANCE_TARGET_M = 0.03
+
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
     """Returns MJCF joint names ["leg_a_thigh", ...] indexed motor 1..8,
@@ -337,6 +344,53 @@ class DogEnv(gym.Env):
                 grounded.add(c.geom1)
         return len(grounded)
 
+    def _foot_contact_per_leg(self):
+        """[bool x4] (leg_a, leg_b, leg_c, leg_d order, matching
+        calf_geom_ids/foot_site_ids): True if that leg has ANY floor
+        contact right now (tip or knee/shin), False if fully airborne
+        (mid-swing). Used by _foot_clearance_reward() to know which legs
+        should be judged on swing height vs. which are legitimately
+        planted."""
+        contacted = [False] * len(self.calf_geom_ids)
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if c.geom1 == self.floor_geom_id and c.geom2 in self.calf_geom_ids:
+                contacted[self.calf_geom_ids.index(c.geom2)] = True
+            elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
+                contacted[self.calf_geom_ids.index(c.geom1)] = True
+        return contacted
+
+    def _foot_clearance_reward(self):
+        """Rewards a SWINGING (non-contacting) foot for actually being
+        elevated, not dragged along the ground -- adapted from the
+        standard feet_air_time/foot_clearance pattern used in quadruped
+        locomotion RL (e.g. legged_gym/ANYmal-style reward suites).
+
+        Why this is needed on top of _foot_placement_terms(): that reward
+        only judges WHERE contact happens when it happens (tip vs.
+        knee/shin) -- it says nothing about whether the leg ever lifts at
+        all. A policy that drags the true foot tip along the ground
+        continuously, never swinging, would score perfectly on tip-
+        contact while still never producing a real walking gait -- which
+        can look a lot like "walking on its knees" even with tip contact
+        technically satisfied. This term specifically rewards legs that
+        ARE mid-swing for being off the ground, closing that gap.
+
+        Returns a value in [0, 1]: 1.0 means every currently-swinging leg
+        is at or above FOOT_CLEARANCE_TARGET_M; legs currently in contact
+        don't count either way (this isn't a "lift all feet" reward, only
+        a "when swinging, actually swing" one)."""
+        contacted = self._foot_contact_per_leg()
+        swinging = [not c for c in contacted]
+        if not any(swinging):
+            return 1.0  # no leg is swinging right now (e.g. standing still) -- nothing to penalize
+        total = 0.0
+        for i, site_id in enumerate(self.foot_site_ids):
+            if swinging[i]:
+                foot_z = self.data.site_xpos[site_id][2]
+                total += min(max(foot_z, 0.0) / FOOT_CLEARANCE_TARGET_M, 1.0)
+        return total / sum(swinging)
+
     def _foot_tip_contact_count(self):
         """(num_tip, num_non_tip): of the calf-floor contacts right now,
         how many are within FOOT_CONTACT_RADIUS_M of that leg's actual
@@ -482,12 +536,27 @@ class DogEnv(gym.Env):
         # is always meant to be standing/walking, never mid-climb.
         tip_reward, non_tip_penalty = self._foot_placement_terms()
 
+        # This alone wasn't enough -- a later, much-longer-trained walk
+        # policy (43M timesteps) converged back to knee-walking despite
+        # the above, because tip_reward only judges WHERE contact happens
+        # when it happens, not whether a leg ever lifts at all. A policy
+        # that drags the true foot tip along the ground continuously,
+        # never swinging, satisfies tip_reward perfectly while still never
+        # producing a real gait. _foot_clearance_reward() closes that gap
+        # by rewarding swinging (non-contacting) legs for actually being
+        # elevated -- adapted from the standard feet_air_time/
+        # foot_clearance pattern in quadruped locomotion RL (a labmate's
+        # Go2/Genesis implementation, friend_code/go2_env_walk.py, uses
+        # the same idea).
+        foot_clearance_reward = self._foot_clearance_reward()
+
         return (
             2.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 0.2 * height_reward
             + 1.5 * tip_reward
             + non_tip_penalty
+            + 0.75 * foot_clearance_reward
             + self._common_penalties(action)
         )
 
