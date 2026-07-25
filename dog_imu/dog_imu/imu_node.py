@@ -50,7 +50,7 @@ class ImuNode(Node):
         self.declare_parameter('bus_id', 7)
         self.declare_parameter('i2c_addr', 0x6A)
         self.declare_parameter('frame_id', 'imu_link')
-        self.declare_parameter('publish_rate_hz', 1.0)
+        self.declare_parameter('publish_rate_hz', 100.0)
         self.declare_parameter('calibration_path', str(
             Path(get_package_share_directory('dog_imu')) / 'config' / 'imu_calibration.yaml'))
 

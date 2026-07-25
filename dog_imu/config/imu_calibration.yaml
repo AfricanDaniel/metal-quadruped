@@ -13,7 +13,21 @@
 #
 # calibrated: false means no calibration has been run yet -- imu_node.py
 # will only publish the raw /imu/data_raw topic until this is populated.
-calibrated: false
+#
+# Populated 2026-07-24 from a real physical tilt test on the actual robot
+# (nose down/nose up/tilt left/tilt right, via `ros2 topic echo
+# imu/data_raw` -- done before the calibrate_imu node existed, so entered
+# here directly instead of re-running the guided procedure). Cross-checked
+# two ways: (1) by hand, comparing which raw axis swung hardest for each
+# tilt pair; (2) by replaying the same captured numbers through
+# calibrate_imu_node.py's actual _compute_calibration() logic on the dev
+# machine, which reproduced this exact mapping. For this mounting, the raw
+# axes happen to already match forward/left/up with no permutation or sign
+# flips needed. Re-run `ros2 run dog_imu calibrate_imu` for real (not just
+# re-enter numbers) if the IMU is ever unplugged/remounted -- this mapping
+# is a physical-mounting fact, not something that can be assumed to still
+# hold afterward.
+calibrated: true
 axes:
   forward: {source: 0, sign: 1}
   left: {source: 1, sign: 1}
