@@ -22,6 +22,8 @@ setup(
         'console_scripts': [
             'train = dog_gym.train:main',
             'export_policy = dog_gym.export_policy:main',
+            'verify_belt_decoupling = dog_gym.verify_belt_decoupling:main',
+            'manual_motor_control = dog_gym.manual_motor_control:main',
         ],
     },
 )

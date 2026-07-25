@@ -75,24 +75,73 @@ ACTUATOR_ORDER = [
 # mapping is ACTUATOR_ORDER above (motor 1 = leg_a_thigh, motor 2 =
 # leg_a_calf, etc.).
 #
-# Current values (set 2026-07-23, user request: "motor N needs more
-# negative/positive range" after bench-testing): each motor's requested
-# side was pushed out to 180deg, the largest value confirmed fully
-# self-collision-free for this design (bisection search, 300-sample
-# random-pose sweeps of the other 7 joints at each candidate value, see
-# converter_context.md) -- i.e. "as much extra range as we're willing to
-# allow", not "as much as geometry allows" (geometry allows more, capped
-# deliberately at 180deg). The other side of each of these 8 stays at the
-# default 150deg. Still placeholders, not real hardware hard-stops.
+# Superseded 2026-07-25 by REAL hardware-measured ranges (see below) --
+# history of the prior self-collision-derived placeholders (set
+# 2026-07-23, widened 2026-07-25 for the belt-decoupling compensation) is
+# kept in git history / daniel_cl_context.md, not repeated here.
+#
+# REAL measurement (2026-07-25): robot hung in the air, each of the 8
+# motors individually driven to both mechanical hard-stops via
+# /adjust_motor_position + read back via /read_motor_positions (raw
+# absolute readings, see daniel_cl_context.md's "real hardware max-range
+# measurement" section). IMPORTANT, caught by the user on the first pass:
+# /set_home has no fixed physical meaning -- it just captures whatever
+# pose the robot happens to be in when called, and go_to_pose/
+# preset_pose.yaml store everything relative to THAT. The first version
+# of this measurement used /set_home in a "legs fully extended" pose,
+# but sim's qpos=0 (and every real preset_pose.yaml value) has always
+# been referenced to a TUCKED/folded home instead -- so that first pass
+# silently mixed two different physical zero points. Corrected by
+# re-deriving home_deg from a fresh /set_home call in the tucked pose
+# (user confirmed this matches what sim starts in) and recomputing the
+# SAME raw extreme readings relative to that -- the readings themselves
+# didn't need retaking, only which pose "home" itself refers to.
+#
+# Real motor sign vs sim joint sign is NOT uniform (this project's
+# long-running sign saga -- see daniel_cl_context.md), and IS reliable
+# for THIGHS specifically: determined by comparing the SIGN of real bench
+# presets (actuator/config/preset_pose.yaml's `standing`, real hardware,
+# referenced to the tucked home) against dog_gym's own STANDING_QPOS_DEG
+# (sim) for the same motor -- all 4 thighs came out consistently OPPOSITE
+# sign, a reliable comparison since thigh's raw qpos IS its own real/sim
+# angle (no compensation applied to thigh itself).
+#
+# THIGH values below are that real measured extreme (relative to the
+# tucked home), sign-corrected, with a 5% margin pulled in from each side
+# (user's explicit choice, so a trained policy never has to command the
+# literal mechanical hard-stop).
+#
+# CALF values below are DELIBERATELY NOT real-hardware-derived, and this
+# is a correction of a real mistake (2026-07-25, caught by the user:
+# "ranges for the calfs are messed up/some signs are flipped"). What
+# broke: this dict sets the RAW MJCF joint's <joint range> -- the
+# thigh-relative hinge, which since the belt-decoupling fix
+# (dog_gym/envs/dog_env.py) is ONLY headroom for the compensation math
+# (ctrl_calf = action_calf + calf_belt_sign*qpos_thigh), not a real
+# physical limit on anything. The real absolute calf motor limit belongs
+# on the RL action space instead (not yet implemented -- separate,
+# deferred task, needs its own careful design + a reliable real-vs-sim
+# sign check, since the only comparable real/sim ABSOLUTE-calf reference
+# available so far -- preset_pose.yaml's `standing` vs dog_env.py's
+# STANDING_QPOS_DEG converted through calf_belt_sign -- comes out only a
+# few degrees either side of zero for every leg, too small a signal to
+# trust for sign). Setting calf's <joint range> to that real absolute
+# limit directly (the actual 2026-07-25 mistake) starved the compensation
+# of headroom and broke it again, the same failure mode as the very first
+# belt-decoupling bug. Reverted to a wide, self-collision-VERIFIED-safe
+# +-360deg for all 4 calves (300/300 samples each, alongside the real
+# thigh ranges below -- script not committed, rerun the same methodology
+# if this needs changing) until the real absolute-calf-limit/action-space
+# work above is actually done properly.
 JOINT_RANGE_OVERRIDES_DEG = {
-    'leg_a_thigh': (-360, 10),
-    'leg_a_calf':  (-360, 10),
-    'leg_b_calf':  (-360, 10),
-    'leg_b_thigh': (-10, 360),
-    'leg_c_thigh': (-360, 10),
-    'leg_c_calf':  (-10, 360),
-    'leg_d_calf':  (-10, 360),
-    'leg_d_thigh': (-10, 360),
+    'leg_a_thigh': (-230.6, 11.6),
+    'leg_a_calf':  (-360, 360),
+    'leg_b_calf':  (-360, 360),
+    'leg_b_thigh': (-11.0, 231.8),
+    'leg_c_thigh': (-235.6, 7.6),
+    'leg_c_calf':  (-360, 360),
+    'leg_d_calf':  (-360, 360),
+    'leg_d_thigh': (-6.8, 234.0),
 }
 
 # Two of the URDF's Onshape-native split mesh names both represent one
@@ -115,6 +164,10 @@ def parse_args():
     p.add_argument('--mass-torso', type=float, default=4.72603)
     p.add_argument('--mass-thigh', type=float, default=0.22746)
     p.add_argument('--mass-calf', type=float, default=0.18357)
+    p.add_argument('--kp', type=float, default=60.0,
+                    help='<position> actuator kp, all 8 motors (see actuator_lines\' comment)')
+    p.add_argument('--kv', type=float, default=4.0,
+                    help='<position> actuator kv, all 8 motors')
     p.add_argument('--print-masses', action='store_true',
                     help='print every body mass in --robot-xml-dir/robot.xml and exit')
     return p.parse_args()
@@ -196,29 +249,38 @@ def load_urdf(urdf_path):
 def detect_legs(joints_by_child, children_of):
     """Auto-detect the 4 hip/knee joint pairs and the torso's static
     (fixed-joint-only) link group, by graph traversal -- no hand
-    enumeration. Relies on this design's Onshape part-naming convention:
-    hip joints go part_a_1__body1* -> thigh_connecor_full*, knee joints
-    are any continuous joint whose child starts with
-    timing_belt_pulley_lower* (NOT timing_belt_pulley_lower_shaft*, which
-    is always fixed-jointed -- see converter_context.md). The knee
-    joint's *parent* link name is intentionally not constrained: which
-    part (thigh_connecor_full vs thigh_connector_hollow) ends up as the
-    directly-fused parent varies per leg depending on how Onshape's
-    mate-fusion groups that leg's rigid parts, confirmed to differ across
-    legs in the same export (robot_half_dog_4). If a future CAD re-export
-    renames these parts, update the .startswith() prefixes below to
-    match -- everything downstream (grouping, kinematics, inertia) stays
-    automatic."""
+    enumeration. Relies on this design's Onshape part-naming convention
+    for the hip only: hip joints go part_a_1__body1* -> thigh_connecor_full*.
+    The knee joint is found *structurally*, not by name: it's the one
+    continuous joint, rooted in the hip's own thigh link group, whose own
+    fixed/prismatic-reachable subtree contains a ball_for_feet* link.
+    This used to also be name-matched (any continuous joint whose child
+    starts with timing_belt_pulley_lower*), but a CAD re-export that adds
+    a cylindrical mate (decomposed by onshape-to-robot into a prismatic +
+    continuous joint pair) can introduce a *second*, unrelated continuous
+    joint in the same region representing a loop-closure constraint --
+    URDF can't express closed kinematic loops directly, so
+    onshape-to-robot fakes it with an extra joint + a massless,
+    mesh-less placeholder link (name containing "loop_closure", mass
+    ~1e-9, nothing downstream of it). Matching by "reaches an actual
+    foot" instead of by child name correctly ignores that placeholder
+    regardless of what it's named -- see converter_context.md.
+
+    The knee joint's *parent* link name is intentionally not constrained
+    (beyond "somewhere in the hip's thigh group"): which part
+    (thigh_connecor_full vs thigh_connector_hollow vs a new
+    cylindrical-mate intermediate link) ends up as the directly-fused
+    parent varies per leg/per export depending on how Onshape's
+    mate-fusion groups that leg's rigid parts. If a future CAD re-export
+    renames the hip's own parts, update the .startswith() prefixes below
+    to match -- everything downstream (grouping, kinematics, inertia)
+    stays automatic."""
     hip_joints = [j for j in joints_by_child.values()
                   if j['type'] == 'continuous' and j['parent'].startswith('part_a_1__body1')
                   and j['child'].startswith('thigh_connecor_full')]
-    knee_joints = [j for j in joints_by_child.values()
-                   if j['type'] == 'continuous'
-                   and j['child'].startswith('timing_belt_pulley_lower')
-                   and not j['child'].startswith('timing_belt_pulley_lower_shaft')]
-    if len(hip_joints) != 4 or len(knee_joints) != 4:
+    if len(hip_joints) != 4:
         raise AssertionError(
-            f'expected 4 hip + 4 knee joints, found {len(hip_joints)} + {len(knee_joints)} -- '
+            f'expected 4 hip joints, found {len(hip_joints)} -- '
             'CAD part naming may have changed, see detect_legs() docstring')
 
     def bfs_fixed(start_link, stop_links):
@@ -241,14 +303,26 @@ def detect_legs(joints_by_child, children_of):
         return out
 
     hip_children = {j['child'] for j in hip_joints}
-    knee_children = {j['child'] for j in knee_joints}
 
     legs = []
     for hip in hip_joints:
-        thigh_links = bfs_fixed(hip['child'], knee_children)
-        knee = next(k for k in knee_joints if k['parent'] in thigh_links)
-        calf_links = bfs_fixed(knee['child'], hip_children | knee_children)
-        legs.append(dict(hip=hip, knee=knee, thigh_links=thigh_links, calf_links=calf_links))
+        thigh_links = bfs_fixed(hip['child'], set())
+        knee_candidates = [
+            j for j in joints_by_child.values()
+            if j['type'] == 'continuous' and j['parent'] in thigh_links
+            and any(link.startswith('ball_for_feet') for link in bfs_fixed(j['child'], set()))
+        ]
+        if len(knee_candidates) != 1:
+            raise AssertionError(
+                f"leg with hip={hip['name']}: expected exactly 1 knee joint whose subtree "
+                f"reaches a ball_for_feet* link, found {len(knee_candidates)} "
+                f"({[k['name'] for k in knee_candidates]}) -- CAD topology may have changed, "
+                "see detect_legs() docstring")
+        legs.append(dict(hip=hip, knee=knee_candidates[0], thigh_links=thigh_links))
+
+    knee_children = {leg['knee']['child'] for leg in legs}
+    for leg in legs:
+        leg['calf_links'] = bfs_fixed(leg['knee']['child'], hip_children | knee_children)
 
     torso_links = bfs_fixed('torso', hip_children)
     return legs, torso_links
@@ -475,8 +549,22 @@ def main():
     # radians here even though <joint range> above is left in plain
     # degrees. Getting this wrong silently breaks control clamping instead
     # of erroring, so this is worth getting right.
+    # kp/kv raised from the original 15/1 placeholder to 60/4 (2026-07-25):
+    # with 15/1, a leg fully extended against gravity (e.g. the
+    # dog_gym.manual_motor_control upside-down diagnostic) settled ~40%
+    # short of its own commanded target (thigh commanded -30deg, settled
+    # at -18deg) -- a real steady-state PD droop under load, not specific
+    # to any one joint. This directly undermined the belt/pulley calf
+    # decoupling compensation too: since that compensation reacts to the
+    # THIGH's actual (drooped) position, a drooping calf on top of a
+    # drooping thigh compounded into a visibly large residual that looked
+    # like a compensation bug but wasn't one (confirmed: the calf's raw
+    # hinge was still counter-rotating in the correct direction the whole
+    # time, just not by enough). Still placeholder values, not derived
+    # from the real motor firmware's kp/kd -- see --kp/--kv.
     actuator_lines = '\n'.join(
-        f'    <position joint="{j}" name="{n}" kp="15" kv="1" ctrlrange="{np.radians(lo):.6g} {np.radians(hi):.6g}"/>'
+        f'    <position joint="{j}" name="{n}" kp="{args.kp:.6g}" kv="{args.kv:.6g}" '
+        f'ctrlrange="{np.radians(lo):.6g} {np.radians(hi):.6g}"/>'
         for j, n in ACTUATOR_ORDER
         for lo, hi in [joint_range_deg(j, args.joint_range)]
     )
@@ -533,16 +621,18 @@ def main():
     real hip-pivot (x,y) sign in the CAD frame.
 
     Collision geometry stays simple capsules (not the visual meshes) for
-    RL training speed. Joint limits are a placeholder, still not real
-    hardware hard-stops: +-{args.joint_range:.0f}deg on both sides by default, except 8
-    motors with an explicit override (see JOINT_RANGE_OVERRIDES_DEG in the
-    generator script -- edit that dict directly to change any motor's
-    limits) where the user requested more range in one direction after
-    bench-testing -- those go out to 180deg on the requested side only,
-    the largest value confirmed self-collision-free for this design
-    (every one of those 8 had zero self-collisions anywhere up to that
-    cap, so 180deg was a deliberately chosen stopping point, not a
-    geometry limit).
+    RL training speed. Joint limits: +-{args.joint_range:.0f}deg on both sides by default for
+    any joint not listed in JOINT_RANGE_OVERRIDES_DEG (generator script --
+    edit that dict directly to change limits). All 8 motors currently
+    have an override, and as of 2026-07-25 those are REAL hardware
+    mechanical hard-stops (bench-measured by hanging the robot and
+    driving each motor to both physical limits, sign-corrected into
+    sim's convention, 5% margin pulled in from each side) -- not
+    self-collision placeholders anymore. See JOINT_RANGE_OVERRIDES_DEG's
+    own comment for the measurement/sign-correction methodology, and
+    daniel_cl_context.md for the raw bench data. Still confirmed
+    self-collision-free at these exact values (300-sample random-pose
+    sweep of the other 7 joints).
 
     NOTE: <compiler angle="degree"> below means <joint range> values in
     this file are DEGREES (MuJoCo auto-converts them at compile time).
@@ -554,8 +644,11 @@ def main():
     <joint range> and <position ctrlrange> for the same joint are in
     different units.
 
-    PD gains (kp=15 kv=1) are placeholder, not derived from the real
-    motor's firmware kp/kd.
+    PD gains (kp={args.kp:.6g} kv={args.kv:.6g}) are still placeholder, not derived from the
+    real motor's firmware kp/kd -- raised from an original 15/1 (2026-07-25)
+    after 15/1 was found to droop ~40% short of a commanded target for a
+    fully-extended, gravity-loaded leg (see --kp/--kv in the generator
+    script).
   -->
   <compiler angle="degree" coordinate="local" inertiafromgeom="false" meshdir="{meshdir_rel}"/>
   <default>

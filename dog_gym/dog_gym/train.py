@@ -115,9 +115,14 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
         # feet_tip/feet_non_tip: same contacts, split by whether they're
         # near the actual foot site (standing on the foot) or not
         # (standing on the knee/shin) -- see dog_env.py's
-        # _foot_tip_contact_count().
+        # _foot_tip_contact_count(). leg_a/b/c/d_contact: per-leg
+        # breakdown of the same thing ('air'/'tip'/'nontip') -- for
+        # spotting asymmetric issues (e.g. "front legs dragging, back
+        # legs fine") the aggregate counts alone can't show.
         csv_writer.writerow(['episode', 'step', 'x_m', 'y_m', 'height_m', 'upright',
-                              'feet_grounded', 'feet_tip', 'feet_non_tip', 'reward', 'terminated'])
+                              'feet_grounded', 'feet_tip', 'feet_non_tip',
+                              'leg_a_contact', 'leg_b_contact', 'leg_c_contact', 'leg_d_contact',
+                              'reward', 'terminated'])
 
     for episode in range(episodes):
         obs, _ = env.reset()
@@ -132,9 +137,10 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
                 u = env.unwrapped
                 torso_xy = u.data.xpos[u.torso_body_id][0:2]
                 num_tip, num_non_tip = u._foot_tip_contact_count()
+                per_leg = u._foot_contact_state_per_leg()
                 csv_writer.writerow([episode, step, torso_xy[0], torso_xy[1], u._torso_height(),
                                       u._torso_up_z(), u._num_feet_grounded(), num_tip, num_non_tip,
-                                      reward, terminated])
+                                      *per_leg, reward, terminated])
             step += 1
             time.sleep(dt)
         print(f'Episode {episode}: total_reward={total_reward:.2f}')
