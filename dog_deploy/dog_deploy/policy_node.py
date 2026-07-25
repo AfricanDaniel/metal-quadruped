@@ -15,6 +15,17 @@ may move in one control tick, and `dry_run_hold_pose` bypasses the policy
 entirely (each tick just re-commands each motor's current position) so the
 whole read -> observe -> command loop can be exercised safely before ever
 loading a trained policy.
+
+IMU frame: subscribes to dog_imu's CALIBRATED `imu/data` (forward/left/up,
+ROS REP-103 -- see dog_imu/calibrate_imu_node.py), not the raw
+`imu/data_raw`. But the sim the policy was trained in (dog_description/
+mjcf/dog.mjcf.xml) is still in the CAD's own native frame (right=x,
+front=y, up=z -- the ROS remap is a separate, still-outstanding TODO on
+that file) -- so _ros_to_cad() below applies one more fixed, already-known
+rotation (not something recalibration ever needs to redo) to match what
+the policy actually saw during training. Remove this conversion (and just
+use imu/data directly) if dog.mjcf.xml ever gets the full ROS remap and
+policies get retrained against it.
 """
 
 import os
@@ -36,6 +47,15 @@ DEG_TO_RAD = 0.017453292519943295
 RAD_TO_DEG = 57.29577951308232
 
 
+def ros_to_cad(x, y, z):
+    """(forward, left, up) [ROS REP-103, what imu/data publishes] ->
+    (right, front, up) [CAD-native, what dog.mjcf.xml/the policy actually
+    uses] -- see this module's docstring. Derived directly from the known
+    CAD<->ROS relationship (x_ros=y_cad, y_ros=-x_cad, z_ros=z_cad),
+    algebraically inverted -- not something a recalibration changes."""
+    return -y, x, z
+
+
 def load_motor_signs(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
     """Returns [sign_motor_1, ..., sign_motor_8] from motor_mapping.yaml."""
     with open(motor_mapping_path) as f:
@@ -53,6 +73,11 @@ class PolicyNode(Node):
         self.declare_parameter('max_delta_deg_per_step', 5.0)
         self.declare_parameter('imu_timeout_sec', 0.5)
         self.declare_parameter('dry_run_hold_pose', True)
+        # Overridable so a corrected/test copy of motor_mapping.yaml can be
+        # used for a specific run (e.g. while a known sign issue in the
+        # shared file is still being investigated) without touching the
+        # shared file itself, which dog_gym and everything else depends on.
+        self.declare_parameter('motor_mapping_path', str(DEFAULT_MOTOR_MAPPING_PATH))
 
         self.control_rate_hz = self.get_parameter('control_rate_hz').value
         self.max_delta_rad = (
@@ -60,7 +85,9 @@ class PolicyNode(Node):
         self.imu_timeout_sec = self.get_parameter('imu_timeout_sec').value
         self.dry_run_hold_pose = self.get_parameter('dry_run_hold_pose').value
 
-        self.motor_sign = load_motor_signs()
+        motor_mapping_path = self.get_parameter('motor_mapping_path').value
+        self.get_logger().info(f'Loading motor signs from {motor_mapping_path}')
+        self.motor_sign = load_motor_signs(motor_mapping_path)
 
         self.policy = None
         if not self.dry_run_hold_pose:
@@ -82,7 +109,7 @@ class PolicyNode(Node):
         self.latest_imu = None
         self.busy = False
 
-        self.imu_sub = self.create_subscription(Imu, 'imu/data_raw', self._on_imu, 10)
+        self.imu_sub = self.create_subscription(Imu, 'imu/data', self._on_imu, 10)
         self.read_client = self.create_client(ReadMotorPositions, 'read_motor_positions')
         self.set_targets_client = self.create_client(SetMotorTargets, 'set_motor_targets')
 
@@ -144,11 +171,15 @@ class PolicyNode(Node):
         ]
 
         imu = self.latest_imu
+        accel_cad = ros_to_cad(imu.linear_acceleration.x, imu.linear_acceleration.y,
+                                imu.linear_acceleration.z)
+        gyro_cad = ros_to_cad(imu.angular_velocity.x, imu.angular_velocity.y,
+                               imu.angular_velocity.z)
         obs = (
             motor_qpos_rad
             + motor_qvel_rad_s
-            + [imu.linear_acceleration.x, imu.linear_acceleration.y, imu.linear_acceleration.z]
-            + [imu.angular_velocity.x, imu.angular_velocity.y, imu.angular_velocity.z]
+            + list(accel_cad)
+            + list(gyro_cad)
             + self.prev_action
         )
 

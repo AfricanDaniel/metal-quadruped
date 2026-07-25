@@ -26,3 +26,22 @@ poses:
     6: 4.68
     7: -1.14
     8: -107.25
+  # Derived 2026-07-24 from a real bench range-of-motion sweep: for each
+  # motor, moved to its "toward face" hard-stop max and "away from face"
+  # hard-stop max (relative to home), then took the midpoint of those two
+  # real extremes. Thighs (1,4,5,8) came out almost identical to the
+  # `standing` preset above, confirming that one was already tuned
+  # correctly. Calves (2,3,6,7) came out much larger (~+-97-99deg) than
+  # `standing`'s (~+-0.5-6deg) -- `standing`'s calf values only barely
+  # nudge off home, not a real standing extension. Untested on the robot
+  # yet -- keeping `standing` unchanged alongside this so both can be
+  # compared directly.
+  standing_max:
+    1: 109.16
+    2: 96.22
+    3: -99.28
+    4: -109.28
+    5: 114.03
+    6: 97.34
+    7: -97.55
+    8: -113.70
