@@ -195,7 +195,7 @@
       <geom class="visual" pos="0.134725 -0.193873 -0.0941402" quat="1.65916e-06 0.707105 -9.38193e-07 0.707108" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
 
       <body name="leg_a_thigh" pos="0.158449 0.194873 -0.0941403" quat="0.500002 0.499996 -0.499999 -0.500002">
-        <joint axis="0 0 -1" name="leg_a_thigh" pos="0 0 0" range="-230.6 11.6" type="hinge"/>
+        <joint axis="0 0 -1" name="leg_a_thigh" pos="0 0 0" range="-11.6 230.6" type="hinge"/>
         <inertial pos="-0.049315 0.0041836 0.02175" mass="0.22746" diaginertia="0.00033244 0.00096869 0.0012294"/>
         <geom name="leg_a_thigh" fromto="0 0 0  -0.12588 0.039193 0.04" size="0.02" type="capsule" group="3"/>
         <geom class="visual" pos="0.00136471 -0.0031313 -1.30889e-17" quat="0.1476 -1.09363e-22 4.01222e-22 0.989047" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
@@ -237,7 +237,7 @@
       </body>
 
       <body name="leg_c_thigh" pos="0.15825 -0.193873 -0.0941407" quat="0.499999 0.500003 0.499998 0.500001">
-        <joint axis="0 0 1" name="leg_c_thigh" pos="0 0 0" range="-235.6 7.6" type="hinge"/>
+        <joint axis="0 0 1" name="leg_c_thigh" pos="0 0 0" range="-7.6 235.6" type="hinge"/>
         <inertial pos="0.050242 0.0013005 -0.02175" mass="0.22746" diaginertia="0.00032916 0.00097039 0.0012278"/>
         <geom name="leg_c_thigh" fromto="0 0 0  0.12686 0.035951 -0.0035" size="0.02" type="capsule" group="3"/>
         <geom class="visual" pos="-0.00287135 0.00185009 -0.0035" quat="0.989424 1.96994e-23 -1.8349e-23 0.145053" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
@@ -286,11 +286,11 @@
   </sensor>
 
   <actuator>
-    <position joint="leg_a_thigh" name="motor_1" kp="60" kv="4" ctrlrange="-4.02473 0.202458"/>
+    <position joint="leg_a_thigh" name="motor_1" kp="60" kv="4" ctrlrange="-0.202458 4.02473"/>
     <position joint="leg_a_calf" name="motor_2" kp="60" kv="4" ctrlrange="-6.28319 6.28319"/>
     <position joint="leg_b_calf" name="motor_3" kp="60" kv="4" ctrlrange="-6.28319 6.28319"/>
     <position joint="leg_b_thigh" name="motor_4" kp="60" kv="4" ctrlrange="-0.191986 4.04567"/>
-    <position joint="leg_c_thigh" name="motor_5" kp="60" kv="4" ctrlrange="-4.112 0.132645"/>
+    <position joint="leg_c_thigh" name="motor_5" kp="60" kv="4" ctrlrange="-0.132645 4.112"/>
     <position joint="leg_c_calf" name="motor_6" kp="60" kv="4" ctrlrange="-6.28319 6.28319"/>
     <position joint="leg_d_calf" name="motor_7" kp="60" kv="4" ctrlrange="-6.28319 6.28319"/>
     <position joint="leg_d_thigh" name="motor_8" kp="60" kv="4" ctrlrange="-0.118682 4.08407"/>

@@ -28,6 +28,7 @@ use imu/data directly) if dog.mjcf.xml ever gets the full ROS remap and
 policies get retrained against it.
 """
 
+import csv
 import os
 
 import rclpy
@@ -63,6 +64,20 @@ def load_motor_signs(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
     return [float(mapping[motor_id]['sign']) for motor_id in range(1, NUM_MOTORS + 1)]
 
 
+def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
+    """Returns ["leg_a_thigh", ...] motor 1..8, for log_csv readability only
+    -- duplicated in miniature from dog_gym/envs/dog_env.py's own
+    load_motor_joint_names() rather than imported, since dog_deploy is
+    meant to run on the Jetson without gymnasium/mujoco/dog_gym
+    installed (see this module's docstring)."""
+    with open(motor_mapping_path) as f:
+        mapping = yaml.safe_load(f)['motors']
+    return [
+        f"{mapping[motor_id]['leg']}_{mapping[motor_id]['joint']}"
+        for motor_id in range(1, NUM_MOTORS + 1)
+    ]
+
+
 class PolicyNode(Node):
 
     def __init__(self):
@@ -78,6 +93,14 @@ class PolicyNode(Node):
         # shared file is still being investigated) without touching the
         # shared file itself, which dog_gym and everything else depends on.
         self.declare_parameter('motor_mapping_path', str(DEFAULT_MOTOR_MAPPING_PATH))
+        # '' (default) disables logging. When set, writes one CSV row per
+        # motor per control tick -- real position/velocity actually read,
+        # the sim-convention qpos that became part of the observation, the
+        # policy's raw (pre-clamp) action, the clamped action, and the
+        # real degrees actually sent -- so a real-hardware run's exact
+        # per-motor behavior can be inspected after the fact instead of
+        # only watched live. See _open_log()/_log_row().
+        self.declare_parameter('log_csv', '')
 
         self.control_rate_hz = self.get_parameter('control_rate_hz').value
         self.max_delta_rad = (
@@ -88,6 +111,14 @@ class PolicyNode(Node):
         motor_mapping_path = self.get_parameter('motor_mapping_path').value
         self.get_logger().info(f'Loading motor signs from {motor_mapping_path}')
         self.motor_sign = load_motor_signs(motor_mapping_path)
+        self.motor_joint_names = load_motor_joint_names(motor_mapping_path)
+
+        self.tick = 0
+        self.csv_file = None
+        self.csv_writer = None
+        log_csv_path = self.get_parameter('log_csv').value
+        if log_csv_path:
+            self._open_log(log_csv_path)
 
         self.policy = None
         if not self.dry_run_hold_pose:
@@ -125,6 +156,31 @@ class PolicyNode(Node):
             f'policy_node ready: control_rate_hz={self.control_rate_hz}, '
             f'max_delta_deg_per_step={self.get_parameter("max_delta_deg_per_step").value}, '
             f'dry_run_hold_pose={self.dry_run_hold_pose}')
+
+    def _open_log(self, path):
+        self.csv_file = open(path, 'w', newline='')
+        self.csv_writer = csv.writer(self.csv_file)
+        self.csv_writer.writerow([
+            'tick', 'motor_id', 'joint', 'sign',
+            'real_position_deg', 'real_velocity_deg_s',
+            'sim_qpos_rad', 'raw_action_rad', 'clamped_action_rad', 'target_deg',
+        ])
+        self.get_logger().info(f'Logging per-motor control data to {path}')
+
+    def _log_row(self, response, motor_qpos_rad, raw_action_rad, clamped_action_rad, target_deg):
+        for i in range(NUM_MOTORS):
+            self.csv_writer.writerow([
+                self.tick, i + 1, self.motor_joint_names[i], self.motor_sign[i],
+                response.position_deg[i], response.velocity_deg_s[i],
+                motor_qpos_rad[i], raw_action_rad[i], clamped_action_rad[i], target_deg[i],
+            ])
+        self.csv_file.flush()  # real-hardware runs are often killed abruptly (Ctrl-C) -- don't lose rows
+        self.tick += 1
+
+    def _close_log(self):
+        if self.csv_file is not None:
+            self.csv_file.close()
+            self.csv_file = None
 
     def _on_imu(self, msg):
         self.latest_imu = msg
@@ -204,6 +260,9 @@ class PolicyNode(Node):
             for i in range(NUM_MOTORS)
         ]
 
+        if self.csv_writer is not None:
+            self._log_row(response, motor_qpos_rad, action_rad, clamped_action_rad, target_deg)
+
         set_request = SetMotorTargets.Request()
         set_request.motor_id = list(range(1, NUM_MOTORS + 1))
         set_request.position_deg = target_deg
@@ -226,6 +285,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node._close_log()
         node.destroy_node()
         rclpy.shutdown()
 

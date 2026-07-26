@@ -89,7 +89,13 @@ To make a calibration persist across future `colcon build`s: a plain
 *source* tree at build time, so copy the freshly-generated file over
 `src/dog_imu/config/imu_calibration.yaml` once you're happy with it (and
 commit it, same as `actuator/config/preset_pose.yaml`) — otherwise the
-next rebuild reverts to the checked-in placeholder (`calibrated: false`).
+next rebuild reverts to whatever's currently checked in. As of
+2026-07-25 that's real data from the actual robot (`calibrated: true`,
+an identity axis mapping — no flips/rotation needed for this mounting),
+populated directly from a real tilt-test rather than a fresh guided
+`calibrate_imu` run, since that data had already been collected by hand.
+The placeholder (`calibrated: false`) is only what a *fresh checkout*
+before that point would have had.
 
 ## Usage
 

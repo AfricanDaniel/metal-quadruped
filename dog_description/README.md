@@ -9,43 +9,51 @@ dog_description/
 ├── CMakeLists.txt
 ├── package.xml
 ├── mjcf/
-│   ├── dog.mjcf.xml          # MuJoCo model, loaded by dog_gym
-│   └── robot_onshape/        # real Onshape CAD export -- source of the
-│       ├── robot.xml         # visual meshes + real masses in dog.mjcf.xml.
-│       ├── assets/*.stl      # NOT itself usable as a sim model (see below)
-│       ├── generate_dog_mjcf.py  # regenerates dog.mjcf.xml's mesh/mass
-│       │                          # sections from robot.xml -- rerun and
-│       │                          # copy its output in if the CAD changes
-│       └── view_labeled.py   # standalone viewer for inspecting robot.xml,
-│                               # with body/geom labels and part isolation
+│   ├── dog.mjcf.xml          # MuJoCo model, loaded by dog_gym -- GENERATED, don't hand-edit
+│   ├── generate_dog_mjcf.py  # (re)generates dog.mjcf.xml from onshape_folders/ -- rerun
+│   │                          # and rebuild if the CAD or JOINT_RANGE_OVERRIDES_DEG changes
+│   └── save_pose.py          # interactively pose the model in the viewer, save qpos to a .txt
+├── onshape_folders/
+│   ├── robot_dog/            # onshape-to-robot MuJoCo export: real meshes/masses/colors
+│   │                          # (its own joint kinematics are unusable -- every joint comes
+│   │                          #  back as a `freejoint`, onshape-to-robot free-floats
+│   │                          #  disconnected subassemblies it can't resolve into hinges)
+│   └── urdf_dog/              # onshape-to-robot URDF export of the SAME assembly: real joint
+│                               # kinematics (axes/positions), used for everything robot_dog
+│                               # itself can't provide -- see generate_dog_mjcf.py's docstring
+│                               # for the full two-export methodology and why it's needed
+├── launch/
+│   └── dog_view.launch.py    # RViz + joint_state_publisher_gui slider view of the 4-leg URDF
 └── config/
     └── motor_mapping.yaml    # motor_id -> {leg, joint, sign}, loaded by dog_gym + dog_deploy
 ```
 
+See `converter_context.md` (this directory) for the full onshape-to-robot
+export methodology and its history, and `daniel_cl_context.md` (workspace
+root, gitignored personal working notes) for the day-by-day debugging
+log this package's current state is the result of.
+
 ## Where this came from
 
-Kinematic structure (joint locations/axes, the standing-pose-as-qpos-zero
-convention, joint ranges) started from a teammate's (Shane's) reference
-project at `shane_ws/Fast-Quadruped-` — the closest existing topology
-match (thigh + calf per leg, no hip) — then was rebuilt from real
-measurements of this robot (see `claude_context.md` at the workspace root
-for the full derivation: thigh/calf/bracket lengths, leg spacing, and how
-the standing pose — thigh and calf both pointing straight down — became
-qpos=0, so the feet land exactly on the floor at reset).
+Kinematic structure (joint axes/positions) is auto-detected by graph
+traversal of `onshape_folders/urdf_dog`'s joint tree (`detect_legs()` in
+`generate_dog_mjcf.py`) — not hand-enumerated, and not derived from any
+other reference project. Visual meshes, colors, and real per-body masses
+come from `onshape_folders/robot_dog`'s MuJoCo export (its own joint
+kinematics are unusable, see above, but its mesh/mass/material data is
+real and correct). `generate_dog_mjcf.py` combines the two into
+`dog.mjcf.xml`'s final joint tree via forward-kinematics composition —
+see that script's own docstring for the full transform.
 
-Visual appearance and masses come from a real Onshape CAD export
-(`mjcf/robot_onshape/`). **That raw export is not directly usable as a sim
-model** — the Onshape assembly has no mates set up as proper joints yet
-(`onshape-to-robot` found 0 degrees of freedom: one fixed body + 22
-disconnected free-floating parts, no actuators). `generate_dog_mjcf.py`
-extracts the real meshes/masses from it and repositions them into
-`dog.mjcf.xml`'s existing jointed hierarchy — see that script's docstring
-for the full transform (axis remap between Onshape's frame and this
-file's, per-body mass grouping, etc.) and `claude_context.md`'s "Onshape
-CAD export" section for how each CAD part's real-world role was identified
-(it's a belt-driven-calf design — both the thigh and calf-drive motors
-mount on the torso, not the swinging links, which is why the torso is
-~9kg and the legs are only a few hundred grams each).
+It's a belt-driven-calf design: both a leg's thigh motor AND its calf
+motor mount on the torso/shoulder, not on the swinging thigh link itself
+— the calf motor drives its joint through a timing belt + pulley
+routed through the thigh, not a direct-drive gearbox on the calf. This
+has a real kinematic consequence `dog.mjcf.xml` itself doesn't capture
+(the raw MJCF calf hinge is a plain thigh-relative joint, since the
+belt/pulley/tendon was never physically modeled) — see `dog_gym/README.md`'s
+"Belt/pulley calf decoupling" section for how `DogEnv` compensates for
+this in software instead.
 
 Collision physics deliberately still uses simple capsule/box primitives
 (not the detailed meshes) for training speed — mesh-mesh collision across
@@ -55,8 +63,6 @@ by default so they don't overlap-render.
 
 ## Geometry — real measurements, with some approximations still flagged
 
-**Search for `APPROXIMATION`/`PLACEHOLDER` comments in `dog.mjcf.xml`**
-for what's still not a direct measurement:
 - Diagonal inertia is a box approximation using each body's real combined
   mesh bounding box (from actual STL vertex data), not the CAD's real
   `fullinertia` tensor.
@@ -66,13 +72,23 @@ for what's still not a direct measurement:
   automatically via `onshape-to-robot`/`generate_dog_mjcf.py`, no
   placeholder needed.
 - Thigh/calf link cross-section (the *collision* capsule's radius —
-  visual mesh shape is real) and joint hard-stop limits are still
-  placeholder guesses (no real data yet).
+  visual mesh shape is real) is still a placeholder guess.
+- **Joint limits: real for the 4 thighs, still placeholder for the 4
+  calves.** Thigh ranges in `generate_dog_mjcf.py`'s
+  `JOINT_RANGE_OVERRIDES_DEG` are real hardware mechanical hard-stops
+  (bench-measured, sign-corrected, 5% margin) — see that dict's own
+  comment for the full derivation and its history (an earlier version
+  had legs a/c's sign backwards, confirmed and fixed 2026-07-26). Calf
+  ranges are deliberately a wide `+-360deg` placeholder — since the
+  belt-decoupling compensation (see `dog_gym/README.md`), a calf's raw
+  `<joint range>` is just headroom for that compensation math, not a
+  real limit; the real absolute calf angle limit isn't enforced anywhere
+  yet (a deferred TODO, see `daniel_cl_context.md`).
 
-Treat sim results accordingly — geometry, masses, and the standing pose
-are now real, but a trained policy still won't sim-to-real transfer
-perfectly until the remaining approximations are replaced with real
-numbers.
+Treat sim results accordingly — geometry, masses, and thigh limits are
+now real, but a trained policy still won't sim-to-real transfer
+perfectly until the remaining approximations (capsule radius, real calf
+limit enforcement) are replaced with real numbers.
 
 ## Motor mapping (`config/motor_mapping.yaml`)
 
@@ -80,14 +96,26 @@ Single source of truth for which motor drives which joint, and in which
 direction, shared by `dog_gym` (sim) and `dog_deploy` (real hardware) so
 the two can never drift out of sync. The convention:
 
-- In `dog.mjcf.xml`, every **thigh** joint's positive direction means "away
-  from the front", and every **calf** joint's positive direction means
-  "towards the front" — the same physical meaning for all four legs.
-- Each motor's `sign` in the YAML says whether the real motor's "increase
-  commanded degrees" direction agrees with that sim convention (`1`) or is
-  inverted (`-1`). This was determined by bench-testing each motor by hand;
-  see `claude_context.md` at the workspace root for the raw notes it was
-  transcribed from.
+- In `dog.mjcf.xml`, every **thigh** joint's positive direction means
+  "away from the front", uniformly for all four legs. This is the
+  joint's real axis meaning, independent of where qpos=0 happens to sit
+  within that joint's own range (which is NOT uniform across legs — see
+  `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` comment).
+- Each motor's `sign` says whether the real motor's "increase commanded
+  degrees" direction agrees with that sim convention (`1`) or is
+  inverted (`-1`) — real hardware mounts left/right motors as mirror
+  images of each other, so this genuinely differs per motor, not just
+  per leg-pair. Determined most reliably by an isolated single-motor
+  real-hardware test (send a known raw delta to ONE motor, no policy
+  running, watch which way it physically swings) — see
+  `daniel_cl_context.md` for the full sign-determination history,
+  including a case (leg_a/leg_c's thighs) where an earlier, less direct
+  comparison method got this wrong and was later corrected by that
+  isolated test.
+- **Calf motors' `sign` is about the real motor's own ABSOLUTE (torso-
+  relative) angle**, not a thigh-relative one — see `dog_gym/README.md`'s
+  "Belt/pulley calf decoupling" section for why a calf's real and sim
+  angle conventions both need to be absolute, not thigh-relative.
 
 Physical corners are confirmed (see `legs:` in `config/motor_mapping.yaml`):
 
@@ -108,10 +136,13 @@ directly "target angle per motor" — the same quantity the real
 `SetMotorTargets` service (see `actuator/README.md`) takes, with no
 unit/mode translation needed in `dog_deploy` beyond the `sign` flip above.
 
-The `kp`/`kv` gains on those actuators are placeholder sim-side PD gains,
-not derived from the real motor's `position_kp`/`position_kd` (those are
-rotor-side and GO-M8010-6-firmware-specific) — tune them independently in
-sim.
+The `kp`/`kv` gains on those actuators (`--kp`/`--kv` in
+`generate_dog_mjcf.py`, currently 60/4, raised 2026-07-26 from an
+original 15/1 after that was found to droop ~40% short of a commanded
+target for a fully-extended, gravity-loaded leg) are placeholder sim-side
+PD gains, not derived from the real motor's `position_kp`/`position_kd`
+(those are rotor-side and GO-M8010-6-firmware-specific) — tune them
+independently in sim.
 
 ## Usage
 

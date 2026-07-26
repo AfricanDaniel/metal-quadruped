@@ -1,0 +1,44 @@
+# TEMPORARY test copy of dog_description/config/motor_mapping.yaml.
+# Quick test 2026-07-26: motors 1, 4, 5 (leg_a/leg_b/leg_c THIGH) moved
+# the wrong direction running stand_policy_v1 on real hardware -- sign
+# flipped for those three only. Calves untouched, will look at those
+# later. NOT a replacement for the canonical file.
+legs:
+  leg_a: front_right
+  leg_b: front_left
+  leg_c: back_right
+  leg_d: back_left
+
+motors:
+  1:
+    leg: leg_a
+    joint: thigh
+    sign: 1
+  2:
+    leg: leg_a
+    joint: calf
+    sign: 1
+  3:
+    leg: leg_b
+    joint: calf
+    sign: -1
+  4:
+    leg: leg_b
+    joint: thigh
+    sign: -1    # flipped from -1
+  5:
+    leg: leg_c
+    joint: thigh
+    sign: 1
+  6:
+    leg: leg_c
+    joint: calf
+    sign: 1
+  7:
+    leg: leg_d
+    joint: calf
+    sign: -1
+  8:
+    leg: leg_d
+    joint: thigh
+    sign: -1

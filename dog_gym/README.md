@@ -92,19 +92,37 @@ you actually want. Both commands below assume `source install/setup.bash`
     hardware-unfriendly control) + a per-step survival bonus. Weights in
     `_compute_reward_stand`/`_compute_reward_walk` are a starting point,
     not tuned.
-  - **Unresolved, real (not just sim) discrepancy**: the walk task's
-    standing pose required flipping the sign of leg_a/leg_c's thigh angle
-    relative to what a naive conversion of the real hardware's
-    `preset_pose.yaml` "standing" values would give — this sim's own
-    kinematics disagree with the real robot for those two legs
-    specifically, and the cause hasn't been identified yet (CAD mounting
-    difference vs. a `motor_mapping.yaml` sign error vs. something else).
-    `motor_mapping.yaml` was deliberately left unchanged since it's
-    shared with `dog_deploy` (hardware-facing) and this hasn't been
-    verified on hardware — see the long comment at `STANDING_QPOS_DEG` in
-    `dog_env.py` for the full derivation. **Check this on real hardware
-    before trusting any sim-trained policy's leg_a/leg_c sign at
-    deployment time.**
+  - **Belt/pulley calf decoupling (2026-07-25).** Each leg's calf motor
+    drives its lower pulley through a timing belt to a torso-mounted
+    upper pulley; the lower pulley free-spins on a bearing relative to
+    the thigh. Real effect: rotating ONLY the thigh never changes the
+    calf's real-world orientation — the belt cancels the "carried along"
+    rotation a plain hinge would otherwise apply. `dog.mjcf.xml`'s calf
+    joint is a plain thigh-relative hinge (the belt/pulley/tendon itself
+    was never physically modeled), so `DogEnv` compensates in software:
+    `action`/`obs` for a calf motor represent the real motor's ABSOLUTE
+    (torso-relative) angle, matching what `actuator`/`dog_deploy` already
+    read/command natively — only the raw MJCF `ctrl`/`qpos` for a calf
+    get converted to/from that absolute value (`step()`/`_get_obs()`, via
+    `calf_belt_sign` — a per-leg sign, NOT uniform across all 4, derived
+    from each leg's own joint-axis geometry, see `dog_env.py`'s
+    `__init__`). **Any checkpoint trained before this fix landed is
+    stale** — its calf semantics don't match the current env.
+  - **leg_a/leg_c thigh real-vs-sim sign — long-running saga, resolved
+    2026-07-26.** Real bench presets vs. sim's own `STANDING_QPOS_DEG`
+    disagreed in sign for all 4 thighs, which for a while looked like it
+    meant `motor_mapping.yaml`'s canonical signs were wrong. A clean,
+    isolated single-motor real-hardware test (send a known raw delta to
+    ONE motor at a time, no policy, watch which way it physically swings)
+    later showed the canonical signs were actually correct all along; the
+    real bug turned out to be that `dog.mjcf.xml`'s real-hardware-derived
+    joint RANGES for leg_a/leg_c's thighs had been computed using the
+    disproven sign, giving those two joints a mirrored-topology range
+    relative to leg_b/leg_d (confirmed on real hardware: a policy trying
+    to "extend" leg_a instead drove it into the front shoulder). Fixed by
+    recomputing those two ranges with the correct sign — see
+    `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` comment for the
+    full history and daniel_cl_context.md for the raw data.
 - **Termination**: torso falls below `FALL_HEIGHT_M` or tips past
   `MAX_TILT_RAD`. **Truncation**: `MAX_EPISODE_STEPS`.
 - `domain_randomization=True` randomizes ground friction on every reset
@@ -162,11 +180,23 @@ compatible with `DogEnv`.
 ## Exporting for deployment
 
 ```bash
-python3 -m dog_gym.export_policy models/PPO_1000000_dog_policy.zip models/dog_policy.pt
+python3 -m dog_gym.export_policy models/PPO_1000000_dog_policy.zip models/dog_policy.pt --env-id Dog-Stand-v0
 ```
 
 Produces a TorchScript module `dog_deploy` can load with just `torch` — no
 `stable_baselines3`/`gymnasium`/`mujoco` needed on the Jetson.
+
+**Any `.pt` file exported before 2026-07-26 is unsafe — re-export it.**
+The traced module used to call `ActorCriticPolicy.forward()` directly,
+which returns SB3's raw, UNCLIPPED action (PPO's action head has no
+inherent bound). `model.predict()` — what every correctness check in
+this project actually uses — applies an extra `np.clip()` to the action
+space afterward that `forward()` never did. Real-hardware testing found
+the old export outputting raw actions in the thousands of degrees, with
+real behavior then dominated entirely by `dog_deploy`'s safety clamp
+rather than the policy's real (clipped) intention. Fixed: the traced
+module now clips to the action space itself, verified to match
+`model.predict(obs, deterministic=True)` exactly.
 
 ## Smoke-testing without training
 

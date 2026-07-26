@@ -44,6 +44,8 @@ previous one finished (`self.busy` guards that).
 | `max_delta_deg_per_step`   | double | `5.0`   | Safety clamp: max per-motor movement per control tick. |
 | `imu_timeout_sec`          | double | `0.5`   | Skip a control step if the latest IMU reading is older than this. |
 | `dry_run_hold_pose`        | bool   | `true`  | **Default is safe-by-default.** When true, ignores `policy_path` and just holds current position every tick — exercises the full read/observe/command loop without any policy risk. |
+| `motor_mapping_path`       | string | `dog_description/config/motor_mapping.yaml` | Override to point at a test/corrected copy of the mapping (e.g. while a sign issue is under investigation) without touching the shared canonical file. |
+| `log_csv`                  | string | `''`    | When set, writes one CSV row per motor per control tick (real position/velocity, the sim-convention qpos built into the observation, the policy's raw pre-clamp action, the clamped action, and the real degrees actually sent) to this path — for inspecting a real run after the fact. Flushed every tick so a Ctrl-C won't lose data. |
 
 ## Running with `torch` in a venv
 
@@ -87,16 +89,51 @@ the policy's behavior.
 
 ## Open calibration TODOs (do not skip)
 
-- **Homing alignment.** `actuator`'s `position_deg` is relative to
-  whatever `set_home` last captured (see `actuator/README.md`'s Homing
-  section) — it is **not** aligned to `dog.mjcf.xml`'s zero-joint-angle
-  pose by construction. For the sign-flip math above to be meaningful,
-  physically pose the robot in the same neutral stance the MJCF's default
-  pose represents, then call `set_home`, **before** starting
-  `policy_node`. Until this is verified on hardware, treat any policy
-  behavior as offset by an unknown amount per joint.
-- **IMU mounting orientation.** `policy_node` assumes the real IMU's axes
-  (as mounted on the Jetson) line up with `dog.mjcf.xml`'s `imu_site`
-  axes. If the physical mount is rotated relative to the robot's
-  forward/up axes, the accelerometer/gyro readings need a fixed rotation
-  applied before use — not yet implemented here.
+- **Homing/observation offset — CONFIRMED BUG (2026-07-26), not yet
+  fixed.** `policy_node` builds `motor_qpos_rad` directly from
+  `read_motor_positions`'s `position_deg` (`sign * position_deg *
+  DEG_TO_RAD`). Checked directly against `actuator/src/basic_control.cpp`:
+  `read_motor_positions` returns the motor's **raw absolute** angle
+  (computed straight from `motor.data.q`) and never subtracts
+  `home_deg_` — only `go_to_pose` uses that. So this is NOT, as an
+  earlier version of this note claimed, merely "unverified" — it is
+  confirmed wrong. `DogEnv.reset()`'s 'stand' task always starts from
+  exactly `qpos=0` in sim; on real hardware the raw absolute reading at
+  that same physical tucked pose is some arbitrary nonzero value per
+  motor (e.g. ~47deg for motor 1, ~51deg for motor 5, confirmed via
+  `stand_policy_v1_fixed.csv`'s tick-0 `sim_qpos_rad` column). Every real
+  run so far has fed the policy an observation offset from what it was
+  trained on, for every motor, on every tick — not just at reset. Fix:
+  read a home reference once (e.g. via `set_home`'s response, or a
+  dedicated read at startup with the robot physically posed at the
+  tucked/home stance) and subtract it before building the observation,
+  matching sim's own qpos=0 reference. Not yet implemented.
+
+**IMU mounting orientation — DONE (2026-07-25).** The real IMU is
+mounted in the same physical location on the torso as modeled in the
+CAD, and axis calibration was carried out directly on the real robot
+(tilt-test procedure, see `dog_imu/calibrate_imu_node.py` and
+`dog_imu/config/imu_calibration.yaml`). Result: identity mapping — no
+axis flips or rotation needed between the real sensor and
+`dog.mjcf.xml`'s `imu_site` convention. `policy_node` subscribes to the
+calibrated `imu/data` topic (not raw `imu/data_raw`), so this is already
+applied at runtime, not an outstanding gap.
+
+## `export_policy.py`'s clipping bug (fixed 2026-07-26)
+
+Every `.pt` file exported before 2026-07-26 is unsafe to run — the
+exported `DeterministicPolicy.forward()` called
+`ActorCriticPolicy.forward()` directly, which returns SB3's **raw,
+unclipped** Gaussian-mean action. `BasePolicy.predict()` (what
+`dog_gym.train`'s `--test` and every other correctness check in this
+project actually calls) applies an additional
+`np.clip(actions, action_space.low, action_space.high)` afterward that
+`forward()` never does. Real-hardware testing found the old exported
+`.pt` outputting raw actions in the thousands of degrees (confirmed:
+`policy_run.csv`, pre-fix) — real behavior was then dominated entirely by
+`max_delta_deg_per_step`'s safety clamp rather than the policy's actual
+(clipped) intention. `export_policy.py` now applies the same clip inside
+the traced module; verified the fixed export's output matches
+`model.predict(obs, deterministic=True)` exactly, motor-by-motor, at the
+home state. **Re-export and redeploy any `.pt` file that predates this
+fix** — its outputs were never representative of the trained policy.

@@ -27,12 +27,23 @@ class DeterministicPolicy(torch.nn.Module):
     raises "Cannot insert a Tensor that requires grad as a constant".
     """
 
-    def __init__(self, policy):
+    def __init__(self, policy, action_low, action_high):
         super().__init__()
         self.policy = policy
+        # SB3's own predict() (stable_baselines3/common/policies.py,
+        # BasePolicy.predict()) clips ActorCriticPolicy.forward()'s raw
+        # action -- an unbounded Gaussian mean, not something PPO's own
+        # network ever squashes -- to the action space AFTER calling
+        # forward(). forward() (what DeterministicPolicy.forward() below
+        # calls into) never does this itself. Registered as buffers (not
+        # plain Python floats) so they're saved as part of the traced
+        # module's state, not baked in as untyped constants.
+        self.register_buffer('action_low', torch.as_tensor(action_low, dtype=torch.float32))
+        self.register_buffer('action_high', torch.as_tensor(action_high, dtype=torch.float32))
 
     def forward(self, observation):
-        return self.policy(observation, deterministic=True)[0]
+        action = self.policy(observation, deterministic=True)[0]
+        return torch.clamp(action, self.action_low, self.action_high)
 
 
 def export(model_path, output_path, env_id='Dog-Stand-v0'):
@@ -48,7 +59,7 @@ def export(model_path, output_path, env_id='Dog-Stand-v0'):
     example_obs = torch.zeros(1, obs_dim)
 
     model.policy.set_training_mode(False)
-    wrapped = DeterministicPolicy(model.policy)
+    wrapped = DeterministicPolicy(model.policy, env.action_space.low, env.action_space.high)
 
     with torch.no_grad():
         traced = torch.jit.trace(wrapped, example_obs)

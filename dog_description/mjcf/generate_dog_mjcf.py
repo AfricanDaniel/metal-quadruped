@@ -98,13 +98,39 @@ ACTUATOR_ORDER = [
 # didn't need retaking, only which pose "home" itself refers to.
 #
 # Real motor sign vs sim joint sign is NOT uniform (this project's
-# long-running sign saga -- see daniel_cl_context.md), and IS reliable
-# for THIGHS specifically: determined by comparing the SIGN of real bench
-# presets (actuator/config/preset_pose.yaml's `standing`, real hardware,
-# referenced to the tucked home) against dog_gym's own STANDING_QPOS_DEG
-# (sim) for the same motor -- all 4 thighs came out consistently OPPOSITE
-# sign, a reliable comparison since thigh's raw qpos IS its own real/sim
-# angle (no compensation applied to thigh itself).
+# long-running sign saga -- see daniel_cl_context.md). The sign used to
+# derive the THIGH ranges below was WRONG for leg_a/leg_c specifically,
+# then corrected (2026-07-26) -- worth recording precisely since it bit
+# real hardware:
+#   - First derivation compared the SIGN of real bench presets
+#     (actuator/config/preset_pose.yaml's `standing`) against dog_gym's
+#     STANDING_QPOS_DEG (sim), concluding ALL 4 thighs needed sign=-1
+#     (opposite canonical). Used that -1 to convert the real bench-
+#     measured extremes into these ranges for legs a/c specifically
+#     (legs b/d's canonical sign was already -1, so no change there).
+#   - Later, a clean, isolated single-motor real-hardware test (send a
+#     known +50deg raw delta to ONE motor at a time, no policy, watch
+#     which way it physically swings) DISPROVED that: it showed
+#     canonical sign=+1 is actually correct for leg_a/leg_c's thighs
+#     (motors 1, 5). motor_mapping.yaml/motor_mapping_thigh_test.yaml
+#     were corrected back to +1 for those two motors accordingly.
+#   - BUT the ranges below were never recomputed after that correction
+#     -- they still encode the disproven -1 topology. Confirmed on real
+#     hardware (2026-07-26): running a fresh, correctly-exported policy
+#     with the corrected +1 sign, leg_a's thigh moved a real 20deg
+#     TOWARDS the front (decreasing raw degrees -- per the isolated
+#     test, decreasing = towards front for this motor) and jammed into
+#     the front shoulder, instead of extending away from it. leg_c
+#     (same wrong-topology issue) barely moved at all, consistent with
+#     hitting its own real "towards front" stop sooner.
+#   - Fixed by recomputing leg_a_thigh/leg_c_thigh's ranges from the SAME
+#     original real bench-measured extremes (see daniel_cl_context.md's
+#     "real hardware max-range measurement" section for the raw numbers),
+#     this time applying the CORRECT sign=+1 instead of the disproven -1.
+#     Note the corrected ranges now have the same shape (small-magnitude
+#     limit near home, large-magnitude limit for full extension) as
+#     legs b/d's ranges -- previously legs a/c and b/d had OPPOSITE
+#     range topologies, which in hindsight was itself a red flag.
 #
 # THIGH values below are that real measured extreme (relative to the
 # tucked home), sign-corrected, with a 5% margin pulled in from each side
@@ -134,11 +160,11 @@ ACTUATOR_ORDER = [
 # if this needs changing) until the real absolute-calf-limit/action-space
 # work above is actually done properly.
 JOINT_RANGE_OVERRIDES_DEG = {
-    'leg_a_thigh': (-230.6, 11.6),
+    'leg_a_thigh': (-11.6, 230.6),
     'leg_a_calf':  (-360, 360),
     'leg_b_calf':  (-360, 360),
     'leg_b_thigh': (-11.0, 231.8),
-    'leg_c_thigh': (-235.6, 7.6),
+    'leg_c_thigh': (-7.6, 235.6),
     'leg_c_calf':  (-360, 360),
     'leg_d_calf':  (-360, 360),
     'leg_d_thigh': (-6.8, 234.0),
