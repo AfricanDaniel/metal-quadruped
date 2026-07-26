@@ -16,6 +16,19 @@ entirely (each tick just re-commands each motor's current position) so the
 whole read -> observe -> command loop can be exercised safely before ever
 loading a trained policy.
 
+Home offset: `actuator`'s `read_motor_positions` returns each motor's RAW
+ABSOLUTE angle (confirmed directly against basic_control.cpp -- it never
+subtracts `set_home`'s stored reference, only `go_to_pose` does that), an
+arbitrary per-motor nonzero value at the physical tucked/home stance. But
+`DogEnv`'s 'stand' task always resets to EXACTLY qpos=0 at that same
+physical stance in sim. Feeding the policy raw absolute degrees directly
+(as an earlier version of this file did) silently offsets every real
+observation from what the policy was actually trained on. Fixed by
+capturing a home reference once at startup (`home_position_deg` param, or
+auto-captured from the current reading if not provided -- see __init__)
+and subtracting it before building the observation / adding it back when
+converting an action to a real target -- see _on_positions_read().
+
 IMU frame: subscribes to dog_imu's CALIBRATED `imu/data` (forward/left/up,
 ROS REP-103 -- see dog_imu/calibrate_imu_node.py), not the raw
 `imu/data_raw`. But the sim the policy was trained in (dog_description/
@@ -101,6 +114,13 @@ class PolicyNode(Node):
         # per-motor behavior can be inspected after the fact instead of
         # only watched live. See _open_log()/_log_row().
         self.declare_parameter('log_csv', '')
+        # 8 floats, or empty (default) to auto-capture from the current
+        # reading at startup instead -- see __init__'s home-capture block
+        # below and this module's docstring's "Home offset" section.
+        # Provide explicitly to reuse an exact previously-known-good home
+        # (e.g. matching a specific /set_home call's response) without
+        # needing the robot physically re-posed at that exact stance.
+        self.declare_parameter('home_position_deg', [])
 
         self.control_rate_hz = self.get_parameter('control_rate_hz').value
         self.max_delta_rad = (
@@ -150,6 +170,28 @@ class PolicyNode(Node):
         ):
             while not client.wait_for_service(timeout_sec=2.0):
                 self.get_logger().warning(f'Waiting for {name} service (is actuator running?)...')
+
+        home_position_deg = list(self.get_parameter('home_position_deg').value)
+        if home_position_deg:
+            if len(home_position_deg) != NUM_MOTORS:
+                raise ValueError(
+                    f'home_position_deg must have exactly {NUM_MOTORS} values, '
+                    f'got {len(home_position_deg)}')
+            self.home_position_deg = home_position_deg
+            self.get_logger().info(f'Using provided home_position_deg: {self.home_position_deg}')
+        else:
+            self.get_logger().info(
+                'No home_position_deg provided -- reading current motor positions as home. '
+                'The robot MUST already be physically posed at the tucked/home stance now.')
+            request = ReadMotorPositions.Request()
+            request.motor_id = list(range(1, NUM_MOTORS + 1))
+            future = self.read_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future)
+            response = future.result()
+            if response is None:
+                raise RuntimeError('read_motor_positions failed while capturing home -- aborting startup')
+            self.home_position_deg = list(response.position_deg)
+            self.get_logger().info(f'Captured home_position_deg: {self.home_position_deg}')
 
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self._control_step)
         self.get_logger().info(
@@ -217,8 +259,10 @@ class PolicyNode(Node):
             self.busy = False
             return
 
+        # Home-relative, matching sim's own qpos=0-at-tucked-home reference
+        # -- see this module's docstring's "Home offset" section.
         motor_qpos_rad = [
-            self.motor_sign[i] * response.position_deg[i] * DEG_TO_RAD
+            self.motor_sign[i] * (response.position_deg[i] - self.home_position_deg[i]) * DEG_TO_RAD
             for i in range(NUM_MOTORS)
         ]
         motor_qvel_rad_s = [
@@ -255,8 +299,12 @@ class PolicyNode(Node):
         ]
         self.prev_action = clamped_action_rad
 
+        # Inverse of the home-relative conversion above: real ABSOLUTE
+        # degrees (same frame set_motor_targets/read_motor_positions use)
+        # = home + sign*sim_value (sign is +-1, so sign*sign=1 undoes the
+        # sign applied when motor_qpos_rad was built).
         target_deg = [
-            self.motor_sign[i] * clamped_action_rad[i] * RAD_TO_DEG
+            self.home_position_deg[i] + self.motor_sign[i] * clamped_action_rad[i] * RAD_TO_DEG
             for i in range(NUM_MOTORS)
         ]
 

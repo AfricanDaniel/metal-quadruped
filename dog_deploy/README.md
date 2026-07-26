@@ -45,6 +45,7 @@ previous one finished (`self.busy` guards that).
 | `imu_timeout_sec`          | double | `0.5`   | Skip a control step if the latest IMU reading is older than this. |
 | `dry_run_hold_pose`        | bool   | `true`  | **Default is safe-by-default.** When true, ignores `policy_path` and just holds current position every tick — exercises the full read/observe/command loop without any policy risk. |
 | `motor_mapping_path`       | string | `dog_description/config/motor_mapping.yaml` | Override to point at a test/corrected copy of the mapping (e.g. while a sign issue is under investigation) without touching the shared canonical file. |
+| `home_position_deg`        | double[8] | `[]` | Home reference used to make the observation match sim's qpos=0-at-home convention (see "Homing/observation offset" below). Empty (default) auto-captures from the current reading at startup — **robot must already be physically posed at the tucked/home stance** when `policy_node` starts. Provide explicitly to reuse a known-good home without re-posing the robot. |
 | `log_csv`                  | string | `''`    | When set, writes one CSV row per motor per control tick (real position/velocity, the sim-convention qpos built into the observation, the policy's raw pre-clamp action, the clamped action, and the real degrees actually sent) to this path — for inspecting a real run after the fact. Flushed every tick so a Ctrl-C won't lose data. |
 
 ## Running with `torch` in a venv
@@ -89,25 +90,28 @@ the policy's behavior.
 
 ## Open calibration TODOs (do not skip)
 
-- **Homing/observation offset — CONFIRMED BUG (2026-07-26), not yet
-  fixed.** `policy_node` builds `motor_qpos_rad` directly from
-  `read_motor_positions`'s `position_deg` (`sign * position_deg *
-  DEG_TO_RAD`). Checked directly against `actuator/src/basic_control.cpp`:
-  `read_motor_positions` returns the motor's **raw absolute** angle
-  (computed straight from `motor.data.q`) and never subtracts
-  `home_deg_` — only `go_to_pose` uses that. So this is NOT, as an
-  earlier version of this note claimed, merely "unverified" — it is
-  confirmed wrong. `DogEnv.reset()`'s 'stand' task always starts from
-  exactly `qpos=0` in sim; on real hardware the raw absolute reading at
-  that same physical tucked pose is some arbitrary nonzero value per
-  motor (e.g. ~47deg for motor 1, ~51deg for motor 5, confirmed via
-  `stand_policy_v1_fixed.csv`'s tick-0 `sim_qpos_rad` column). Every real
-  run so far has fed the policy an observation offset from what it was
-  trained on, for every motor, on every tick — not just at reset. Fix:
-  read a home reference once (e.g. via `set_home`'s response, or a
-  dedicated read at startup with the robot physically posed at the
-  tucked/home stance) and subtract it before building the observation,
-  matching sim's own qpos=0 reference. Not yet implemented.
+**Homing/observation offset — DONE (2026-07-26).** `policy_node` used to
+build `motor_qpos_rad` directly from `read_motor_positions`'s raw
+`position_deg` (`sign * position_deg * DEG_TO_RAD`). Checked directly
+against `actuator/src/basic_control.cpp`: `read_motor_positions` returns
+the motor's **raw absolute** angle (computed straight from
+`motor.data.q`) and never subtracts `home_deg_` — only `go_to_pose` uses
+that. `DogEnv.reset()`'s 'stand' task always starts from exactly
+`qpos=0` in sim; on real hardware the raw absolute reading at that same
+physical tucked pose is some arbitrary nonzero value per motor (e.g.
+~47deg for motor 1, ~51deg for motor 5, confirmed via
+`stand_policy_v1_fixed.csv`'s tick-0 `sim_qpos_rad` column). Every real
+run before this fix fed the policy an observation offset from what it
+was trained on, for every motor, on every tick — not just at reset.
+Fixed: `policy_node` now captures a home reference once at startup (the
+new `home_position_deg` param, or auto-captured from the current reading
+if that param is left empty — **the robot must be physically posed at
+the tucked/home stance at that moment**) and subtracts it before
+building the observation / adds it back when converting an action to a
+real target. Verified algebraically: at home, the built observation is
+now exactly `0.0` for every motor, matching sim's own reset state; the
+whole read→observe→command round-trip is confirmed to reconstruct the
+exact original real position in dry-run mode, for either sign.
 
 **IMU mounting orientation — DONE (2026-07-25).** The real IMU is
 mounted in the same physical location on the torso as modeled in the
