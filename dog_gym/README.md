@@ -130,8 +130,17 @@ you actually want. Both commands below assume `source install/setup.bash`
 - **Termination**: torso falls below `FALL_HEIGHT_M` or tips past
   `MAX_TILT_RAD`. **Truncation**: `MAX_EPISODE_STEPS`.
 - `domain_randomization=True` randomizes ground friction on every reset
-  (ported from the reference repo's domain-randomization script) — opt-in,
-  off by default.
+  (ported from the reference repo's domain-randomization script) and, as
+  of 2026-07-27, also injects gaussian noise into every observation
+  (motor qpos/qvel + IMU accel/gyro, NOT `prev_action`) — see
+  `_get_obs()`'s comment and `MOTOR_POS_NOISE_STD_RAD` et al. in
+  `dog_env.py` for magnitudes (placeholder sensor-noise scales, refine
+  using real `dog_deploy` log_csv data if wanted). Added after real
+  deployment showed a policy that looked converged in sim still
+  chattering on real hardware — sim's observation had always been
+  perfectly clean, so a policy never had reason to learn robustness to
+  the small measurement noise real encoders/IMUs actually produce.
+  Opt-in, off by default.
 
 ## Training
 

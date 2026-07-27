@@ -146,6 +146,17 @@ NUM_MOTORS = 8
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
 MAX_SLEW_DEG_PER_S = 100.0
 
+# Real-hardware-realistic SENSOR noise (motor position/velocity + IMU),
+# opt-in via domain_randomization -- see _get_obs()'s comment for why
+# this was added (2026-07-27) and PLACEHOLDER STATUS (typical magnetic-
+# encoder + LSM6DSO32 noise scales, not a formal characterization of
+# this specific hardware -- refine using real dog_deploy log_csv data if
+# higher fidelity is wanted).
+MOTOR_POS_NOISE_STD_RAD = np.radians(0.1)     # ~0.1deg encoder noise
+MOTOR_VEL_NOISE_STD_RAD_S = np.radians(0.5)   # velocity noisier than position (often derived by differentiating)
+ACCEL_NOISE_STD_M_S2 = 0.05
+GYRO_NOISE_STD_RAD_S = 0.01
+
 # How close a ground contact must be to a leg's foot site to count as
 # "standing on the foot" rather than "standing on the knee/shin" -- see
 # _foot_tip_contact_count(). The calf capsule (knee->foot) is ~0.077m
@@ -448,10 +459,36 @@ class DogEnv(gym.Env):
         motor_qvel = self.data.qvel[self.motor_dof_adr].copy()
         motor_qpos[self.calf_idx] -= self.calf_belt_sign * self.data.qpos[self.calf_thigh_qpos_adr]
         motor_qvel[self.calf_idx] -= self.calf_belt_sign * self.data.qvel[self.calf_thigh_dof_adr]
+        sensordata = self.data.sensordata
+
+        # SENSOR NOISE (2026-07-27, opt-in via domain_randomization):
+        # real-hardware deployment of a "converged"-looking stand policy
+        # showed persistent chatter at a settled stand pose, traced
+        # directly to the raw policy action itself being unstable at
+        # steady state (see action_rate_penalty's comment in
+        # _common_penalties()) -- sim's observation had ALWAYS been
+        # perfectly noise-free, unlike anything the real robot's
+        # encoders/IMU actually report, so a policy never has any reason
+        # to learn robustness to small measurement noise on its own.
+        # Added here so training can optionally include that noise (see
+        # MOTOR_POS_NOISE_STD_RAD's comment for magnitudes/placeholder
+        # status). NOT applied to prev_action -- that's the policy's own
+        # last commanded value, not a sensor reading, and stays exact on
+        # both sim and real (dog_deploy/policy_node.py's prev_action is
+        # likewise the exact last clamped command, never a measurement).
+        if self.domain_randomization:
+            motor_qpos = motor_qpos + self.np_random.normal(
+                0.0, MOTOR_POS_NOISE_STD_RAD, size=NUM_MOTORS)
+            motor_qvel = motor_qvel + self.np_random.normal(
+                0.0, MOTOR_VEL_NOISE_STD_RAD_S, size=NUM_MOTORS)
+            sensordata = sensordata.copy()
+            sensordata[0:3] += self.np_random.normal(0.0, ACCEL_NOISE_STD_M_S2, size=3)
+            sensordata[3:6] += self.np_random.normal(0.0, GYRO_NOISE_STD_RAD_S, size=3)
+
         return np.concatenate([
             motor_qpos,
             motor_qvel,
-            self.data.sensordata,
+            sensordata,
             self.prev_action,
         ]).astype(np.float32)
 
@@ -603,7 +640,34 @@ class DogEnv(gym.Env):
         angular_vel_penalty = -0.02 * float(np.dot(angular_vel, angular_vel))
 
         effort_penalty = -0.001 * float(np.dot(action, action))
-        action_rate_penalty = -0.01 * float(np.sum((action - self.prev_action) ** 2))
+        # Raised 10x (-0.01 -> -0.1) 2026-07-27: real-hardware deployment
+        # of a "converged"-looking stand policy (calfFix_stand_policy_v5,
+        # 3-6M timesteps) showed persistent tick-to-tick chatter even at
+        # a fully settled stand pose -- traced to the RAW POLICY ACTION
+        # itself (not firmware, not real sensor noise, not the deploy
+        # clamp -- confirmed directly in clean sim with zero real-
+        # hardware noise involved): consecutive deterministic actions at
+        # a genuinely settled state swung by 10-30deg step-to-step.
+        # DogEnv.step()'s own slew clamp (MAX_SLEW_DEG_PER_S) rate-limits
+        # the PHYSICAL consequence during training, same as
+        # dog_deploy/policy_node.py's clamp does at deploy time -- but
+        # neither clamp can fix an underlying signal that keeps
+        # reversing direction; they only rate-limit how fast it chases
+        # itself back and forth forever. At the OLD weight (-0.01), a
+        # representative multi-motor jitter contributed roughly -0.01 to
+        # total reward per step -- negligible next to height_reward
+        # (weight 3.0) or upright_reward (weight 2.0), which routinely
+        # swing by whole units, or even the flat +0.05 survival_bonus
+        # alone. Checked checkpoints 1M/3M/4M/5M/6M of that run: no
+        # real downward trend in swing magnitude across 3-6M, i.e. more
+        # timesteps under the old weight wasn't fixing it on its own.
+        # New weight makes a typical jittering motor cost a real,
+        # competitive fraction of per-step reward instead of background
+        # noise. Still a placeholder value, not derived from any formal
+        # tuning -- re-adjust based on the next retrain's actual smoothness
+        # (same iterative-tuning pattern as position_kp/position_kd on
+        # the actuator side, see daniel_cl_context.md).
+        action_rate_penalty = -0.1 * float(np.sum((action - self.prev_action) ** 2))
 
         survival_bonus = 0.05
 
