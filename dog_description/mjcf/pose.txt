@@ -1,9 +1,0 @@
-root (free)  pos=[-0.04890452  0.1589734   0.24193864]  quat=[ 0.99319506 -0.00400874  0.00312834  0.11635173]
-leg_a_thigh       -2.12540 rad  -121.777 deg
-leg_a_calf        -0.00071 rad    -0.041 deg
-leg_b_thigh        1.96391 rad   112.524 deg
-leg_b_calf        -0.00076 rad    -0.044 deg
-leg_c_thigh       -1.85037 rad  -106.019 deg
-leg_c_calf         0.00078 rad     0.045 deg
-leg_d_thigh        1.80645 rad   103.502 deg
-leg_d_calf         0.00079 rad     0.045 deg
