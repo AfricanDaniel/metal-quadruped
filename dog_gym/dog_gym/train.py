@@ -32,7 +32,7 @@ def make_env(env_id, domain_randomization):
 
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
-          log_dir, model_dir, domain_randomization):
+          log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs)')
 
     env_fns = [make_env(env_id, domain_randomization) for _ in range(num_envs)]
@@ -53,13 +53,19 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     )
 
     if algo == 'PPO':
+        # n_steps*num_envs is the rollout buffer size collected before each
+        # round of updates -- SB3 just warns (doesn't error) if batch_size
+        # doesn't evenly divide it, verified directly; not re-validated
+        # here, so a bad combination will silently proceed with a
+        # truncated final minibatch each epoch. Watch stdout for that
+        # warning after changing any of these three.
         model = PPO(
             policy='MlpPolicy',
             env=env,
             learning_rate=3e-4,
-            n_steps=2048,
-            batch_size=64,
-            n_epochs=10,
+            n_steps=n_steps,
+            batch_size=batch_size,
+            n_epochs=n_epochs,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
@@ -173,6 +179,14 @@ def main():
     parser.add_argument('--log-dir', default='logs')
     parser.add_argument('--model-dir', default='models')
     parser.add_argument('--domain-randomization', action='store_true')
+    parser.add_argument('--n-steps', type=int, default=2048,
+                         help='PPO only: rollout length per env before each update '
+                              '(buffer size = n_steps * num_envs)')
+    parser.add_argument('--batch-size', type=int, default=64,
+                         help='PPO only: SGD minibatch size (must evenly divide '
+                              'n_steps * num_envs)')
+    parser.add_argument('--n-epochs', type=int, default=10,
+                         help='PPO only: number of SGD passes over the rollout buffer per update')
     parser.add_argument('--fname', default='dog_policy')
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', metavar='PATH_TO_MODEL')
@@ -184,7 +198,7 @@ def main():
     if args.train:
         train(args.env_id, args.algo, args.fname, args.env_type, args.num_envs,
               args.timesteps_per_iter, args.log_dir, args.model_dir,
-              args.domain_randomization)
+              args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv)
     else:
