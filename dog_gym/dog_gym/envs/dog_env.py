@@ -74,22 +74,24 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 SIT_HEIGHT_M = 0.14
 
 # Motor-id order (1..8), hand-verified sim qpos at the standing pose
-# above (NOT converted from real hardware degrees), originally captured
-# 2026-07-23 via mjcf/save_pose.py.
+# above (NOT converted from real hardware degrees).
 #
-# 2026-07-26: re-expressed in the POST-AXIS_FLIP convention (see
-# generate_dog_mjcf.py's AXIS_FLIP -- sim's joint axes were flipped so
-# raw sim directions match the real robot motor-for-motor). Flipping a
-# joint's axis negates its qpos meaning, so the entries for the 6
-# flipped joints (motors 1, 2, 4, 5, 7, 8) were negated from the
-# original capture; motors 3, 6 (leg_b_calf/leg_c_calf, not flipped)
-# are unchanged. Same physical pose, new numbers.
-#
-# Still stale in one known way (pre-existing, unrelated to the flip):
-# captured before the belt-decoupling fix changed what a calf's
-# action/obs means, so it needs a fresh re-capture eventually -- see
-# daniel_cl_context.md's TODO list.
-STANDING_QPOS_DEG = np.array([116.970, 120.650, -105.144, -97.769, 110.876, 104.772, -98.950, -104.126])
+# RECAPTURED 2026-07-27 (via mjcf/save_pose.py, post-AXIS_FLIP AND
+# post-calf-range-fix -- supersedes both the original 2026-07-23 capture
+# and its 2026-07-26 AXIS_FLIP renegotiation, which predated the belt-
+# decoupling fix's change to what a calf's action/obs means and was
+# flagged stale ever since, see daniel_cl_context.md's TODO 9). Every
+# value fits comfortably inside the real-hardware-measured joint ranges
+# (generate_dog_mjcf.py's JOINT_RANGE_OVERRIDES_DEG) -- confirms this
+# hand-posed stance is physically achievable on the real robot, not just
+# a sim artifact. Torso height at capture was 0.3132m, matching
+# STAND_HEIGHT_M=0.313 almost exactly -- a genuine standing pose, not a
+# coincidence. User note: a second, real-hardware-referenced candidate
+# pose looked "more appealing" by eye but didn't match how the CURRENT
+# sim actually stands -- deliberately using this sim-native capture
+# instead, since this constant's job is to seed DogEnv's own kinematics
+# consistently, not to exactly reproduce an external reference.
+STANDING_QPOS_DEG = np.array([107.507, 104.071, -86.789, -98.804, 98.743, 98.011, -93.049, -103.804])
 
 # Motor-order (0-indexed, i.e. motor_id - 1) indices of the 4 thigh and 4
 # calf joints -- used by the stand task's symmetry penalty. Neither axis
