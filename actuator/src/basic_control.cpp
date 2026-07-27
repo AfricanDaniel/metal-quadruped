@@ -108,7 +108,7 @@ public:
 
         // Declare position control parameters (used by the adjust_motor_position service)
         this->declare_parameter("position_kp", 450.0);
-        this->declare_parameter("position_kd", 6.0);
+        this->declare_parameter("position_kd", 8.0);
 
         // Default speed (output-shaft degrees/sec) for position-mode moves.
         // Read live (not cached) so `ros2 param set` takes effect on the next

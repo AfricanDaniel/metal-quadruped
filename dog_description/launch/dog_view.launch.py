@@ -7,19 +7,30 @@ touched):
   - rewrites its mesh package:// paths so RViz can resolve them from the
     installed dog_description share directory (the raw export's paths
     assume a standalone "full_dog" package that doesn't exist here).
-  - renames the 8 continuous hip/knee joints from their raw Onshape names
-    to leg_<a-d>_<thigh,calf> (matching dog_description/config/
-    motor_mapping.yaml / dog.mjcf.xml's own joint names), purely so the
-    joint_state_publisher_gui sliders are readable -- no structural
-    change, same pattern as half_dog_view.launch.py's renames.
+  - renames the 8 hip/knee joints from their raw Onshape names to
+    leg_<a-d>_<thigh,calf> (matching dog_description/config/
+    motor_mapping.yaml / dog.mjcf.xml's own joint names), so the
+    joint_state_publisher_gui sliders are readable.
+  - applies the SAME axis flips and joint ranges dog.mjcf.xml gets from
+    generate_dog_mjcf.py, read live out of that script's own AXIS_FLIP /
+    JOINT_RANGE_OVERRIDES_DEG definitions (parsed via ast, not imported
+    -- the generator's module-level imports need mujoco/trimesh, which
+    the ROS python running this launch file doesn't have). The raw URDF
+    still carries the pre-AXIS_FLIP axes and unlimited `continuous`
+    joints, so without this the sliders would spin 6 of 8 joints
+    OPPOSITE to real life and run far past the real mechanical limits.
+    Each leg joint becomes `revolute` with the sim's exact degree range
+    converted to radians -- slider directions and endpoints then match
+    both dog.mjcf.xml and the real robot 1:1.
 
 This URDF has no prismatic/loop-closure joints to fix up (unlike
 half_dog_view.launch.py's single-leg export) -- it's the ORIGINAL 4-leg
-export, from before the (not-yet-rolled-out, see daniel_cl_context.md's
-"Cylindrical mate fix" section) cylindrical-mate CAD fix. Every leg joint
-here is a plain `continuous` hinge.
+export, from before the (not-rolled-out, see daniel_cl_context.md's
+"Cylindrical mate fix" section) cylindrical-mate CAD fix.
 """
 
+import ast
+import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -47,11 +58,31 @@ JOINT_RENAME = {
 }
 
 
+def load_generator_constants(share: Path):
+    """Reads AXIS_FLIP and JOINT_RANGE_OVERRIDES_DEG out of the installed
+    generate_dog_mjcf.py via ast (single source of truth -- importing the
+    module would drag in mujoco/numpy/trimesh, unavailable here)."""
+    src = (share / 'mjcf' / 'generate_dog_mjcf.py').read_text()
+    wanted = {'AXIS_FLIP': None, 'JOINT_RANGE_OVERRIDES_DEG': None}
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in wanted:
+                    wanted[target.id] = ast.literal_eval(node.value)
+    missing = [k for k, v in wanted.items() if v is None]
+    if missing:
+        raise RuntimeError(f'could not parse {missing} from generate_dog_mjcf.py -- '
+                           'was the dict/set renamed or made non-literal?')
+    return wanted['AXIS_FLIP'], wanted['JOINT_RANGE_OVERRIDES_DEG']
+
+
 def make_robot_description() -> str:
     share = Path(get_package_share_directory('dog_description'))
     urdf_path = share / 'onshape_folders' / 'urdf_dog' / 'full_dog' / 'urdf' / 'full_dog.urdf'
     tree = ET.parse(urdf_path)
     robot = tree.getroot()
+
+    axis_flip, ranges_deg = load_generator_constants(share)
 
     old_prefix = 'package://full_dog/meshes/'
     new_prefix = 'package://dog_description/onshape_folders/urdf_dog/full_dog/meshes/'
@@ -61,8 +92,25 @@ def make_robot_description() -> str:
 
     for joint in robot.findall('joint'):
         new_name = JOINT_RENAME.get(joint.get('name'))
-        if new_name is not None:
-            joint.set('name', new_name)
+        if new_name is None:
+            continue
+        joint.set('name', new_name)
+
+        if new_name in axis_flip:
+            axis = joint.find('axis')
+            axis.set('xyz', ' '.join(str(-float(v)) for v in axis.get('xyz').split()))
+
+        lo_deg, hi_deg = ranges_deg[new_name]
+        joint.set('type', 'revolute')
+        limit = joint.find('limit')
+        if limit is None:
+            limit = ET.SubElement(joint, 'limit')
+        limit.set('lower', f'{math.radians(lo_deg):.6f}')
+        limit.set('upper', f'{math.radians(hi_deg):.6f}')
+        # Nominal GO-M8010-6 figures -- URDF requires these attributes on
+        # a revolute joint; nothing in this visualization consumes them.
+        limit.set('effort', '23.7')
+        limit.set('velocity', '30.0')
 
     return ET.tostring(robot, encoding='unicode')
 
