@@ -140,11 +140,28 @@ ACTUATOR_ORDER = [
 #     values (the FIRST derivation was right all along), and reverted
 #     motor_mapping.yaml/motor_mapping_thigh_test.yaml's motors 1, 5
 #     back to sign=-1 to match.
+#   - FINAL CHAPTER (2026-07-26, later, user-approved -- was TODO item
+#     12 in daniel_cl_context.md): rather than keep carrying the
+#     raw-viewer-vs-real-life direction mismatch in everyone's head,
+#     the user decided to flip sim's own native axis convention to
+#     match the REAL robot motor-for-motor (so `python3 -m
+#     mujoco.viewer --mjcf=dog.mjcf.xml` shows real-life directions
+#     directly). See AXIS_FLIP below: the URDF's auto-detected axis is
+#     negated for exactly the 6 joints whose raw sim direction
+#     disagreed with the real motor's (measured per-joint by FK
+#     d(foot_y)/d(theta), user's bench table and the FK check agreed on
+#     all 8 motors). Flipping an axis negates that joint's qpos
+#     meaning, so the 4 flipped THIGH ranges below were negated-and-
+#     swapped ((lo,hi) -> (-hi,-lo)) from the values above at the same
+#     time -- same real measured hard-stops, re-expressed in the new
+#     convention. After this, motor_mapping.yaml's sign is +1 for all
+#     8 motors (sim == real per motor, that's the whole point).
 #
 # THIGH values below are that real measured extreme (relative to the
 # tucked home), sign-corrected, with a 5% margin pulled in from each side
 # (user's explicit choice, so a trained policy never has to command the
-# literal mechanical hard-stop).
+# literal mechanical hard-stop) -- expressed in the POST-AXIS_FLIP
+# convention (see the "final chapter" note above).
 #
 # CALF values below are DELIBERATELY NOT real-hardware-derived, and this
 # is a correction of a real mistake (2026-07-25, caught by the user:
@@ -169,14 +186,32 @@ ACTUATOR_ORDER = [
 # if this needs changing) until the real absolute-calf-limit/action-space
 # work above is actually done properly.
 JOINT_RANGE_OVERRIDES_DEG = {
-    'leg_a_thigh': (-230.6, 11.6),
+    'leg_a_thigh': (-11.6, 230.6),
     'leg_a_calf':  (-360, 360),
     'leg_b_calf':  (-360, 360),
-    'leg_b_thigh': (-11.0, 231.8),
-    'leg_c_thigh': (-235.6, 7.6),
+    'leg_b_thigh': (-231.8, 11.0),
+    'leg_c_thigh': (-7.6, 235.6),
     'leg_c_calf':  (-360, 360),
     'leg_d_calf':  (-360, 360),
-    'leg_d_thigh': (-6.8, 234.0),
+    'leg_d_thigh': (-234.0, 6.8),
+}
+
+# Joints whose <joint axis> gets NEGATED relative to the URDF's
+# auto-detected value, so that sim's own raw qpos direction matches the
+# REAL robot's motor direction 1:1 (user decision 2026-07-26, was TODO
+# item 12 in daniel_cl_context.md -- see the "final chapter" note above
+# for the full story and how the set was determined). Exactly the 6
+# joints whose raw sim direction disagreed with the real motor;
+# leg_b_calf/leg_c_calf (motors 3, 6) already matched and are NOT
+# flipped. Axis negation only reverses the rotation direction -- body
+# frames, positions, and meshes are unaffected.
+AXIS_FLIP = {
+    'leg_a_thigh',  # motor 1
+    'leg_a_calf',   # motor 2
+    'leg_b_thigh',  # motor 4
+    'leg_c_thigh',  # motor 5
+    'leg_d_calf',   # motor 7
+    'leg_d_thigh',  # motor 8
 }
 
 # Two of the URDF's Onshape-native split mesh names both represent one
@@ -539,8 +574,11 @@ def main():
         thigh_diag = box_diaginertia(args.mass_thigh, thigh_size)
         calf_diag = box_diaginertia(args.mass_calf, calf_size)
 
-        hip_axis = leg['hip']['axis']
-        knee_axis = leg['knee']['axis']
+        # AXIS_FLIP (see its comment near JOINT_RANGE_OVERRIDES_DEG):
+        # negate the URDF's auto-detected axis for the joints whose raw
+        # sim direction would otherwise disagree with the real motor's.
+        hip_axis = leg['hip']['axis'] * (-1 if f"{leg['name']}_thigh" in AXIS_FLIP else 1)
+        knee_axis = leg['knee']['axis'] * (-1 if f"{leg['name']}_calf" in AXIS_FLIP else 1)
 
         foot_links = [l for l in leg['calf_links'] if l.startswith('ball_for_feet')]
         if not foot_links:
@@ -648,8 +686,18 @@ def main():
     vertex data via trimesh, transformed into each body's frame), not the
     CAD's real `fullinertia` tensor.
 
-    Joint axes and all positions are auto-detected per leg from the
-    URDF's own joint tree (see detect_legs() in the generator script).
+    Joint positions are auto-detected per leg from the URDF's own joint
+    tree (see detect_legs() in the generator script). Joint AXES start
+    from the URDF's auto-detected values but 6 of the 8 are then
+    deliberately NEGATED (see AXIS_FLIP in the generator, user decision
+    2026-07-26) so that every joint's raw qpos direction in this file
+    matches the REAL robot motor's direction 1:1 -- `python3 -m
+    mujoco.viewer` on this file shows real-life directions directly,
+    and motor_mapping.yaml's sign is +1 for all 8 motors. Directions
+    are still mirrored left-vs-right (matching the real mirror-mounted
+    motors): thigh "away from front" = increase for motors 1/5,
+    decrease for 4/8; calf "towards front" = increase for motors 2/6,
+    decrease for 3/7.
     Leg corner naming (leg_a=front_right, leg_b=front_left,
     leg_c=back_right, leg_d=back_left) matches
     dog_description/config/motor_mapping.yaml, assigned from each leg's

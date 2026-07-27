@@ -11,10 +11,6 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/hardware_bringup.launch.py']),
-        ('share/' + package_name + '/config', [
-            'config/motor_mapping_thigh_ac_corrected.yaml',
-            'config/motor_mapping_thigh_test.yaml',
-        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

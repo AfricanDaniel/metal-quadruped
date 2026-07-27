@@ -17,6 +17,7 @@ real fix.
 
 Usage:
     python3 -m dog_gym.verify_belt_decoupling [--leg a] [--amplitude-deg 30] [--period-s 4] [--duration-s 30]
+    python3 -m dog_gym.verify_belt_decoupling --leg a --full-range   # sweep the thigh's whole joint range
 
 Needs a display (mujoco.viewer.launch_passive) -- run this on your dev
 machine, not the headless training VM.
@@ -44,6 +45,13 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--leg', choices=['a', 'b', 'c', 'd'], default='a')
     p.add_argument('--amplitude-deg', type=float, default=30.0)
+    p.add_argument('--full-range', action='store_true',
+                    help="sweep the thigh across its ENTIRE <joint range> (read from the "
+                         "model) instead of +-amplitude-deg around home -- shows the whole "
+                         "path. Starts from whichever range end is nearer the home pose. "
+                         "--period-s is auto-lengthened if needed so the moving target "
+                         "never outruns DogEnv's 100deg/s slew-rate limit (otherwise the "
+                         "real motion would lag/flatten instead of tracking the sweep).")
     p.add_argument('--period-s', type=float, default=4.0)
     p.add_argument('--duration-s', type=float, default=0.0,
                     help='0 = run until the viewer window is closed')
@@ -78,17 +86,57 @@ def main():
 
     calf_body_id = mujoco.mj_name2id(env.model, mujoco.mjtObj.mjOBJ_BODY, f'leg_{args.leg}_calf')
 
-    def calf_world_zaxis():
-        xmat = env.data.xmat[calf_body_id].reshape(3, 3)
-        return xmat[:, 2].copy()
+    def calf_world_rotmat():
+        return env.data.xmat[calf_body_id].reshape(3, 3).copy()
+
+    def full_rotation_angle_deg(R0, R1):
+        # Angle of the full 3D rotation R1 @ R0.T via the trace formula.
+        # An earlier version of this script compared a single body axis
+        # (xmat's z column) instead -- BLIND to rotation about that axis,
+        # which for this calf is exactly the hinge axis, so it printed
+        # ~0 drift even while the calf visibly rotated (the same flawed
+        # metric that once hid a real sign bug -- see daniel_cl_context.md's
+        # "flip the sign" section). Never compare a single axis vector.
+        cos_theta = (np.trace(R1 @ R0.T) - 1.0) / 2.0
+        return np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
 
     action = obs[:8].copy()  # hold every motor at its current absolute target...
     calf_hold_target = action[calf_idx]  # ...this is the one being checked
-    z0 = calf_world_zaxis()
+    R0 = calf_world_rotmat()
 
-    print(f"Sweeping leg_{args.leg}'s thigh +-{args.amplitude_deg:.0f}deg around "
-          f"{np.degrees(action[thigh_idx]):.1f}deg, holding leg_{args.leg}'s calf fixed at "
-          f"{np.degrees(calf_hold_target):.1f}deg (absolute).")
+    period_s = args.period_s
+    if args.full_range:
+        jid = env.model.joint(f'leg_{args.leg}_thigh').id
+        lo, hi = env.model.jnt_range[jid]  # radians
+        center = (lo + hi) / 2
+        amp = (hi - lo) / 2
+        # Start the sweep from whichever range end sits nearer the home
+        # pose (qpos=0), so there's no big initial jump: cos starts at
+        # +1, so `center + amp*cos` starts at hi, `center - amp*cos` at lo.
+        start_sign = 1.0 if abs(hi) <= abs(lo) else -1.0
+        # DogEnv.step() slew-limits the target to 100deg/s; the sine
+        # target's peak speed is amp*2pi/T. Cap at 90deg/s (small margin)
+        # or the real motion lags the target and never shows the true path.
+        min_period = np.degrees(amp) * 2 * np.pi / 90.0
+        if period_s < min_period:
+            period_s = min_period
+            print(f'note: --period-s raised to {period_s:.1f}s so the sweep target stays '
+                  f'within the 100deg/s slew-rate limit.')
+
+        def thigh_target(t):
+            return center + start_sign * amp * np.cos(2 * np.pi * t / period_s)
+
+        print(f"Sweeping leg_{args.leg}'s thigh across its FULL range "
+              f"({np.degrees(lo):.1f} .. {np.degrees(hi):.1f}deg), starting from the "
+              f"{'upper' if start_sign > 0 else 'lower'} end (nearest home), "
+              f"holding leg_{args.leg}'s calf fixed at {np.degrees(calf_hold_target):.1f}deg (absolute).")
+    else:
+        def thigh_target(t):
+            return np.radians(args.amplitude_deg) * np.sin(2 * np.pi * t / period_s)
+
+        print(f"Sweeping leg_{args.leg}'s thigh +-{args.amplitude_deg:.0f}deg around "
+              f"{np.degrees(action[thigh_idx]):.1f}deg, holding leg_{args.leg}'s calf fixed at "
+              f"{np.degrees(calf_hold_target):.1f}deg (absolute).")
     print('Watch the calf in the viewer -- it should barely move while the thigh swings.')
     print('Close the viewer window to stop.' if args.duration_s <= 0
           else f'Running for {args.duration_s:.0f}s (or close the viewer window to stop early).')
@@ -100,7 +148,7 @@ def main():
     while env.renderer is None or env.renderer.is_running():
         if args.duration_s > 0 and time.time() - start > args.duration_s:
             break
-        action[thigh_idx] = np.radians(args.amplitude_deg) * np.sin(2 * np.pi * t / args.period_s)
+        action[thigh_idx] = thigh_target(t)
         action[calf_idx] = calf_hold_target
         # terminated/truncated are ignored here on purpose -- this tool
         # manually drives the pose every step rather than running a real
@@ -118,7 +166,7 @@ def main():
 
         if time.time() - start - last_print > 0.5:
             last_print = time.time() - start
-            drift_deg = np.degrees(np.arccos(np.clip(np.dot(z0, calf_world_zaxis()), -1.0, 1.0)))
+            drift_deg = full_rotation_angle_deg(R0, calf_world_rotmat())
             print(f't={t:5.1f}s  thigh={np.degrees(obs[thigh_idx]):+7.2f}deg  '
                   f'calf={np.degrees(obs[calf_idx]):+7.2f}deg (target {np.degrees(calf_hold_target):+7.2f}deg)  '
                   f'calf world-orientation drift={drift_deg:5.2f}deg')

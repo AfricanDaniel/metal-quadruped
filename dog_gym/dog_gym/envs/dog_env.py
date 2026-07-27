@@ -74,28 +74,22 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 SIT_HEIGHT_M = 0.14
 
 # Motor-id order (1..8), hand-verified sim qpos at the standing pose
-# above (NOT converted from real hardware degrees -- see the note above).
+# above (NOT converted from real hardware degrees), originally captured
+# 2026-07-23 via mjcf/save_pose.py.
 #
-# IMPORTANT, UNRESOLVED (2026-07-23): this replaced an earlier version
-# derived from actuator/config/preset_pose.yaml's real "standing" preset,
-# converted through motor_mapping.yaml's documented sign. That version
-# had the right idea for the thighs (see THIGH_SYMMETRY_SIGN -- the
-# left/right mirrored-axis finding still holds and is confirmed again by
-# this new data) but was flat wrong for the calves: it assumed calves
-# barely move (~0-6deg, taken straight from the real preset) when hand-
-# posing the sim shows they need to rotate almost as much as the thighs
-# (~100-120deg) to reach a fully extended stance. The calves ALSO turned
-# out to have a non-uniform sign across legs, just split front/back
-# instead of left/right: leg_a/leg_b (front) go negative, leg_c/leg_d
-# (back) go positive, consistent across both the semi-standing and full-
-# standing hand-posed captures (not noise). See CALF_SYMMETRY_SIGN below.
-# Root cause of why real-hardware-preset-converted values don't match
-# this sim's own kinematics is still not identified for either joint --
-# deliberately NOT touching motor_mapping.yaml (shared with dog_deploy,
-# hardware-facing) on unverified sim-only findings. Check both thigh AND
-# calf signs on real hardware before trusting a sim-trained policy's
-# action signs at deployment time.
-STANDING_QPOS_DEG = np.array([-116.970, -120.650, -105.144, 97.769, -110.876, 104.772, 98.950, 104.126])
+# 2026-07-26: re-expressed in the POST-AXIS_FLIP convention (see
+# generate_dog_mjcf.py's AXIS_FLIP -- sim's joint axes were flipped so
+# raw sim directions match the real robot motor-for-motor). Flipping a
+# joint's axis negates its qpos meaning, so the entries for the 6
+# flipped joints (motors 1, 2, 4, 5, 7, 8) were negated from the
+# original capture; motors 3, 6 (leg_b_calf/leg_c_calf, not flipped)
+# are unchanged. Same physical pose, new numbers.
+#
+# Still stale in one known way (pre-existing, unrelated to the flip):
+# captured before the belt-decoupling fix changed what a calf's
+# action/obs means, so it needs a fresh re-capture eventually -- see
+# daniel_cl_context.md's TODO list.
+STANDING_QPOS_DEG = np.array([116.970, 120.650, -105.144, -97.769, 110.876, 104.772, -98.950, -104.126])
 
 # Motor-order (0-indexed, i.e. motor_id - 1) indices of the 4 thigh and 4
 # calf joints -- used by the stand task's symmetry penalty. Neither axis
@@ -103,20 +97,23 @@ STANDING_QPOS_DEG = np.array([-116.970, -120.650, -105.144, 97.769, -110.876, 10
 # CALF_SYMMETRY_SIGN correct for it before comparing, so the penalty
 # rewards the real symmetric standing configuration instead of fighting it.
 SYMMETRIC_THIGH_IDX = [0, 3, 4, 7]  # motors 1, 4, 5, 8 (leg_a, leg_b, leg_c, leg_d)
-# [-1,1,-1,1]: REAL, confirmed-by-direct-forward-kinematics left/right
-# mirrored asymmetry (2026-07-26, see generate_dog_mjcf.py's
-# JOINT_RANGE_OVERRIDES_DEG comment and daniel_cl_context.md for the
-# full saga) -- leg_a/leg_c's thigh extends toward standing at NEGATIVE
-# qpos, leg_b/leg_d's at POSITIVE. This was briefly (and wrongly) set to
-# uniform [1,1,1,1] the same day, based on an unverified assumption that
-# a since-reverted range fix had made all 4 legs uniform -- it hadn't;
-# swept each thigh's qpos and read the resulting foot world z directly
-# (no assumptions) to confirm the asymmetry is real, not a leftover bug.
-# Do not "fix" this to uniform again without re-running that same direct
-# geometric check first.
-THIGH_SYMMETRY_SIGN = np.array([-1, 1, -1, 1])
+# [1,-1,1,-1] since the 2026-07-26 AXIS_FLIP (generate_dog_mjcf.py):
+# sim's raw directions now match the real robot motor-for-motor, and the
+# real robot's left/right motors are mirror-mounted -- so "extend toward
+# standing" is POSITIVE qpos for the right legs' thighs (a, c) and
+# NEGATIVE for the left legs' (b, d). These signs normalize all four to
+# positive before the variance comparison. Derived from (and verified
+# against) the same direct FK sweep that determined AXIS_FLIP itself --
+# if the axes ever change again, re-derive this from FK, never from a
+# documented convention (see daniel_cl_context.md's sign saga).
+THIGH_SYMMETRY_SIGN = np.array([1, -1, 1, -1])
 SYMMETRIC_CALF_IDX = [1, 2, 5, 6]   # motors 2, 3, 6, 7 (leg_a, leg_b, leg_c, leg_d)
-CALF_SYMMETRY_SIGN = np.array([-1, -1, 1, 1])   # front/back split, see note above
+# [1,-1,1,-1] since the same AXIS_FLIP (was [-1,-1,1,1] under the old
+# axes): "calf towards front" is now POSITIVE qpos for the right legs'
+# calves (a, c) and NEGATIVE for the left legs' (b, d), matching the
+# real robot's mirror-mounted motors -- left/right split now, not the
+# old front/back split (motors 2 and 7 flipped; 3 and 6 didn't).
+CALF_SYMMETRY_SIGN = np.array([1, -1, 1, -1])
 # NOT YET AUDITED (flagged 2026-07-26, unlike THIGH_SYMMETRY_SIGN above):
 # _compute_reward_stand() computes calf_spread from self.data.qpos
 # directly -- the RAW, thigh-relative calf hinge value -- NOT the

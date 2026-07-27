@@ -108,26 +108,25 @@ you actually want. Both commands below assume `source install/setup.bash`
     from each leg's own joint-axis geometry, see `dog_env.py`'s
     `__init__`). **Any checkpoint trained before this fix landed is
     stale** — its calf semantics don't match the current env.
-  - **leg_a/leg_c thigh real-vs-sim sign — long-running saga, settled
-    2026-07-26 via direct forward-kinematics.** `dog.mjcf.xml`'s own
-    header used to claim thigh's "positive = away from front" convention
-    is the same physical meaning for all 4 legs — this is FALSE for
-    leg_a/leg_c specifically, and trusting it (rather than checking it
-    directly) is what made this saga take several wrong turns. Settled
-    definitively by sweeping each thigh's qpos (everything else at home)
-    and reading the resulting FOOT WORLD Z — unambiguous regardless of
-    any front/back terminology confusion: for leg_a/leg_c, extending
-    toward standing (foot dropping) is NEGATIVE qpos; for leg_b/leg_d,
-    POSITIVE. This is a genuine, real, mirrored CAD-axis asymmetry
-    between the two sides (their auto-detected joint axes are NOT
-    uniform) — not a bug in the axis itself, just a real fact
-    `THIGH_SYMMETRY_SIGN` (`dog_env.py`), `JOINT_RANGE_OVERRIDES_DEG`
-    (`generate_dog_mjcf.py`), and `motor_mapping.yaml`'s signs for
-    motors 1/5 all need to correctly reflect (all three were briefly
-    "corrected" to assume uniformity earlier the same day, then reverted
-    once the direct geometry check disproved that). See
-    `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` comment and
-    daniel_cl_context.md for the full history.
+  - **Sim directions match the real robot motor-for-motor since
+    2026-07-26** (`AXIS_FLIP` in `generate_dog_mjcf.py`, the final
+    chapter of this project's long sign saga — see that dict's comment
+    and daniel_cl_context.md for the full history of wrong turns that
+    preceded it). The generator deliberately negates the URDF's
+    auto-detected joint axis for 6 of the 8 joints so that every
+    joint's raw sim qpos direction equals the real motor's direction;
+    consequently `motor_mapping.yaml`'s sign is `+1` for all 8 motors,
+    and the raw `mujoco.viewer` shows real-life directions directly.
+    Directions are still mirrored left-vs-right (real motors are
+    mirror-mounted; sim now mirrors that faithfully): "extend toward
+    standing" is POSITIVE thigh qpos for the right legs (a, c),
+    NEGATIVE for the left (b, d) — which is exactly what
+    `THIGH_SYMMETRY_SIGN`/`CALF_SYMMETRY_SIGN` (`[1,-1,1,-1]`) correct
+    for in the stand task's symmetry reward. Any sign/direction
+    question should be settled by direct forward-kinematics (sweep the
+    joint, read the foot's world position via `mj_forward`), never by
+    trusting a documented convention — that's the method that ended
+    the saga.
 - **Termination**: torso falls below `FALL_HEIGHT_M` or tips past
   `MAX_TILT_RAD`. **Truncation**: `MAX_EPISODE_STEPS`.
 - `domain_randomization=True` randomizes ground friction on every reset

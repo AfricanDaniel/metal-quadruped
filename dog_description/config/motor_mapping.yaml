@@ -12,26 +12,32 @@
 #     before sending it to actuator/SetMotorTargets, and multiplies a
 #     motor's real reading by `sign` before treating it as a
 #     sim-convention angle.
-#   - IMPORTANT (corrected 2026-07-26, see generate_dog_mjcf.py's
-#     JOINT_RANGE_OVERRIDES_DEG comment and daniel_cl_context.md for the
-#     full saga): dog.mjcf.xml's thigh joints are NOT actually uniform
-#     across all 4 legs -- an earlier version of this comment claimed
-#     "positive = away from front, same physical meaning for all four
-#     legs," which is FALSE for leg_a/leg_c specifically (confirmed by
-#     direct forward-kinematics: sweeping each thigh's qpos and reading
-#     the resulting foot height shows leg_a/leg_c extend toward standing
-#     at NEGATIVE qpos, leg_b/leg_d at POSITIVE -- a genuine, real,
-#     mirrored CAD-axis asymmetry between the two sides, not a bug).
-#     `sign` below is per-motor precisely because of this -- don't assume
-#     symmetry between sides when reasoning about what a given sign value
-#     "should" be for a leg you haven't independently checked.
-#   - Determined most reliably via an isolated single-motor real-hardware
-#     test (send a known raw delta to ONE motor, no policy, watch which
-#     way it physically swings) cross-checked against direct sim
-#     forward-kinematics (does that same qpos direction actually lower
-#     the foot toward the ground) -- NOT by comparing against another
-#     sim-only reference (STANDING_QPOS_DEG, preset_pose.yaml) alone,
-#     which is what led this project down a wrong turn earlier.
+#   - ALL 8 SIGNS ARE +1 SINCE 2026-07-26, BY CONSTRUCTION: sim's own
+#     joint axes were deliberately flipped in generate_dog_mjcf.py
+#     (AXIS_FLIP -- user decision, formerly TODO item 12 in
+#     daniel_cl_context.md) so that every joint's raw sim direction
+#     matches the real motor's direction 1:1, motor for motor. The
+#     per-joint set of flips was derived by measuring BOTH sides
+#     independently: the user's real bench table (which way each real
+#     motor moves its link for increasing theta) against a direct
+#     forward-kinematics sweep of each sim joint (d(foot_y)/d(theta),
+#     +y = front in the CAD frame) -- the two disagreed on exactly 6 of
+#     8 joints (motors 1, 2, 4, 5, 7, 8), and those 6 axes were negated.
+#     `python3 -m mujoco.viewer --mjcf=dog.mjcf.xml` therefore now shows
+#     real-life directions directly.
+#   - The sim axes are still NOT uniform leg-to-leg (real hardware
+#     mounts left/right motors as mirror images, and sim now mirrors
+#     that faithfully): "away from front" is INCREASING theta for the
+#     right legs' thighs (motors 1, 5) but DECREASING for the left
+#     legs' (motors 4, 8); "towards front" is INCREASING theta for the
+#     right legs' calves (motors 2, 6) but DECREASING for the left
+#     legs' (motors 3, 7). Same as the real robot -- that's the point.
+#   - If a future CAD re-export or motor re-mount changes any direction:
+#     re-measure BOTH sides per motor (real: isolated single-motor
+#     delta, no policy; sim: FK d(foot_y)/d(theta) sweep) before
+#     touching sign or AXIS_FLIP -- never infer from a documented
+#     convention or by comparing two sim-only references, which is what
+#     caused this project's long sign saga (see daniel_cl_context.md).
 #
 # leg_a/b/c/d are internal names (also used as dog.mjcf.xml body/joint name
 # prefixes, e.g. "leg_a_thigh") -- their physical corners are confirmed
@@ -46,7 +52,7 @@ motors:
   1:
     leg: leg_a
     joint: thigh
-    sign: -1
+    sign: 1
   2:
     leg: leg_a
     joint: calf
@@ -54,15 +60,15 @@ motors:
   3:
     leg: leg_b
     joint: calf
-    sign: -1
+    sign: 1
   4:
     leg: leg_b
     joint: thigh
-    sign: -1
+    sign: 1
   5:
     leg: leg_c
     joint: thigh
-    sign: -1
+    sign: 1
   6:
     leg: leg_c
     joint: calf
@@ -70,8 +76,8 @@ motors:
   7:
     leg: leg_d
     joint: calf
-    sign: -1
+    sign: 1
   8:
     leg: leg_d
     joint: thigh
-    sign: -1
+    sign: 1
