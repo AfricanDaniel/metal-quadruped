@@ -103,21 +103,18 @@ STANDING_QPOS_DEG = np.array([-116.970, -120.650, -105.144, 97.769, -110.876, 10
 # CALF_SYMMETRY_SIGN correct for it before comparing, so the penalty
 # rewards the real symmetric standing configuration instead of fighting it.
 SYMMETRIC_THIGH_IDX = [0, 3, 4, 7]  # motors 1, 4, 5, 8 (leg_a, leg_b, leg_c, leg_d)
-# Uniform since 2026-07-26: the left/right mirrored-sign split this used
-# to correct for was a symptom of leg_a/leg_c's thigh JOINT RANGE having
-# been derived with a since-disproven sign (see
-# generate_dog_mjcf.py's JOINT_RANGE_OVERRIDES_DEG comment and
-# daniel_cl_context.md) -- extending was a large NEGATIVE qpos for
-# leg_a/leg_c but large POSITIVE for leg_b/leg_d. That range was
-# corrected, so now all 4 thighs extend in the SAME (positive) direction
-# -- confirmed directly: every thigh's corrected range has qpos=0 (home)
-# near the small-magnitude end and full extension near the large-magnitude
-# positive end. A stale [-1,1,-1,1] here would now do the opposite of its
-# original purpose: re-introducing an artificial sign mismatch into
-# thigh_spread's variance for what the corrected range makes an actually
-# symmetric (all-positive) extension, penalizing the very behavior this
-# term is meant to reward.
-THIGH_SYMMETRY_SIGN = np.array([1, 1, 1, 1])
+# [-1,1,-1,1]: REAL, confirmed-by-direct-forward-kinematics left/right
+# mirrored asymmetry (2026-07-26, see generate_dog_mjcf.py's
+# JOINT_RANGE_OVERRIDES_DEG comment and daniel_cl_context.md for the
+# full saga) -- leg_a/leg_c's thigh extends toward standing at NEGATIVE
+# qpos, leg_b/leg_d's at POSITIVE. This was briefly (and wrongly) set to
+# uniform [1,1,1,1] the same day, based on an unverified assumption that
+# a since-reverted range fix had made all 4 legs uniform -- it hadn't;
+# swept each thigh's qpos and read the resulting foot world z directly
+# (no assumptions) to confirm the asymmetry is real, not a leftover bug.
+# Do not "fix" this to uniform again without re-running that same direct
+# geometric check first.
+THIGH_SYMMETRY_SIGN = np.array([-1, 1, -1, 1])
 SYMMETRIC_CALF_IDX = [1, 2, 5, 6]   # motors 2, 3, 6, 7 (leg_a, leg_b, leg_c, leg_d)
 CALF_SYMMETRY_SIGN = np.array([-1, -1, 1, 1])   # front/back split, see note above
 # NOT YET AUDITED (flagged 2026-07-26, unlike THIGH_SYMMETRY_SIGN above):

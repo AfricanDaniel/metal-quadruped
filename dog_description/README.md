@@ -77,13 +77,16 @@ by default so they don't overlap-render.
   calves.** Thigh ranges in `generate_dog_mjcf.py`'s
   `JOINT_RANGE_OVERRIDES_DEG` are real hardware mechanical hard-stops
   (bench-measured, sign-corrected, 5% margin) — see that dict's own
-  comment for the full derivation and its history (an earlier version
-  had legs a/c's sign backwards, confirmed and fixed 2026-07-26). Calf
-  ranges are deliberately a wide `+-360deg` placeholder — since the
-  belt-decoupling compensation (see `dog_gym/README.md`), a calf's raw
-  `<joint range>` is just headroom for that compensation math, not a
-  real limit; the real absolute calf angle limit isn't enforced anywhere
-  yet (a deferred TODO, see `daniel_cl_context.md`).
+  comment for the full derivation and its history, including a real,
+  multi-round sign/topology mixup for leg_a/leg_c specifically that took
+  a direct forward-kinematics check (sweep qpos, read the resulting foot
+  height) to settle definitively (2026-07-26) — earlier fixes based on
+  comparing against other sim-only references got this wrong more than
+  once. Calf ranges are deliberately a wide `+-360deg` placeholder —
+  since the belt-decoupling compensation (see `dog_gym/README.md`), a
+  calf's raw `<joint range>` is just headroom for that compensation
+  math, not a real limit; the real absolute calf angle limit isn't
+  enforced anywhere yet (a deferred TODO, see `daniel_cl_context.md`).
 
 Treat sim results accordingly — geometry, masses, and thigh limits are
 now real, but a trained policy still won't sim-to-real transfer
@@ -96,22 +99,29 @@ Single source of truth for which motor drives which joint, and in which
 direction, shared by `dog_gym` (sim) and `dog_deploy` (real hardware) so
 the two can never drift out of sync. The convention:
 
-- In `dog.mjcf.xml`, every **thigh** joint's positive direction means
-  "away from the front", uniformly for all four legs. This is the
-  joint's real axis meaning, independent of where qpos=0 happens to sit
-  within that joint's own range (which is NOT uniform across legs — see
-  `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` comment).
+- **`dog.mjcf.xml`'s thigh joints are NOT uniform across all four legs**
+  — an earlier version of this README claimed "positive = away from the
+  front, same physical meaning for all four legs," which is FALSE for
+  leg_a/leg_c specifically. Their auto-detected CAD joint axes are
+  genuinely mirrored relative to leg_b/leg_d's — confirmed by direct
+  forward-kinematics (sweep each thigh's qpos, everything else at home,
+  read the resulting foot world z): for leg_a/leg_c, extending toward
+  standing (foot dropping) is NEGATIVE qpos; for leg_b/leg_d, POSITIVE.
+  Not a bug to fix in the axis itself — a real fact about this design —
+  but every downstream consumer (`sign` below, `JOINT_RANGE_OVERRIDES_DEG`,
+  `THIGH_SYMMETRY_SIGN` in `dog_gym`) has to account for it correctly,
+  and assuming uniformity anywhere in that chain has broken this more
+  than once (see `daniel_cl_context.md`'s full history).
 - Each motor's `sign` says whether the real motor's "increase commanded
-  degrees" direction agrees with that sim convention (`1`) or is
-  inverted (`-1`) — real hardware mounts left/right motors as mirror
-  images of each other, so this genuinely differs per motor, not just
-  per leg-pair. Determined most reliably by an isolated single-motor
-  real-hardware test (send a known raw delta to ONE motor, no policy
-  running, watch which way it physically swings) — see
-  `daniel_cl_context.md` for the full sign-determination history,
-  including a case (leg_a/leg_c's thighs) where an earlier, less direct
-  comparison method got this wrong and was later corrected by that
-  isolated test.
+  degrees" direction agrees with `dog.mjcf.xml`'s own (per-leg, per
+  above) sim convention (`1`) or is inverted (`-1`). Determined most
+  reliably by an isolated single-motor real-hardware test (send a known
+  raw delta to ONE motor, no policy running, watch which way it
+  physically swings) CROSS-CHECKED against direct sim forward-kinematics
+  (does that same qpos direction actually lower the foot) — not by
+  comparing against another sim-only reference alone
+  (`STANDING_QPOS_DEG`, `preset_pose.yaml`), which is what sent this
+  particular sign on several wrong turns before it was settled this way.
 - **Calf motors' `sign` is about the real motor's own ABSOLUTE (torso-
   relative) angle**, not a thigh-relative one — see `dog_gym/README.md`'s
   "Belt/pulley calf decoupling" section for why a calf's real and sim

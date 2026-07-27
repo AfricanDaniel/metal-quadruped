@@ -1,8 +1,13 @@
 # TEMPORARY test copy of dog_description/config/motor_mapping.yaml.
-# Quick test 2026-07-26: motors 1, 4, 5 (leg_a/leg_b/leg_c THIGH) moved
-# the wrong direction running stand_policy_v1 on real hardware -- sign
-# flipped for those three only. Calves untouched, will look at those
-# later. NOT a replacement for the canonical file.
+# History: motors 1, 4, 5 flipped for a quick test (2026-07-26), then
+# motors 1, 5 flipped BACK again the same day once the real root cause
+# (a since-corrected range/sign mixup for legs a/c, see
+# generate_dog_mjcf.py's JOINT_RANGE_OVERRIDES_DEG comment and
+# daniel_cl_context.md) was found via direct forward-kinematics. Every
+# value below now matches the canonical dog_description/config/
+# motor_mapping.yaml exactly -- this file no longer overrides anything
+# and can be retired; kept only because it's still referenced by
+# in-flight test commands.
 legs:
   leg_a: front_right
   leg_b: front_left
@@ -13,7 +18,7 @@ motors:
   1:
     leg: leg_a
     joint: thigh
-    sign: 1
+    sign: -1
   2:
     leg: leg_a
     joint: calf
@@ -25,11 +30,11 @@ motors:
   4:
     leg: leg_b
     joint: thigh
-    sign: -1    # flipped from -1
+    sign: -1
   5:
     leg: leg_c
     joint: thigh
-    sign: 1
+    sign: -1
   6:
     leg: leg_c
     joint: calf

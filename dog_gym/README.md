@@ -108,21 +108,26 @@ you actually want. Both commands below assume `source install/setup.bash`
     from each leg's own joint-axis geometry, see `dog_env.py`'s
     `__init__`). **Any checkpoint trained before this fix landed is
     stale** — its calf semantics don't match the current env.
-  - **leg_a/leg_c thigh real-vs-sim sign — long-running saga, resolved
-    2026-07-26.** Real bench presets vs. sim's own `STANDING_QPOS_DEG`
-    disagreed in sign for all 4 thighs, which for a while looked like it
-    meant `motor_mapping.yaml`'s canonical signs were wrong. A clean,
-    isolated single-motor real-hardware test (send a known raw delta to
-    ONE motor at a time, no policy, watch which way it physically swings)
-    later showed the canonical signs were actually correct all along; the
-    real bug turned out to be that `dog.mjcf.xml`'s real-hardware-derived
-    joint RANGES for leg_a/leg_c's thighs had been computed using the
-    disproven sign, giving those two joints a mirrored-topology range
-    relative to leg_b/leg_d (confirmed on real hardware: a policy trying
-    to "extend" leg_a instead drove it into the front shoulder). Fixed by
-    recomputing those two ranges with the correct sign — see
-    `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` comment for the
-    full history and daniel_cl_context.md for the raw data.
+  - **leg_a/leg_c thigh real-vs-sim sign — long-running saga, settled
+    2026-07-26 via direct forward-kinematics.** `dog.mjcf.xml`'s own
+    header used to claim thigh's "positive = away from front" convention
+    is the same physical meaning for all 4 legs — this is FALSE for
+    leg_a/leg_c specifically, and trusting it (rather than checking it
+    directly) is what made this saga take several wrong turns. Settled
+    definitively by sweeping each thigh's qpos (everything else at home)
+    and reading the resulting FOOT WORLD Z — unambiguous regardless of
+    any front/back terminology confusion: for leg_a/leg_c, extending
+    toward standing (foot dropping) is NEGATIVE qpos; for leg_b/leg_d,
+    POSITIVE. This is a genuine, real, mirrored CAD-axis asymmetry
+    between the two sides (their auto-detected joint axes are NOT
+    uniform) — not a bug in the axis itself, just a real fact
+    `THIGH_SYMMETRY_SIGN` (`dog_env.py`), `JOINT_RANGE_OVERRIDES_DEG`
+    (`generate_dog_mjcf.py`), and `motor_mapping.yaml`'s signs for
+    motors 1/5 all need to correctly reflect (all three were briefly
+    "corrected" to assume uniformity earlier the same day, then reverted
+    once the direct geometry check disproved that). See
+    `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` comment and
+    daniel_cl_context.md for the full history.
 - **Termination**: torso falls below `FALL_HEIGHT_M` or tips past
   `MAX_TILT_RAD`. **Truncation**: `MAX_EPISODE_STEPS`.
 - `domain_randomization=True` randomizes ground friction on every reset
