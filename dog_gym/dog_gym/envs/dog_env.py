@@ -103,9 +103,39 @@ STANDING_QPOS_DEG = np.array([-116.970, -120.650, -105.144, 97.769, -110.876, 10
 # CALF_SYMMETRY_SIGN correct for it before comparing, so the penalty
 # rewards the real symmetric standing configuration instead of fighting it.
 SYMMETRIC_THIGH_IDX = [0, 3, 4, 7]  # motors 1, 4, 5, 8 (leg_a, leg_b, leg_c, leg_d)
-THIGH_SYMMETRY_SIGN = np.array([-1, 1, -1, 1])  # left/right split, see note above
+# Uniform since 2026-07-26: the left/right mirrored-sign split this used
+# to correct for was a symptom of leg_a/leg_c's thigh JOINT RANGE having
+# been derived with a since-disproven sign (see
+# generate_dog_mjcf.py's JOINT_RANGE_OVERRIDES_DEG comment and
+# daniel_cl_context.md) -- extending was a large NEGATIVE qpos for
+# leg_a/leg_c but large POSITIVE for leg_b/leg_d. That range was
+# corrected, so now all 4 thighs extend in the SAME (positive) direction
+# -- confirmed directly: every thigh's corrected range has qpos=0 (home)
+# near the small-magnitude end and full extension near the large-magnitude
+# positive end. A stale [-1,1,-1,1] here would now do the opposite of its
+# original purpose: re-introducing an artificial sign mismatch into
+# thigh_spread's variance for what the corrected range makes an actually
+# symmetric (all-positive) extension, penalizing the very behavior this
+# term is meant to reward.
+THIGH_SYMMETRY_SIGN = np.array([1, 1, 1, 1])
 SYMMETRIC_CALF_IDX = [1, 2, 5, 6]   # motors 2, 3, 6, 7 (leg_a, leg_b, leg_c, leg_d)
 CALF_SYMMETRY_SIGN = np.array([-1, -1, 1, 1])   # front/back split, see note above
+# NOT YET AUDITED (flagged 2026-07-26, unlike THIGH_SYMMETRY_SIGN above):
+# _compute_reward_stand() computes calf_spread from self.data.qpos
+# directly -- the RAW, thigh-relative calf hinge value -- NOT the
+# ABSOLUTE (belt-decoupled) calf angle _get_obs() computes via
+# calf_belt_sign. Since a calf's raw qpos = absolute_angle -
+# calf_belt_sign*thigh_qpos, two legs' raw values aren't comparable on
+# their own -- they're each confounded by wherever that leg's OWN thigh
+# happens to be, which can legitimately differ leg-to-leg during a
+# stand-up motion. This sign was derived from (and is being applied to)
+# that same raw, thigh-confounded quantity, so it may be self-consistent
+# rather than actively wrong the way THIGH_SYMMETRY_SIGN was -- but it's
+# unclear this raw-qpos-based symmetry measure is even the right thing to
+# reward post-belt-decoupling-fix, vs. computing it on the ABSOLUTE calf
+# angle instead (matching what the observation/action actually use).
+# Deliberately not changed without further verification -- see
+# daniel_cl_context.md.
 
 # Sitting/home height settles around 0.14m (measured the same way as
 # STAND_HEIGHT_M, at qpos=0) -- FALL_HEIGHT_M must stay below that or the
