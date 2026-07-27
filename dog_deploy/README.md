@@ -91,6 +91,19 @@ the policy's behavior.
 
 ## Open calibration TODOs (do not skip)
 
+**Sliding calf range — DONE (2026-07-27).** Each calf motor already
+reports its real ABSOLUTE angle directly (the belt does the decoupling
+in hardware, no compensation needed here) — but the calf's real physical
+limit (calf link hitting the thigh link) is fixed in a RELATIVE
+coordinate and slides in absolute terms as the thigh moves. `policy_node`
+now enforces this explicitly, using the live thigh reading, in
+`_on_positions_read()` — see `CALF_RANGE_DEG`'s comment (values MUST
+match `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` calf entries)
+and `daniel_cl_context.md`'s TODO 13 for the full measurement. Verified
+against a synthetic test matching a case sim itself hit: an out-of-range
+request gets clamped identically to how MuJoCo's own `<joint range>`
+clamps it in sim.
+
 **Homing/observation offset — DONE (2026-07-26).** `policy_node` used to
 build `motor_qpos_rad` directly from `read_motor_positions`'s raw
 `position_deg` (`sign * position_deg * DEG_TO_RAD`). Checked directly

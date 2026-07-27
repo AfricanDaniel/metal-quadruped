@@ -29,6 +29,19 @@ auto-captured from the current reading if not provided -- see __init__)
 and subtracting it before building the observation / adding it back when
 converting an action to a real target -- see _on_positions_read().
 
+Sliding calf range: each leg's calf motor already reports its own real
+ABSOLUTE (torso-relative) angle directly from its encoder -- the belt
+does that decoupling in hardware natively, no software compensation
+needed on this side (see dog_gym/envs/dog_env.py's belt-decoupling
+comments for the sim-side half of this story). But the calf's real
+physical limit -- the calf link hitting the thigh link -- is fixed in a
+RELATIVE coordinate (calf_absolute + thigh_absolute, both home-relative)
+and therefore SLIDES in absolute terms as the thigh moves (see
+daniel_cl_context.md's TODO 13 for the full measurement). MuJoCo enforces
+this automatically via dog.mjcf.xml's <joint range> in sim; the real
+robot has no such clamp, so _on_positions_read() enforces it explicitly
+using the live thigh reading -- see CALF_RANGE_DEG below.
+
 IMU frame: subscribes to dog_imu's CALIBRATED `imu/data` (forward/left/up,
 ROS REP-103 -- see dog_imu/calibrate_imu_node.py), not the raw
 `imu/data_raw`. But the sim the policy was trained in (dog_description/
@@ -60,6 +73,29 @@ DEFAULT_MOTOR_MAPPING_PATH = os.path.join(
 DEG_TO_RAD = 0.017453292519943295
 RAD_TO_DEG = 57.29577951308232
 
+# Real-hardware-measured calf RAW/RELATIVE range, home-relative degrees
+# -- MUST match generate_dog_mjcf.py's JOINT_RANGE_OVERRIDES_DEG's calf
+# entries exactly (that file is the single source of truth; keep these
+# in sync if the range is ever re-measured). See this module's
+# docstring's "Sliding calf range" section and daniel_cl_context.md's
+# TODO 13 for the full derivation (one stop is home itself, by design,
+# for every leg -- home-side has no margin; the other side has the
+# usual 5% pulled in from the measured stop).
+CALF_RANGE_DEG = {
+    'leg_a_calf': (0, 206.1),
+    'leg_b_calf': (-213.3, 0),
+    'leg_c_calf': (0, 215.8),
+    'leg_d_calf': (-213.7, 0),
+}
+
+# calf_belt_sign in dog_env.py's terms -- came out uniformly +1 for all
+# 4 legs after AXIS_FLIP (verified directly, see daniel_cl_context.md's
+# "AXIS_FLIP" section), i.e. raw_hinge = calf_absolute + thigh_absolute
+# for every leg, no per-leg sign needed. Re-verify (recompute per leg
+# from the model's own joint axes, matching dog_env.py's __init__) if
+# the CAD or AXIS_FLIP ever changes.
+CALF_BELT_SIGN = 1.0
+
 
 def ros_to_cad(x, y, z):
     """(forward, left, up) [ROS REP-103, what imu/data publishes] ->
@@ -89,6 +125,20 @@ def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
         f"{mapping[motor_id]['leg']}_{mapping[motor_id]['joint']}"
         for motor_id in range(1, NUM_MOTORS + 1)
     ]
+
+
+def find_calf_thigh_pairs(motor_joint_names):
+    """Returns {calf_motor_index: thigh_motor_index} for all 4 legs
+    (0-indexed, i.e. motor_id - 1), derived generically from
+    motor_joint_names -- same pairing dog_gym/envs/dog_env.py's
+    calf_idx/calf_thigh_idx computes, duplicated here since dog_deploy
+    doesn't import dog_gym (see this module's docstring)."""
+    pairs = {}
+    for i, name in enumerate(motor_joint_names):
+        if name.endswith('_calf'):
+            thigh_name = name[:-len('_calf')] + '_thigh'
+            pairs[i] = motor_joint_names.index(thigh_name)
+    return pairs
 
 
 class PolicyNode(Node):
@@ -141,6 +191,11 @@ class PolicyNode(Node):
         self.get_logger().info(f'Loading motor signs from {motor_mapping_path}')
         self.motor_sign = load_motor_signs(motor_mapping_path)
         self.motor_joint_names = load_motor_joint_names(motor_mapping_path)
+        self.calf_thigh_pairs = find_calf_thigh_pairs(self.motor_joint_names)
+        self.calf_range_rad = {
+            calf_i: tuple(v * DEG_TO_RAD for v in CALF_RANGE_DEG[self.motor_joint_names[calf_i]])
+            for calf_i in self.calf_thigh_pairs
+        }
 
         self.tick = 0
         self.csv_file = None
@@ -335,6 +390,20 @@ class PolicyNode(Node):
                 min(motor_qpos_rad[i] + self.max_target_lead_rad, clamped_action_rad[i]))
             for i in range(NUM_MOTORS)
         ]
+
+        # Sliding calf-range clamp -- see this module's docstring's
+        # "Sliding calf range" section and CALF_RANGE_DEG's comment.
+        # Converts the (already slew+windup clamped) absolute calf
+        # target into the equivalent raw/relative coordinate using the
+        # LIVE current thigh reading, clips to the measured physical
+        # band, converts back. Applied last so it reflects the true
+        # final constraint on what gets sent.
+        for calf_i, thigh_i in self.calf_thigh_pairs.items():
+            lo, hi = self.calf_range_rad[calf_i]
+            raw_equivalent = clamped_action_rad[calf_i] + CALF_BELT_SIGN * motor_qpos_rad[thigh_i]
+            raw_clamped = max(lo, min(hi, raw_equivalent))
+            clamped_action_rad[calf_i] = raw_clamped - CALF_BELT_SIGN * motor_qpos_rad[thigh_i]
+
         self.prev_action = clamped_action_rad
 
         # Inverse of the home-relative conversion above: real ABSOLUTE

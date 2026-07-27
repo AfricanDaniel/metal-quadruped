@@ -163,36 +163,53 @@ ACTUATOR_ORDER = [
 # literal mechanical hard-stop) -- expressed in the POST-AXIS_FLIP
 # convention (see the "final chapter" note above).
 #
-# CALF values below are DELIBERATELY NOT real-hardware-derived, and this
-# is a correction of a real mistake (2026-07-25, caught by the user:
-# "ranges for the calfs are messed up/some signs are flipped"). What
-# broke: this dict sets the RAW MJCF joint's <joint range> -- the
-# thigh-relative hinge, which since the belt-decoupling fix
-# (dog_gym/envs/dog_env.py) is ONLY headroom for the compensation math
-# (ctrl_calf = action_calf + calf_belt_sign*qpos_thigh), not a real
-# physical limit on anything. The real absolute calf motor limit belongs
-# on the RL action space instead (not yet implemented -- separate,
-# deferred task, needs its own careful design + a reliable real-vs-sim
-# sign check, since the only comparable real/sim ABSOLUTE-calf reference
-# available so far -- preset_pose.yaml's `standing` vs dog_env.py's
-# STANDING_QPOS_DEG converted through calf_belt_sign -- comes out only a
-# few degrees either side of zero for every leg, too small a signal to
-# trust for sign). Setting calf's <joint range> to that real absolute
-# limit directly (the actual 2026-07-25 mistake) starved the compensation
-# of headroom and broke it again, the same failure mode as the very first
-# belt-decoupling bug. Reverted to a wide, self-collision-VERIFIED-safe
-# +-360deg for all 4 calves (300/300 samples each, alongside the real
-# thigh ranges below -- script not committed, rerun the same methodology
-# if this needs changing) until the real absolute-calf-limit/action-space
-# work above is actually done properly.
+# CALF values below are REAL-HARDWARE-DERIVED as of 2026-07-27 (were a
+# wide +-360deg placeholder before this -- see git history / earlier
+# comments in daniel_cl_context.md for that saga, not repeated here).
+#
+# This dict sets the RAW MJCF joint's <joint range> -- the thigh-relative
+# hinge, which since the belt-decoupling fix (dog_gym/envs/dog_env.py)
+# equals real_calf_absolute_angle + real_thigh_absolute_angle (both
+# home-relative; calf_belt_sign came out uniformly +1 for all 4 legs
+# after AXIS_FLIP, confirmed by direct verification). The real physical
+# limit here is the calf link hitting the thigh link -- fixed in this
+# RELATIVE coordinate (constant width, ~222-227deg across all 4 legs),
+# SLIDING in absolute terms as the thigh moves. Measured by holding the
+# thigh at 2-3 real positions per leg and reading the calf's two stops at
+# each; confirmed the "calf_absolute + thigh_absolute" invariant is
+# constant at each stop (independent of which thigh position it was
+# measured from) to within ~1-2deg, well inside hand-adjustment noise --
+# see daniel_cl_context.md's TODO 13 entries for the full raw data and
+# derivation, all 4 legs.
+#
+# One stop is HOME ITSELF for every leg (by deliberate design choice, so
+# the calf's physical max is easy to orient by -- user's explicit
+# instruction 2026-07-27): the "calf_abs+thigh_abs" invariant at that
+# stop matches the invariant AT HOME almost exactly (within ~0.3-2deg,
+# again just measurement noise) for all 4 legs. That side of the range is
+# therefore EXACTLY 0 below, no margin -- 0 is qpos=0 by construction,
+# trivially satisfied at reset regardless of the small measurement noise
+# on the true mechanical stop (see the discussion in daniel_cl_context.md
+# for why this isn't actually a boundary-clipping risk). Right/left legs
+# mirror (matches the AXIS_FLIP mirroring elsewhere): leg_a/leg_c (right)
+# have home at the LOWER end, range extends positive; leg_b/leg_d (left)
+# have home at the UPPER end, range extends negative. The one OPEN
+# (non-home) side of each range gets the usual 5% margin pulled in from
+# the measured stop, same convention as the thigh ranges above -- e.g.
+# leg_a: measured stop ~217deg (innermost across 2 independent
+# measurement sessions) -> 0.95*217.0 = 206.1.
+#
+# Self-collision-VERIFIED-safe at these exact extremes (300/300 samples
+# each, alongside the thigh ranges above -- script not committed, rerun
+# the same methodology if this needs changing).
 JOINT_RANGE_OVERRIDES_DEG = {
     'leg_a_thigh': (-11.6, 230.6),
-    'leg_a_calf':  (-360, 360),
-    'leg_b_calf':  (-360, 360),
+    'leg_a_calf':  (0, 206.1),
+    'leg_b_calf':  (-213.3, 0),
     'leg_b_thigh': (-231.8, 11.0),
     'leg_c_thigh': (-7.6, 235.6),
-    'leg_c_calf':  (-360, 360),
-    'leg_d_calf':  (-360, 360),
+    'leg_c_calf':  (0, 215.8),
+    'leg_d_calf':  (-213.7, 0),
     'leg_d_thigh': (-234.0, 6.8),
 }
 
