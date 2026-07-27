@@ -41,7 +41,8 @@ previous one finished (`self.busy` guards that).
 |----------------------------|--------|---------|--------------|
 | `policy_path`              | string | `''`    | Path to a TorchScript `.pt` file (from `dog_gym/export_policy.py`). Required unless `dry_run_hold_pose` is true. |
 | `control_rate_hz`          | double | `20.0`  | Policy inference / command rate. |
-| `max_delta_deg_per_step`   | double | `5.0`   | Safety clamp: max per-motor movement per control tick. |
+| `max_delta_deg_per_step`   | double | `5.0`   | Safety clamp: max per-motor target movement per control tick. Since 2026-07-27 this slews the target relative to the **previous commanded target** (matching sim's slew limiter), not the measured position — measurement-anchoring fed motor overshoot back into the reference and caused severe stand-up chatter (see daniel_cl_context.md). Note 5°@20Hz = 100°/s = exactly sim's training slew rate. |
+| `max_target_lead_deg`      | double | `10.0`  | Windup guard for the prev-target-anchored clamp above: max degrees the commanded target may lead the measured position. Keeps a jammed motor from winding up a large error and violently catching up on release. |
 | `imu_timeout_sec`          | double | `0.5`   | Skip a control step if the latest IMU reading is older than this. |
 | `dry_run_hold_pose`        | bool   | `true`  | **Default is safe-by-default.** When true, ignores `policy_path` and just holds current position every tick — exercises the full read/observe/command loop without any policy risk. |
 | `motor_mapping_path`       | string | `dog_description/config/motor_mapping.yaml` | Override to point at a test/corrected copy of the mapping (e.g. while a sign issue is under investigation) without touching the shared canonical file. |

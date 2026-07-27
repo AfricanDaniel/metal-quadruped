@@ -153,9 +153,9 @@ each session. Directories are created automatically if they don't exist.
 | Name               | Type   | Default        | Description                                              |
 |--------------------|--------|----------------|------------------------------------------------------------|
 | `port`             | string | `/dev/ttyUSB0` | Serial device shared by all motors on the bus              |
-| `kd_gain`          | double | `2.0`          | Velocity tracking gain, applied in velocity mode            |
-| `position_kp`      | double | `250.0`        | Position gain, applied in position mode. Raised 2026-07-26 (was `32.0`) after real testing found it couldn't hold a leg against floor contact/gravity |
-| `position_kd`      | double | `3.0`          | Damping gain, applied in position mode. Raised alongside `position_kp` to control overshoot/oscillation at the higher gain |
+| `kd_gain`          | double | `2.0`          | Velocity tracking gain, applied in **velocity mode only** (`set_motor_velocity`). Has no effect on position mode, i.e. none on `set_motor_targets`/`adjust_motor_position`/`go_to_pose` or policy deployment |
+| `position_kp`      | double | `450.0`        | Position gain, applied in position mode. Under active hand-tuning against real stand-up behavior (originally `32.0`) — check the source for the current value, this table has gone stale before |
+| `position_kd`      | double | `6.0`          | Damping gain, applied in position mode. Tuned together with `position_kp` — same staleness caveat |
 | `pose_speed_deg_s` | double | `30.0`         | Default ramp speed (deg/s) for position-mode moves — see [Ramped moves](#ramped-position-moves) |
 
 `ros2 param set /motor_test pose_speed_deg_s 10.0` takes effect on the very

@@ -121,10 +121,19 @@ class PolicyNode(Node):
         # (e.g. matching a specific /set_home call's response) without
         # needing the robot physically re-posed at that exact stance.
         self.declare_parameter('home_position_deg', [])
+        # Windup guard for the prev_action-anchored slew limiter (see
+        # _on_positions_read): max degrees the commanded target may LEAD
+        # the measured position. Large enough to never bind during
+        # normal tracking (ordinary lag is under max_delta_deg_per_step
+        # + a few degrees of PD sag), small enough that a jammed motor
+        # can't wind up a big error and violently catch up on release.
+        self.declare_parameter('max_target_lead_deg', 10.0)
 
         self.control_rate_hz = self.get_parameter('control_rate_hz').value
         self.max_delta_rad = (
             self.get_parameter('max_delta_deg_per_step').value * DEG_TO_RAD)
+        self.max_target_lead_rad = (
+            self.get_parameter('max_target_lead_deg').value * DEG_TO_RAD)
         self.imu_timeout_sec = self.get_parameter('imu_timeout_sec').value
         self.dry_run_hold_pose = self.get_parameter('dry_run_hold_pose').value
 
@@ -156,7 +165,7 @@ class PolicyNode(Node):
                 'position. Set dry_run_hold_pose:=false and provide '
                 'policy_path once this dry run looks safe.')
 
-        self.prev_action = [0.0] * NUM_MOTORS
+        self.prev_action = None  # seeded from the first measured pose, see _on_positions_read
         self.latest_imu = None
         self.busy = False
 
@@ -270,6 +279,12 @@ class PolicyNode(Node):
             for i in range(NUM_MOTORS)
         ]
 
+        # First control cycle: seed the slew-limiter anchor (and the
+        # observation's prev_action slot) with the actual measured pose,
+        # matching DogEnv.reset()'s "prev_action = current pose" semantics.
+        if self.prev_action is None:
+            self.prev_action = list(motor_qpos_rad)
+
         imu = self.latest_imu
         accel_cad = ros_to_cad(imu.linear_acceleration.x, imu.linear_acceleration.y,
                                 imu.linear_acceleration.z)
@@ -290,11 +305,34 @@ class PolicyNode(Node):
                 obs_tensor = torch.tensor([obs], dtype=torch.float32)
                 action_rad = self.policy(obs_tensor)[0].tolist()
 
-        # Safety clamp: never move any motor more than max_delta_rad this tick.
+        # Safety clamp, anchored to the PREVIOUS COMMANDED TARGET (not
+        # the measured position) -- exactly like DogEnv.step()'s slew
+        # limiter. An earlier version anchored to the measured position;
+        # with stiff firmware gains the motor overshoots each staircase
+        # step within one tick, and a measurement-anchored clamp feeds
+        # that overshoot straight back into the next target, flipping it
+        # to the other side every tick -- a measurement-coupled limit
+        # cycle, observed as severe stand-up chatter (velocity direction
+        # flipping on ~half of all ticks in the v5 run log, see
+        # daniel_cl_context.md 2026-07-27). Anchoring to prev_action
+        # gives the firmware PD a clean, monotone ramp regardless of how
+        # the motor rings around it.
         clamped_action_rad = [
-            motor_qpos_rad[i] + max(
+            self.prev_action[i] + max(
                 -self.max_delta_rad,
-                min(self.max_delta_rad, action_rad[i] - motor_qpos_rad[i]))
+                min(self.max_delta_rad, action_rad[i] - self.prev_action[i]))
+            for i in range(NUM_MOTORS)
+        ]
+        # Windup guard: never let the commanded target lead the measured
+        # position by more than max_target_lead_rad. Without this, a
+        # jammed/blocked motor no longer stops the reference (that was
+        # the one virtue of measurement-anchoring) -- prev_action would
+        # keep marching away from the stuck motor and the eventual
+        # catch-up would be violent. With it, the ramp stalls near a
+        # jammed motor and resumes when it frees, catch-up bounded.
+        clamped_action_rad = [
+            max(motor_qpos_rad[i] - self.max_target_lead_rad,
+                min(motor_qpos_rad[i] + self.max_target_lead_rad, clamped_action_rad[i]))
             for i in range(NUM_MOTORS)
         ]
         self.prev_action = clamped_action_rad
