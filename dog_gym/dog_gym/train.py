@@ -217,7 +217,9 @@ def main():
     parser.add_argument('--env-type', default='subproc', choices=['dummy', 'subproc'])
     parser.add_argument('--num-envs', type=int, default=8)
     parser.add_argument('--timesteps-per-iter', type=int, default=1_000_000)
-    parser.add_argument('--log-dir', default='logs')
+    # Not 'logs' -- collides visually with colcon's own log/ dir at the
+    # workspace root (unrelated: this is SB3's tensorboard_log output).
+    parser.add_argument('--log-dir', default='dogGymTrain_logs')
     parser.add_argument('--model-dir', default='models')
     parser.add_argument('--domain-randomization', action='store_true')
     parser.add_argument('--n-steps', type=int, default=2048,

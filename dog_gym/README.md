@@ -154,16 +154,17 @@ python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO --env-type subp
 
 `--env-id` defaults to `Dog-Stand-v0`.
 
-Saves checkpoints to `models/` and TensorBoard logs to `logs/` (both
-relative to the current directory — override with `--model-dir`/
-`--log-dir`). Runs indefinitely, saving a new checkpoint every
-`--timesteps-per-iter` (default 1,000,000) — stop with Ctrl+C once you're
-happy with a checkpoint.
+Saves checkpoints to `models/` and TensorBoard logs to `dogGymTrain_logs/`
+(both relative to the current directory — override with `--model-dir`/
+`--log-dir`; not named `logs/` — that collides visually with colcon's own
+`log/` at the workspace root, an unrelated directory). Runs indefinitely,
+saving a new checkpoint every `--timesteps-per-iter` (default 1,000,000)
+— stop with Ctrl+C once you're happy with a checkpoint.
 
 Watch training progress:
 
 ```bash
-tensorboard --logdir logs/
+tensorboard --logdir dogGymTrain_logs/
 ```
 
 Fine-tune walk from a good stand checkpoint instead of starting from
