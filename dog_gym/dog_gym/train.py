@@ -11,6 +11,22 @@ Usage:
     python3 -m dog_gym.train --train --env-id Dog-Stand-v0 --algo PPO --fname stand_model
     python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO --fname walk_model
     python3 -m dog_gym.train --test models/PPO_1000000_stand_model --env-id Dog-Stand-v0
+
+Fine-tuning from an existing checkpoint (e.g. a good stand policy as the
+starting point for walk training -- valid because Dog-Stand-v0/
+Dog-Walk-v0 share the exact same DogEnv observation/action space, only
+task=stand/walk's reward+reset differ, see dog_env.py's module
+docstring):
+    python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO \\
+        --init-from models/PPO_32000000_DR_stand_policy_v1.zip --fname DR_walk_policy_v1
+--init-from loads the saved policy/value network weights (a real head
+start over random init) AND optimizer state via PPO.load(), rebinding to
+the new env -- --n-steps/--batch-size/--n-epochs/device still apply,
+overriding whatever was saved. The timestep counter and checkpoint
+filenames restart at this run's own 0 regardless of how many steps the
+source checkpoint had already seen (reset_num_timesteps=True on the
+first .learn() call only) -- so DR_walk_policy_v1's own PPO_1000000_...
+name means "1M steps of WALK fine-tuning", not "33M cumulative".
 """
 
 import argparse
@@ -32,7 +48,8 @@ def make_env(env_id, domain_randomization):
 
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
-          log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs):
+          log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
+          init_from=None):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs)')
 
     env_fns = [make_env(env_id, domain_randomization) for _ in range(num_envs)]
@@ -52,7 +69,26 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         activation_fn=nn.Tanh,
     )
 
-    if algo == 'PPO':
+    device = 'cuda'  # VM with a real GPU -- swap for 'cpu' on a dev machine (small MLP,
+                      # GPU transfer overhead isn't worth it there)
+
+    if init_from:
+        # Fine-tuning: PPO.load() restores the saved policy/value network
+        # weights AND optimizer state, then rebinds to `env` (a NEW env,
+        # e.g. Dog-Walk-v0 while the checkpoint was trained on
+        # Dog-Stand-v0 -- valid exactly because both tasks share the same
+        # DogEnv observation/action space, see this module's docstring).
+        # The n_steps/batch_size/n_epochs/device kwargs here OVERRIDE
+        # whatever was saved in the checkpoint, matching this run's own
+        # CLI flags rather than silently inheriting the source run's.
+        print(f'Fine-tuning from {init_from} on {env_id}')
+        if algo != 'PPO':
+            raise ValueError('--init-from is only wired up for PPO so far')
+        model = PPO.load(
+            init_from, env=env, device=device,
+            n_steps=n_steps, batch_size=batch_size, n_epochs=n_epochs,
+            tensorboard_log=log_dir)
+    elif algo == 'PPO':
         # n_steps*num_envs is the rollout buffer size collected before each
         # round of updates -- SB3 just warns (doesn't error) if batch_size
         # doesn't evenly divide it, verified directly; not re-validated
@@ -76,8 +112,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
             tensorboard_log=log_dir,
             policy_kwargs=policy_kwargs,
             verbose=1,
-            #device='cpu',  # dev machine (small MLP policy -- GPU transfer overhead isn't worth it here)
-            device='cuda',  # VM with a real GPU -- swap the line above for this one
+            device=device,
         )
     elif algo in ('SAC', 'A2C'):
         model = ALGOS[algo]('MlpPolicy', env, verbose=1, tensorboard_log=log_dir)
@@ -88,7 +123,13 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     while True:
         iteration += 1
         print(f'Starting iteration {iteration}')
-        model.learn(total_timesteps=total_timesteps_per_iter, reset_num_timesteps=False)
+        # First .learn() call after a fresh --init-from load starts this
+        # run's own timestep counter (and therefore checkpoint filenames
+        # below) at 0, regardless of how many steps the source checkpoint
+        # had already accumulated -- see this module's docstring.
+        reset_num_timesteps = bool(init_from) and iteration == 1
+        model.learn(total_timesteps=total_timesteps_per_iter,
+                    reset_num_timesteps=reset_num_timesteps)
         save_path = os.path.join(
             model_dir, f'{algo}_{total_timesteps_per_iter * iteration}_{fname}')
         model.save(save_path)
@@ -187,6 +228,13 @@ def main():
                               'n_steps * num_envs)')
     parser.add_argument('--n-epochs', type=int, default=10,
                          help='PPO only: number of SGD passes over the rollout buffer per update')
+    parser.add_argument('--init-from', metavar='PATH_TO_MODEL',
+                         help='--train only, PPO only: load this checkpoint\'s policy/value '
+                              'weights + optimizer state as the starting point instead of '
+                              'random init, then continue training on --env-id (may differ '
+                              'from the checkpoint\'s original task, e.g. fine-tune a stand '
+                              'policy for walk -- see this module\'s docstring). This run\'s '
+                              'own timestep counter/checkpoint filenames restart at 0.')
     parser.add_argument('--fname', default='dog_policy')
     parser.add_argument('--train', action='store_true')
     parser.add_argument('--test', metavar='PATH_TO_MODEL')
@@ -198,7 +246,8 @@ def main():
     if args.train:
         train(args.env_id, args.algo, args.fname, args.env_type, args.num_envs,
               args.timesteps_per_iter, args.log_dir, args.model_dir,
-              args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs)
+              args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
+              args.init_from)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv)
     else:

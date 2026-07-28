@@ -166,6 +166,28 @@ Watch training progress:
 tensorboard --logdir logs/
 ```
 
+Fine-tune walk from a good stand checkpoint instead of starting from
+random init (2026-07-28) — valid because `Dog-Stand-v0`/`Dog-Walk-v0`
+share the exact same observation/action space, only `task`'s reward and
+reset differ:
+
+```bash
+python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO --env-type subproc \
+    --num-envs 32 --fname DR_walk_policy_v1 --domain-randomization \
+    --init-from models/PPO_32000000_DR_stand_policy_v1.zip
+```
+
+`--init-from` loads the checkpoint's policy/value network weights AND
+optimizer state via `PPO.load()`, then rebinds to the new env — verified
+directly (a loaded model's action on a given observation matches the
+original checkpoint's exactly, confirming genuine weight transfer, not
+silent reinitialization). `--n-steps`/`--batch-size`/`--n-epochs`/device
+still apply and override whatever the checkpoint saved. This run's own
+timestep counter and checkpoint filenames restart at 0 regardless of the
+source checkpoint's step count, so `DR_walk_policy_v1`'s own
+`PPO_1000000_...` means "1M steps of walk fine-tuning," not "33M
+cumulative."
+
 Visualize a trained checkpoint (paced to real time, so it's actually
 watchable — a falls-quickly policy otherwise finishes an episode in a
 fraction of a second):
