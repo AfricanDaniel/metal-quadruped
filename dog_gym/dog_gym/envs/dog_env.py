@@ -591,11 +591,24 @@ class DogEnv(gym.Env):
         Returns a value in [0, 1]: 1.0 means every currently-swinging leg
         is at or above FOOT_CLEARANCE_TARGET_M; legs currently in contact
         don't count either way (this isn't a "lift all feet" reward, only
-        a "when swinging, actually swing" one)."""
+        a "when swinging, actually swing" one).
+
+        BUG FIXED 2026-07-29: the "no leg swinging" fallback used to
+        return 1.0 (the MAXIMUM possible score) -- fine for a hypothetical
+        stand-task caller (nothing SHOULD swing while standing still,
+        that's genuinely perfect), but this method is only ever actually
+        called from _compute_reward_walk(), where "no leg swinging" means
+        every foot is planted and dragging continuously -- exactly the
+        failure the user reported (PPO_16000000_walk_policy_v2: 0.0-0.3%
+        airborne time across all 4 legs, ZERO landing events in a 1000-
+        step rollout, yet this method scored 0.9957 mean / 1.0 max --
+        near-perfect reward for never lifting a single leg). Changed to
+        0.0 (neutral) -- no leg swinging is no longer secretly the best
+        possible outcome."""
         contacted = self._foot_contact_per_leg()
         swinging = [not c for c in contacted]
         if not any(swinging):
-            return 1.0  # no leg is swinging right now (e.g. standing still) -- nothing to penalize
+            return 0.0  # no leg is swinging right now -- neutral, NOT rewarded (see bug note above)
         total = 0.0
         for i, site_id in enumerate(self.foot_site_ids):
             if swinging[i]:
@@ -920,7 +933,30 @@ class DogEnv(gym.Env):
         # dragging its feet on the ground... we want it to lift its feet
         # when moving forward") -- see each method's own docstring for
         # the friend_code/go2_env_walk.py source and adaptation notes.
-        # Weights are first-guess placeholders, not tuned yet.
+        #
+        # WEIGHTS RAISED same day, checked against real measured behavior
+        # of PPO_16000000_walk_policy_v2 (not a blind guess): that
+        # checkpoint's legs were airborne 0.0-0.3% of a 1000-step
+        # rollout (essentially always dragging), zero landing events, yet
+        # scored foot_clearance_reward=0.9957 mean (see that method's bug
+        # fix note -- the "no leg swinging" fallback used to secretly
+        # return the MAXIMUM score) while foot_slip_penalty's weighted
+        # contribution (-0.019/step at the old 0.1 weight) was ~14x
+        # smaller than forward_velocity_reward's (+0.262/step) -- dragging
+        # was essentially free. foot_slip_penalty: 0.1 -> 1.0 (10x, makes
+        # it a real, competitive cost against forward progress).
+        # foot_clearance_reward: 0.75 -> 1.0 (now that the fallback bug is
+        # fixed, this term will finally respond to real exploration --
+        # strengthened since it's the direct per-tick lift-height signal,
+        # denser than feet_air_time_reward's landing-only payout).
+        # feet_air_time_reward's weight left unchanged: it literally
+        # cannot contribute anything until legs start swinging at all
+        # (zero landing events -> zero gradient regardless of weight) --
+        # its job is refining swing DURATION once lifting already exists,
+        # not bootstrapping the initial exploration; the two changes
+        # above are what's meant to unstick that. Still placeholders, not
+        # a formal sweep -- re-check with the same measurement method
+        # used to justify these numbers once the next checkpoint lands.
         foot_slip_penalty = self._foot_slip_penalty()
         feet_air_time_reward = self._feet_air_time_reward()
 
@@ -936,8 +972,8 @@ class DogEnv(gym.Env):
             + 0.6 * height_reward
             + 1.5 * tip_reward
             + non_tip_penalty
-            + 0.75 * foot_clearance_reward
-            + 0.1 * foot_slip_penalty
+            + 1.0 * foot_clearance_reward
+            + 1.0 * foot_slip_penalty
             + 1.0 * feet_air_time_reward
             + action_rate_penalty
             + self._common_penalties(action)
