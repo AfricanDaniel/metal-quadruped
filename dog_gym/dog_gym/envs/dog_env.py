@@ -182,6 +182,13 @@ FOOT_CONTACT_RADIUS_M = 0.03
 # demanding an unnaturally high step.
 FOOT_CLEARANCE_TARGET_M = 0.03
 
+# Target swing-phase duration (seconds) for _feet_air_time_reward() -- a
+# labmate's Go2/Genesis walk implementation (friend_code/go2_env_walk.py's
+# _reward_feet_air_time) uses 0.1s as its default; kept close to that
+# since this robot is a comparable size/leg-length quadruped. Placeholder,
+# not derived from a real measured gait for THIS robot.
+FEET_AIR_TIME_TARGET_S = 0.1
+
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
     """Returns MJCF joint names ["leg_a_thigh", ...] indexed motor 1..8,
@@ -343,6 +350,10 @@ class DogEnv(gym.Env):
             dtype=np.float32)
 
         self.prev_action = np.zeros(NUM_MOTORS, dtype=np.float32)
+        # Per-leg (leg_a..leg_d order) seconds spent airborne since that
+        # leg's last ground contact -- persistent state for
+        # _feet_air_time_reward(), reset in reset() below.
+        self._feet_air_time = np.zeros(4)
 
         # motor qpos (8) + motor qvel (8) + IMU sensordata + prev_action (8)
         obs_dim = NUM_MOTORS + NUM_MOTORS + self.model.nsensordata + NUM_MOTORS
@@ -356,6 +367,7 @@ class DogEnv(gym.Env):
 
         mujoco.mj_resetData(self.model, self.data)
         self.prev_action = np.zeros(NUM_MOTORS, dtype=np.float32)
+        self._feet_air_time = np.zeros(4)
         self._step_count = 0
 
         if self.task == 'walk':
@@ -575,6 +587,76 @@ class DogEnv(gym.Env):
                 total += min(max(foot_z, 0.0) / FOOT_CLEARANCE_TARGET_M, 1.0)
         return total / sum(swinging)
 
+    def _foot_horizontal_speed_sq(self, leg_idx):
+        """Squared horizontal (world x/y) speed of a leg's foot site right
+        now, via MuJoCo's site-Jacobian velocity (mj_objectVelocity, world
+        frame) -- used by _foot_slip_penalty() to tell a genuinely planted
+        foot (near-zero) from one sliding/dragging while nominally in
+        contact. Sites have no qvel of their own; mj_objectVelocity
+        computes it correctly through the whole kinematic chain up to
+        that site, unlike finite-differencing site_xpos across steps."""
+        site_id = self.foot_site_ids[leg_idx]
+        vel = np.zeros(6)  # [angular(3), linear(3)]
+        mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_SITE, site_id, vel, 0)
+        return float(np.dot(vel[3:5], vel[3:5]))
+
+    def _foot_slip_penalty(self):
+        """Penalizes a foot's horizontal velocity WHILE IN CONTACT with
+        the ground -- i.e. sliding/dragging rather than gripping and
+        holding. Adapted from a labmate's Go2/Genesis walk implementation
+        (friend_code/go2_env_walk.py's _reward_foot_slip), ported to this
+        project's MuJoCo site-velocity API and single-env structure.
+
+        Complements _foot_clearance_reward(), which only judges SWING
+        legs -- this judges STANCE legs instead. Before this term,
+        nothing distinguished a foot that plants and holds from one that
+        stays in ground contact but slides along the floor for the whole
+        stance phase, which reads as "dragging" even though
+        _foot_placement_terms() sees it as correct tip contact the whole
+        time (2026-07-29, user: "the robot is dragging its feet on the
+        ground, we do not want that").
+
+        Returns <=0 (already negative -- weight with a POSITIVE
+        coefficient, same convention as height_reward/drift_penalty)."""
+        contacted = self._foot_contact_per_leg()
+        total = 0.0
+        for i in range(len(self.foot_site_ids)):
+            if contacted[i]:
+                total += self._foot_horizontal_speed_sq(i)
+        return -total
+
+    def _feet_air_time_reward(self):
+        """Rewards a leg for swinging roughly FEET_AIR_TIME_TARGET_S
+        before landing again -- a real step CADENCE, not just "was
+        elevated at some point" (that's _foot_clearance_reward's job).
+        Discourages both extremes: a leg that never truly lifts
+        (shuffling/dragging, ~0 air time every landing) and a leg that
+        stays airborne far longer than a normal swing (limping/dragging
+        a stuck leg). Adapted from a labmate's Go2/Genesis walk
+        implementation (friend_code/go2_env_walk.py's
+        _reward_feet_air_time), ported to this project's per-step MuJoCo
+        contact query, persistent per-leg timer (self._feet_air_time,
+        seconds, reset in reset()), and single-env structure (no
+        per-env command vector to gate on here, unlike the source --
+        this project's walk task doesn't have a separate "standing
+        still" command mode).
+
+        Rewarded once per landing (the step contact resumes after a
+        nonzero air time), scaled by how far that swing's duration was
+        from the target -- positive if the swing ran long enough,
+        negative if it was too short (foot barely left the ground)."""
+        contacted = self._foot_contact_per_leg()
+        dt = self.model.opt.timestep
+        reward = 0.0
+        for i in range(4):
+            if contacted[i]:
+                if self._feet_air_time[i] > 0.0:
+                    reward += self._feet_air_time[i] - FEET_AIR_TIME_TARGET_S
+                self._feet_air_time[i] = 0.0
+            else:
+                self._feet_air_time[i] += dt
+        return reward
+
     def _foot_tip_contact_count(self):
         """(num_tip, num_non_tip): of the calf-floor contacts right now,
         how many are within FOOT_CONTACT_RADIUS_M of that leg's actual
@@ -792,6 +874,20 @@ class DogEnv(gym.Env):
         # the same idea).
         foot_clearance_reward = self._foot_clearance_reward()
 
+        # foot_clearance_reward only judges SWING legs (rewards them for
+        # being elevated); nothing above judges STANCE legs, so a policy
+        # could still satisfy every term while sliding a planted foot
+        # along the ground the whole stance phase -- reads as dragging.
+        # foot_slip_penalty closes that gap; feet_air_time_reward adds a
+        # real swing-duration CADENCE on top of clearance's "was it off
+        # the ground" check. Both new 2026-07-29 (user: "the robot is
+        # dragging its feet on the ground... we want it to lift its feet
+        # when moving forward") -- see each method's own docstring for
+        # the friend_code/go2_env_walk.py source and adaptation notes.
+        # Weights are first-guess placeholders, not tuned yet.
+        foot_slip_penalty = self._foot_slip_penalty()
+        feet_air_time_reward = self._feet_air_time_reward()
+
         return (
             2.0 * forward_velocity_reward
             + 0.5 * upright_reward
@@ -799,6 +895,8 @@ class DogEnv(gym.Env):
             + 1.5 * tip_reward
             + non_tip_penalty
             + 0.75 * foot_clearance_reward
+            + 0.1 * foot_slip_penalty
+            + 1.0 * feet_air_time_reward
             + self._common_penalties(action)
         )
 
