@@ -49,7 +49,7 @@ def make_env(env_id, domain_randomization):
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
-          init_from=None):
+          learning_rate, init_from=None):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs)')
 
     env_fns = [make_env(env_id, domain_randomization) for _ in range(num_envs)]
@@ -78,16 +78,27 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         # e.g. Dog-Walk-v0 while the checkpoint was trained on
         # Dog-Stand-v0 -- valid exactly because both tasks share the same
         # DogEnv observation/action space, see this module's docstring).
-        # The n_steps/batch_size/n_epochs/device kwargs here OVERRIDE
-        # whatever was saved in the checkpoint, matching this run's own
-        # CLI flags rather than silently inheriting the source run's.
+        # The n_steps/batch_size/n_epochs/learning_rate/device kwargs here
+        # OVERRIDE whatever was saved in the checkpoint, matching this
+        # run's own CLI flags rather than silently inheriting the source
+        # run's. --learning-rate matters MORE here than for a fresh run:
+        # fine-tuning from an already-good policy generally wants a LOWER
+        # rate than training from scratch (2026-07-28 -- a
+        # penaltyFix fine-tune at the same 3e-4 default used for fresh
+        # training got WORSE, not better, over 19M further steps --
+        # raw-action swing at a settled stand pose went from 74.7deg
+        # mean at 1M steps to 148.5deg at 20M, roughly back to the
+        # original pre-fix policy's level -- large gradient steps on an
+        # already-near-optimal network are more likely to destabilize
+        # existing behavior than refine it smoothly; see
+        # daniel_cl_context.md).
         print(f'Fine-tuning from {init_from} on {env_id}')
         if algo != 'PPO':
             raise ValueError('--init-from is only wired up for PPO so far')
         model = PPO.load(
             init_from, env=env, device=device,
             n_steps=n_steps, batch_size=batch_size, n_epochs=n_epochs,
-            tensorboard_log=log_dir)
+            learning_rate=learning_rate, tensorboard_log=log_dir)
     elif algo == 'PPO':
         # n_steps*num_envs is the rollout buffer size collected before each
         # round of updates -- SB3 just warns (doesn't error) if batch_size
@@ -98,7 +109,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         model = PPO(
             policy='MlpPolicy',
             env=env,
-            learning_rate=3e-4,
+            learning_rate=learning_rate,
             n_steps=n_steps,
             batch_size=batch_size,
             n_epochs=n_epochs,
@@ -230,6 +241,12 @@ def main():
                               'n_steps * num_envs)')
     parser.add_argument('--n-epochs', type=int, default=10,
                          help='PPO only: number of SGD passes over the rollout buffer per update')
+    parser.add_argument('--learning-rate', type=float, default=3e-4,
+                         help='PPO only: Adam learning rate. Consider a LOWER value '
+                              '(e.g. 1e-4 or 5e-5) when using --init-from -- fine-tuning an '
+                              'already-good policy at the fresh-training default risks '
+                              'destabilizing existing behavior rather than refining it '
+                              '(observed directly, see train.py\'s --init-from comment)')
     parser.add_argument('--init-from', metavar='PATH_TO_MODEL',
                          help='--train only, PPO only: load this checkpoint\'s policy/value '
                               'weights + optimizer state as the starting point instead of '
@@ -249,7 +266,7 @@ def main():
         train(args.env_id, args.algo, args.fname, args.env_type, args.num_envs,
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
-              args.init_from)
+              args.learning_rate, args.init_from)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv)
     else:

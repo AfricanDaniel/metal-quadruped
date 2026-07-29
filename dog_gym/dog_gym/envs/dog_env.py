@@ -65,6 +65,17 @@ DEFAULT_MOTOR_MAPPING_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'config', 'moto
 # reliable source available without hardware access.
 STAND_HEIGHT_M = 0.313
 STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
+
+# Walk task's target torso height, as a fraction of STAND_HEIGHT_M
+# (2026-07-28, user request: "the robot stays at 75% its maximum height
+# ... this way the robot is guaranteed to stay on 4 legs"). A crouched
+# target -- legs more bent than full standing extension -- is standard
+# practice for quadruped locomotion RL: lower CoM for stability, more
+# leg travel available for the swing phase without needing near-maximal
+# joint excursions. Easy to change: edit this one fraction, everything
+# else derives from it. See _compute_reward_walk()'s height_reward.
+WALK_HEIGHT_FRACTION = 0.75
+WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -746,10 +757,18 @@ class DogEnv(gym.Env):
         # the frame remap if that ever gets applied.
         forward_velocity_reward = self.data.qvel[1]
         upright_reward = self._torso_up_z()
-        # Loose height regularizer (much lower weight than the stand
-        # task's) -- just discourages crawling/belly-flopping, doesn't
-        # demand the exact standing height while walking.
-        height_reward = -abs(self._torso_height() - STAND_HEIGHT_M)
+        # Targets WALK_TARGET_HEIGHT_M (WALK_HEIGHT_FRACTION * full
+        # standing height, 2026-07-28 -- see that constant's comment),
+        # not the stand task's full STAND_HEIGHT_M: a crouched walking
+        # height keeps the CoM lower and legs bent, discouraging both
+        # crawling/belly-flopping AND an overextended, easy-to-topple
+        # near-max-height stance. Weight raised 0.2 -> 0.6 alongside the
+        # target change (still well below forward_velocity_reward's 2.0,
+        # so it shapes rather than dominates, but a "loose regularizer"
+        # weight wasn't enough to reliably hold this if the goal is a
+        # real height-based stability guarantee -- reassess based on
+        # the next walk training run's actual height-tracking behavior).
+        height_reward = -abs(self._torso_height() - WALK_TARGET_HEIGHT_M)
 
         # Walk on the feet, not the knees/shins -- this task previously had
         # NO foot-placement term at all, which is exactly why a trained
@@ -776,7 +795,7 @@ class DogEnv(gym.Env):
         return (
             2.0 * forward_velocity_reward
             + 0.5 * upright_reward
-            + 0.2 * height_reward
+            + 0.6 * height_reward
             + 1.5 * tip_reward
             + non_tip_penalty
             + 0.75 * foot_clearance_reward

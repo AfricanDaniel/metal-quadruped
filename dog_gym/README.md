@@ -182,10 +182,18 @@ python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO --env-type subp
 optimizer state via `PPO.load()`, then rebinds to the new env — verified
 directly (a loaded model's action on a given observation matches the
 original checkpoint's exactly, confirming genuine weight transfer, not
-silent reinitialization). `--n-steps`/`--batch-size`/`--n-epochs`/device
-still apply and override whatever the checkpoint saved. This run's own
-timestep counter and checkpoint filenames restart at 0 regardless of the
-source checkpoint's step count, so `DR_walk_policy_v1`'s own
+silent reinitialization). `--n-steps`/`--batch-size`/`--n-epochs`/
+`--learning-rate`/device still apply and override whatever the checkpoint
+saved. **Use a lower `--learning-rate` than the `3e-4` fresh-training
+default when fine-tuning** — observed directly (2026-07-28): a
+`penaltyFix` stand fine-tune at the default rate got WORSE, not better,
+over 19M further steps (raw-action swing at a settled pose went from
+74.7deg mean at 1M steps to 148.5deg at 20M, back near the original
+pre-fix policy's level) — large gradient steps on an already-near-optimal
+network are more likely to destabilize existing behavior than refine it;
+try `1e-4` or `5e-5` instead. This run's own timestep counter and
+checkpoint filenames restart at 0 regardless of the source checkpoint's
+step count, so `DR_walk_policy_v1`'s own
 `PPO_1000000_...` means "1M steps of walk fine-tuning," not "33M
 cumulative."
 
