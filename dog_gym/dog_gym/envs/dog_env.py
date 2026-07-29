@@ -76,6 +76,22 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 # else derives from it. See _compute_reward_walk()'s height_reward.
 WALK_HEIGHT_FRACTION = 0.75
 WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
+
+# action_rate_penalty's weight for the STAND task, linearly interpolated
+# by height_progress (0 = sitting, 1 = at standing height -- see
+# _compute_reward_stand()). RISING matches the old flat -0.1 (2026-07-27)
+# -- small enough to not fight the large, genuinely-needed corrective
+# actions during the climb. STANDING is much stronger: once actually
+# standing, nothing legitimately needs a large action anymore, so jitter
+# should cost real reward instead of being capped by what the climb phase
+# can tolerate. Both placeholders (2026-07-29, TODO 16 in
+# daniel_cl_context.md) -- not derived from a formal sweep, re-tune based
+# on the next retrain's actual steady-state smoothness. WALK's own
+# action_rate_penalty stays flat at ACTION_RATE_PENALTY_WEIGHT_RISING's
+# value -- walking needs continuous leg motion forever, there's no
+# "should now be still" phase to gate toward (see _compute_reward_walk()).
+ACTION_RATE_PENALTY_WEIGHT_RISING = -0.1
+ACTION_RATE_PENALTY_WEIGHT_STANDING = -1.0
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -722,8 +738,12 @@ class DogEnv(gym.Env):
         return False
 
     def _common_penalties(self, action):
-        """Terms both tasks share: IMU-based stability penalties + effort/
-        action-rate (hardware-friendliness) + a per-step survival bonus."""
+        """Terms both tasks share: IMU-based stability penalties + effort
+        + a per-step survival bonus. action_rate_penalty is NOT here --
+        see _action_rate_penalty() below, computed separately per task
+        since stand and walk need genuinely different weighting (walk
+        needs continuous leg motion forever, so it can't be gated toward
+        "should be still" the way stand's climb-then-hold structure can)."""
         # sensordata layout matches the <sensor> block in dog.mjcf.xml:
         # [0:3] accelerometer, [3:6] gyro.
         linear_accel = self.data.sensordata[0:3]
@@ -733,39 +753,42 @@ class DogEnv(gym.Env):
         angular_vel_penalty = -0.02 * float(np.dot(angular_vel, angular_vel))
 
         effort_penalty = -0.001 * float(np.dot(action, action))
-        # Raised 10x (-0.01 -> -0.1) 2026-07-27: real-hardware deployment
-        # of a "converged"-looking stand policy (calfFix_stand_policy_v5,
-        # 3-6M timesteps) showed persistent tick-to-tick chatter even at
-        # a fully settled stand pose -- traced to the RAW POLICY ACTION
-        # itself (not firmware, not real sensor noise, not the deploy
-        # clamp -- confirmed directly in clean sim with zero real-
-        # hardware noise involved): consecutive deterministic actions at
-        # a genuinely settled state swung by 10-30deg step-to-step.
-        # DogEnv.step()'s own slew clamp (MAX_SLEW_DEG_PER_S) rate-limits
-        # the PHYSICAL consequence during training, same as
-        # dog_deploy/policy_node.py's clamp does at deploy time -- but
-        # neither clamp can fix an underlying signal that keeps
-        # reversing direction; they only rate-limit how fast it chases
-        # itself back and forth forever. At the OLD weight (-0.01), a
-        # representative multi-motor jitter contributed roughly -0.01 to
-        # total reward per step -- negligible next to height_reward
-        # (weight 3.0) or upright_reward (weight 2.0), which routinely
-        # swing by whole units, or even the flat +0.05 survival_bonus
-        # alone. Checked checkpoints 1M/3M/4M/5M/6M of that run: no
-        # real downward trend in swing magnitude across 3-6M, i.e. more
-        # timesteps under the old weight wasn't fixing it on its own.
-        # New weight makes a typical jittering motor cost a real,
-        # competitive fraction of per-step reward instead of background
-        # noise. Still a placeholder value, not derived from any formal
-        # tuning -- re-adjust based on the next retrain's actual smoothness
-        # (same iterative-tuning pattern as position_kp/position_kd on
-        # the actuator side, see daniel_cl_context.md).
-        action_rate_penalty = -0.1 * float(np.sum((action - self.prev_action) ** 2))
 
         survival_bonus = 0.05
 
-        return (accel_shock_penalty + angular_vel_penalty
-                + effort_penalty + action_rate_penalty + survival_bonus)
+        return accel_shock_penalty + angular_vel_penalty + effort_penalty + survival_bonus
+
+    def _action_rate_penalty(self, action, weight):
+        """weight * sum((action - prev_action)**2) -- caller supplies the
+        weight so stand (gated by height_progress, see
+        ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING) and walk (flat) can
+        each use their own logic. History: raised 10x (-0.01 -> -0.1,
+        2026-07-27) after real-hardware deployment of a "converged"-
+        looking stand policy (calfFix_stand_policy_v5, 3-6M timesteps)
+        showed persistent tick-to-tick chatter even at a fully settled
+        stand pose -- traced to the RAW POLICY ACTION itself (not
+        firmware, not real sensor noise, not the deploy clamp -- confirmed
+        directly in clean sim with zero real-hardware noise involved):
+        consecutive deterministic actions at a genuinely settled state
+        swung by 10-30deg step-to-step. DogEnv.step()'s own slew clamp
+        (MAX_SLEW_DEG_PER_S) rate-limits the PHYSICAL consequence during
+        training, same as dog_deploy/policy_node.py's clamp does at
+        deploy time -- but neither clamp can fix an underlying signal
+        that keeps reversing direction; they only rate-limit how fast it
+        chases itself back and forth forever. At the OLD flat weight
+        (-0.01), a representative multi-motor jitter contributed roughly
+        -0.01 to total reward per step -- negligible next to
+        height_reward (weight 3.0) or upright_reward (weight 2.0).
+        FURTHER FINDING (2026-07-29): a UNIFORM weight (even at -0.1)
+        still wasn't enough for the stand task specifically -- had to be
+        small enough to not fight the genuinely large, necessary
+        corrective actions during the RISE, which caps how hard it can
+        push once already standing. See ACTION_RATE_PENALTY_WEIGHT_
+        RISING/STANDING and _compute_reward_stand()'s height_progress
+        gating below -- same "gate by climb progress" pattern
+        upright_reward/grounded_reward already use, applied here for
+        the first time (TODO 16 in daniel_cl_context.md)."""
+        return weight * float(np.sum((action - self.prev_action) ** 2))
 
     def _compute_reward(self, action):
         if self.task == 'stand':
@@ -816,6 +839,18 @@ class DogEnv(gym.Env):
         tip_reward, non_tip_penalty = self._foot_placement_terms()
         grounded_reward = (tip_reward + non_tip_penalty) * height_progress
 
+        # Gated by height_progress, same pattern as upright_reward/
+        # grounded_reward above -- see ACTION_RATE_PENALTY_WEIGHT_RISING/
+        # STANDING's comment and TODO 16 in daniel_cl_context.md. Weak
+        # during the climb (doesn't fight genuinely-needed large
+        # corrective actions), much stronger once actually standing
+        # (nothing legitimately needs a large action anymore then).
+        action_rate_weight = (
+            ACTION_RATE_PENALTY_WEIGHT_RISING
+            + (ACTION_RATE_PENALTY_WEIGHT_STANDING - ACTION_RATE_PENALTY_WEIGHT_RISING) * height_progress
+        )
+        action_rate_penalty = self._action_rate_penalty(action, action_rate_weight)
+
         return (
             3.0 * height_reward
             + height_bonus
@@ -823,6 +858,7 @@ class DogEnv(gym.Env):
             + 1.5 * grounded_reward
             + symmetry_penalty
             + drift_penalty
+            + action_rate_penalty
             + self._common_penalties(action)
         )
 
@@ -888,6 +924,12 @@ class DogEnv(gym.Env):
         foot_slip_penalty = self._foot_slip_penalty()
         feet_air_time_reward = self._feet_air_time_reward()
 
+        # Flat, NOT gated by height_progress (unlike the stand task's,
+        # see ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING's comment) --
+        # walking needs continuous leg motion forever, there's no
+        # "should now be still" phase to gate toward here.
+        action_rate_penalty = self._action_rate_penalty(action, ACTION_RATE_PENALTY_WEIGHT_RISING)
+
         return (
             2.0 * forward_velocity_reward
             + 0.5 * upright_reward
@@ -897,6 +939,7 @@ class DogEnv(gym.Env):
             + 0.75 * foot_clearance_reward
             + 0.1 * foot_slip_penalty
             + 1.0 * feet_air_time_reward
+            + action_rate_penalty
             + self._common_penalties(action)
         )
 
