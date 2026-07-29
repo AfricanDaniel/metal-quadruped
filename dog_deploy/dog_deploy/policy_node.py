@@ -178,6 +178,24 @@ class PolicyNode(Node):
         # + a few degrees of PD sag), small enough that a jammed motor
         # can't wind up a big error and violently catch up on release.
         self.declare_parameter('max_target_lead_deg', 10.0)
+        # 0.0 (default) disables freezing entirely -- current clamp/slew
+        # behavior unchanged. When > 0, once this many seconds of control
+        # ticks have elapsed, the target is snapshotted and held FIXED
+        # forever after -- the policy keeps running every tick (for
+        # logging/visibility), but its output is ignored for target-
+        # setting purposes. Firmware position-mode PD stays fully active
+        # on the frozen target (this does NOT cut torque/go passive) --
+        # it just stops re-commanding a new target every tick, which is
+        # what was causing the small continuous oscillation: real-hardware
+        # data (2026-07-29, PPO_5000000_DR_stand_policy_v3_noNoise.csv)
+        # showed the policy's raw action never actually settles quiet on
+        # its own even once the robot is visibly done standing (still
+        # 8-41deg mean tick-to-tick swings late in the run, saturating
+        # max_delta_deg_per_step on most ticks) -- so triggering on "the
+        # policy's own output went quiet" wouldn't reliably fire. A fixed
+        # time, tuned to when you visually observe standing is complete,
+        # is simpler and actually works. See _on_positions_read().
+        self.declare_parameter('freeze_after_sec', 0.0)
 
         self.control_rate_hz = self.get_parameter('control_rate_hz').value
         self.max_delta_rad = (
@@ -186,6 +204,10 @@ class PolicyNode(Node):
             self.get_parameter('max_target_lead_deg').value * DEG_TO_RAD)
         self.imu_timeout_sec = self.get_parameter('imu_timeout_sec').value
         self.dry_run_hold_pose = self.get_parameter('dry_run_hold_pose').value
+        self.freeze_after_sec = self.get_parameter('freeze_after_sec').value
+        self._control_tick_count = 0
+        self._frozen = False
+        self._frozen_action_rad = None
 
         motor_mapping_path = self.get_parameter('motor_mapping_path').value
         self.get_logger().info(f'Loading motor signs from {motor_mapping_path}')
@@ -269,7 +291,7 @@ class PolicyNode(Node):
         self.csv_writer.writerow([
             'tick', 'motor_id', 'joint', 'sign',
             'real_position_deg', 'real_velocity_deg_s',
-            'sim_qpos_rad', 'raw_action_rad', 'clamped_action_rad', 'target_deg',
+            'sim_qpos_rad', 'raw_action_rad', 'clamped_action_rad', 'target_deg', 'frozen',
         ])
         self.get_logger().info(f'Logging per-motor control data to {path}')
 
@@ -279,6 +301,7 @@ class PolicyNode(Node):
                 self.tick, i + 1, self.motor_joint_names[i], self.motor_sign[i],
                 response.position_deg[i], response.velocity_deg_s[i],
                 motor_qpos_rad[i], raw_action_rad[i], clamped_action_rad[i], target_deg[i],
+                self._frozen,
             ])
         self.csv_file.flush()  # real-hardware runs are often killed abruptly (Ctrl-C) -- don't lose rows
         self.tick += 1
@@ -403,6 +426,22 @@ class PolicyNode(Node):
             raw_equivalent = clamped_action_rad[calf_i] + CALF_BELT_SIGN * motor_qpos_rad[thigh_i]
             raw_clamped = max(lo, min(hi, raw_equivalent))
             clamped_action_rad[calf_i] = raw_clamped - CALF_BELT_SIGN * motor_qpos_rad[thigh_i]
+
+        # Freeze (see freeze_after_sec's declare_parameter comment):
+        # snapshot the target ONCE, this many ticks in, then hold it fixed
+        # forever -- the policy above still runs every tick (kept for
+        # logging/visibility) but its output stops being used once frozen.
+        if self.freeze_after_sec > 0.0:
+            self._control_tick_count += 1
+            if not self._frozen and (
+                    self._control_tick_count / self.control_rate_hz >= self.freeze_after_sec):
+                self._frozen = True
+                self._frozen_action_rad = list(clamped_action_rad)
+                self.get_logger().info(
+                    f'freeze_after_sec={self.freeze_after_sec}s reached -- '
+                    'freezing motor targets at the current pose.')
+            if self._frozen:
+                clamped_action_rad = list(self._frozen_action_rad)
 
         self.prev_action = clamped_action_rad
 
