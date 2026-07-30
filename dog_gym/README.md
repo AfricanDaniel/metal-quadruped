@@ -197,6 +197,36 @@ step count, so `DR_walk_policy_v1`'s own
 `PPO_1000000_...` means "1M steps of walk fine-tuning," not "33M
 cumulative."
 
+Optionally decay `--ent-coef`/`--learning-rate` over training instead of
+holding them constant for the whole run (2026-07-30) — added after a
+real, repeated finding: every stand-task reward variant tried (flat
+`action_rate_penalty`, gated `-1.0`, gated `-0.4`) looked good early in
+training and then degraded substantially with enough further training —
+the SAME divergence pattern regardless of the reward shape, pointing at
+something more fundamental than reward tuning. Leading suspect: a
+never-decaying `ent_coef` (constant exploration pressure for the entire
+run, nothing lets the policy settle) combined with a constant learning
+rate the whole way through.
+
+```bash
+python3 -m dog_gym.train --train --env-id Dog-Stand-v0 --algo PPO --env-type subproc \
+    --num-envs 32 --fname stand_policy_decay_test \
+    --ent-coef 0.01 --ent-coef-end 0.001 \
+    --learning-rate 3e-4 --learning-rate-end 3e-5 \
+    --decay-steps 20000000
+```
+
+Both `-end` flags default to their start value (`--ent-coef`/
+`--learning-rate`), so decay is fully opt-in — a run that doesn't set
+them behaves exactly as before. Decay is linear over `--decay-steps`
+CUMULATIVE timesteps (correctly continuous across the whole indefinite
+training loop, not per-iteration), then holds at the floor. Not SB3's
+own built-in `learning_rate` schedule support (a custom callback,
+`DecayScheduleCallback`, is used instead) — SB3's version computes
+progress relative to a single `.learn()` call's own timestep budget,
+which doesn't fit this script's `while True` loop of repeated `.learn()`
+calls.
+
 Visualize a trained checkpoint (paced to real time, so it's actually
 watchable — a falls-quickly policy otherwise finishes an episode in a
 fraction of a second):

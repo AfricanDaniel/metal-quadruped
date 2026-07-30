@@ -38,9 +38,70 @@ import dog_gym  # noqa: F401  (registers Dog-v0)
 import gymnasium as gym
 import torch.nn as nn
 from stable_baselines3 import A2C, PPO, SAC
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
 
 ALGOS = {'PPO': PPO, 'SAC': SAC, 'A2C': A2C}
+
+
+class DecayScheduleCallback(BaseCallback):
+    """Linearly decays ent_coef and learning_rate from their start value
+    to a floor over `decay_steps` CUMULATIVE timesteps
+    (self.model.num_timesteps, correctly maintained across repeated
+    .learn() calls via reset_num_timesteps=False), then holds at the
+    floor.
+
+    NOT using SB3's own built-in learning_rate schedule support (passing
+    a callable at PPO construction) -- that machinery computes progress
+    relative to a single .learn() call's own total_timesteps budget,
+    which doesn't fit this script's indefinite `while True` training
+    loop (see train()): each new .learn() call would otherwise reset or
+    distort progress_remaining rather than continuing a single smooth
+    decay across the whole run. This callback sidesteps that by reading
+    model.num_timesteps directly (a real cumulative counter) and forcing
+    the applied values every step, independent of SB3's own progress
+    tracking.
+
+    Added 2026-07-30 to investigate a real, repeated finding logged in
+    daniel_cl_context.md's TODO 16: every stand-task reward variant
+    tried (flat action_rate_penalty, gated -1.0, gated -0.4) looked good
+    early in training and then degraded substantially with enough
+    further training -- the SAME divergence pattern regardless of the
+    reward shape, pointing at something more fundamental than reward
+    tuning. Leading suspect: ent_coef=0.01 never decayed (constant
+    exploration pressure for the entire run, no mechanism to let the
+    policy settle) combined with a constant learning_rate the whole way
+    through -- nothing stops continued gradient noise from drifting an
+    already-good policy away from it. Both defaults (ent_coef_end ==
+    ent_coef_start, lr_end == learning_rate) leave decay INERT unless
+    explicitly configured differently via the CLI, so this is fully
+    opt-in and doesn't change any existing run's behavior by default.
+
+    For ent_coef: mutating self.model.ent_coef directly is safe and
+    takes effect on the next PPO.train() call, which reads
+    self.ent_coef fresh every time (not cached into a schedule object
+    the way learning_rate is).
+    For learning_rate: overrides self.model.lr_schedule with a lambda
+    that always returns the current decayed value regardless of its
+    progress_remaining input -- SB3's own _update_learning_rate() (called
+    internally once per rollout update) applies whatever that function
+    returns to the optimizer, so this correctly forces the real applied
+    LR without needing to fight SB3's own progress-tracking internals."""
+
+    def __init__(self, ent_coef_start, ent_coef_end, lr_start, lr_end, decay_steps, verbose=0):
+        super().__init__(verbose)
+        self.ent_coef_start = ent_coef_start
+        self.ent_coef_end = ent_coef_end
+        self.lr_start = lr_start
+        self.lr_end = lr_end
+        self.decay_steps = decay_steps
+
+    def _on_step(self):
+        progress = min(1.0, self.model.num_timesteps / self.decay_steps) if self.decay_steps > 0 else 1.0
+        self.model.ent_coef = self.ent_coef_start + (self.ent_coef_end - self.ent_coef_start) * progress
+        current_lr = self.lr_start + (self.lr_end - self.lr_start) * progress
+        self.model.lr_schedule = lambda progress_remaining, _lr=current_lr: _lr
+        return True
 
 
 def make_env(env_id, domain_randomization):
@@ -49,7 +110,8 @@ def make_env(env_id, domain_randomization):
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
-          learning_rate, init_from=None):
+          learning_rate, ent_coef, ent_coef_end, learning_rate_end, decay_steps,
+          init_from=None):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs)')
 
     env_fns = [make_env(env_id, domain_randomization) for _ in range(num_envs)]
@@ -98,7 +160,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         model = PPO.load(
             init_from, env=env, device=device,
             n_steps=n_steps, batch_size=batch_size, n_epochs=n_epochs,
-            learning_rate=learning_rate, tensorboard_log=log_dir)
+            learning_rate=learning_rate, ent_coef=ent_coef, tensorboard_log=log_dir)
     elif algo == 'PPO':
         # n_steps*num_envs is the rollout buffer size collected before each
         # round of updates -- SB3 just warns (doesn't error) if batch_size
@@ -116,8 +178,11 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.01,  # was 0.0 -- no exploration pressure beyond the policy's own action noise,
-                             # which let training settle into a "sit still and level" local optimum
+            ent_coef=ent_coef,  # was hardcoded 0.01 (itself raised from 0.0 -- no exploration
+                                 # pressure beyond the policy's own action noise, which let training
+                                 # settle into a "sit still and level" local optimum) -- now a CLI
+                                 # flag, see --ent-coef/--ent-coef-end/--decay-steps and
+                                 # DecayScheduleCallback for optional decay over training.
             vf_coef=0.5,
             max_grad_norm=0.5,
             tensorboard_log=log_dir,
@@ -130,6 +195,17 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     else:
         raise ValueError(f'Unknown algorithm: {algo}')
 
+    # Constructed once, reused across every .learn() call below (not
+    # per-iteration) so its decay stays continuous over the whole
+    # cumulative run instead of restarting each iteration -- see
+    # DecayScheduleCallback's docstring. Inert (no-op) by default: both
+    # end values default to their start values in main(), so a run that
+    # doesn't explicitly configure decay behaves exactly as before.
+    schedule_callback = DecayScheduleCallback(
+        ent_coef_start=ent_coef, ent_coef_end=ent_coef_end,
+        lr_start=learning_rate, lr_end=learning_rate_end,
+        decay_steps=decay_steps)
+
     iteration = 0
     while True:
         iteration += 1
@@ -140,7 +216,8 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         # had already accumulated -- see this module's docstring.
         reset_num_timesteps = bool(init_from) and iteration == 1
         model.learn(total_timesteps=total_timesteps_per_iter,
-                    reset_num_timesteps=reset_num_timesteps)
+                    reset_num_timesteps=reset_num_timesteps,
+                    callback=schedule_callback)
         save_path = os.path.join(
             model_dir, f'{algo}_{total_timesteps_per_iter * iteration}_{fname}')
         model.save(save_path)
@@ -242,11 +319,34 @@ def main():
     parser.add_argument('--n-epochs', type=int, default=10,
                          help='PPO only: number of SGD passes over the rollout buffer per update')
     parser.add_argument('--learning-rate', type=float, default=3e-4,
-                         help='PPO only: Adam learning rate. Consider a LOWER value '
-                              '(e.g. 1e-4 or 5e-5) when using --init-from -- fine-tuning an '
-                              'already-good policy at the fresh-training default risks '
-                              'destabilizing existing behavior rather than refining it '
-                              '(observed directly, see train.py\'s --init-from comment)')
+                         help='PPO only: Adam learning rate (or decay START value, see '
+                              '--learning-rate-end). Consider a LOWER value (e.g. 1e-4 or '
+                              '5e-5) when using --init-from -- fine-tuning an already-good '
+                              'policy at the fresh-training default risks destabilizing '
+                              'existing behavior rather than refining it (observed directly, '
+                              'see train.py\'s --init-from comment)')
+    parser.add_argument('--learning-rate-end', type=float, default=None,
+                         help='PPO only: learning rate floor, linearly decayed toward over '
+                              '--decay-steps CUMULATIVE timesteps (see DecayScheduleCallback). '
+                              'Default: same as --learning-rate, i.e. no decay -- opt-in. '
+                              'Added 2026-07-30 to test whether a never-decaying learning '
+                              'rate/ent_coef is why every stand reward variant tried degraded '
+                              'with enough further training regardless of reward shape (TODO '
+                              '16 in daniel_cl_context.md).')
+    parser.add_argument('--ent-coef', type=float, default=0.01,
+                         help='PPO only: entropy bonus coefficient (or decay START value, see '
+                              '--ent-coef-end). 0.01 matches this project\'s established '
+                              'default (raised from 0.0 -- no exploration pressure let training '
+                              'settle into a "sit still and level" local optimum).')
+    parser.add_argument('--ent-coef-end', type=float, default=None,
+                         help='PPO only: ent_coef floor, linearly decayed toward over '
+                              '--decay-steps CUMULATIVE timesteps. Default: same as '
+                              '--ent-coef, i.e. no decay -- opt-in, see --learning-rate-end.')
+    parser.add_argument('--decay-steps', type=int, default=20_000_000,
+                         help='PPO only: cumulative timesteps over which --ent-coef/'
+                              '--learning-rate linearly decay toward their -end floors (holds '
+                              'at the floor after). Only matters if either -end flag is set '
+                              'to something different from its start value.')
     parser.add_argument('--init-from', metavar='PATH_TO_MODEL',
                          help='--train only, PPO only: load this checkpoint\'s policy/value '
                               'weights + optimizer state as the starting point instead of '
@@ -262,11 +362,18 @@ def main():
                          help='--test only: write per-step height/upright/feet-grounded/reward to this CSV')
     args = parser.parse_args()
 
+    # Unset -end flags default to their start value -- no decay unless
+    # explicitly configured differently (see --ent-coef-end/
+    # --learning-rate-end's help).
+    ent_coef_end = args.ent_coef_end if args.ent_coef_end is not None else args.ent_coef
+    learning_rate_end = args.learning_rate_end if args.learning_rate_end is not None else args.learning_rate
+
     if args.train:
         train(args.env_id, args.algo, args.fname, args.env_type, args.num_envs,
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
-              args.learning_rate, args.init_from)
+              args.learning_rate, args.ent_coef, ent_coef_end, learning_rate_end,
+              args.decay_steps, args.init_from)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv)
     else:
