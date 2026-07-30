@@ -682,6 +682,66 @@ class DogEnv(gym.Env):
                 total += self._foot_horizontal_speed_sq(i)
         return -total
 
+    def _touchdown_velocity_penalty(self):
+        """Penalizes a foot's vertical (world z) speed at the exact
+        moment of landing (contact resuming after a nonzero air time) --
+        a hard, uncushioned plant vs. a soft, controlled one. Real
+        quadrupeds actively manage the knee right before touchdown to
+        absorb impact; nothing in this reward previously distinguished
+        that from a stiff, hard landing.
+
+        Added 2026-07-30 after the user observed real but consistently
+        SMALLER calf/knee articulation than the thighs on a walking
+        policy (PPO_30000000_walk_policy_v4: verified directly, raw calf
+        hinge range 35-63deg vs thigh range 55-74deg per leg -- the knee
+        WAS bending, just less than the hip). No existing term
+        differentiates WHICH joint produces a foot's motion, only the
+        outcome (elevation, slip) -- so nothing was pushing toward the
+        specific stability-relevant role a real knee plays at touchdown
+        specifically, as opposed to during swing (already covered by
+        _foot_clearance_reward). This targets that gap directly rather
+        than just rewarding more calf motion in the abstract, since a
+        soft landing is the part of real knee usage most directly tied
+        to walking stability.
+
+        MUST be called BEFORE _feet_air_time_reward() within the same
+        tick -- both detect "landing" the same way (self._feet_air_time
+        > 0 AND now in contact), but _feet_air_time_reward() resets that
+        state to 0 as part of computing its own reward; calling this
+        method afterward would see every leg as "not landing" and never
+        fire. Uses the same post-mj_step timing as
+        _foot_slip_penalty()/_foot_clearance_reward() -- doesn't isolate
+        the exact pre-impact velocity (some absorption may already be
+        reflected in this tick's own contact resolution), but the
+        residual reported velocity still scales with impact severity,
+        consistent with how every other contact-based term here works.
+
+        Returns <=0 (already negative -- weight with a POSITIVE
+        coefficient, same convention as foot_slip_penalty).
+
+        CALIBRATION NOTE: verified firing correctly on
+        PPO_30000000_walk_policy_v4 by observing the real production
+        call path (monkey-patched, NOT a standalone re-invocation --
+        calling this or _feet_air_time_reward() a second time after
+        env.step() already ran the real _compute_reward_walk() internally
+        just re-reads already-landing-consumed state and looks like it
+        never fires, a test-methodology trap hit and corrected while
+        adding this). Fires on ~3% of ticks (a landing event, not a
+        continuous condition like foot_slip_penalty), raw magnitude
+        ~-0.08 when firing -- weight needs to be much larger than a
+        per-tick term's to have a comparable AVERAGE effect. Weighted
+        5.0 (not 0.1) for that reason -- still a placeholder, not a
+        formal sweep."""
+        contacted = self._foot_contact_per_leg()
+        total = 0.0
+        for i in range(4):
+            if contacted[i] and self._feet_air_time[i] > 0.0:
+                site_id = self.foot_site_ids[i]
+                vel = np.zeros(6)  # [angular(3), linear(3)]
+                mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_SITE, site_id, vel, 0)
+                total += vel[5] ** 2  # vertical (world z) linear speed squared
+        return -total
+
     def _feet_air_time_reward(self):
         """Rewards a leg for swinging roughly FEET_AIR_TIME_TARGET_S
         before landing again -- a real step CADENCE, not just "was
@@ -1001,6 +1061,11 @@ class DogEnv(gym.Env):
         # a formal sweep -- re-check with the same measurement method
         # used to justify these numbers once the next checkpoint lands.
         foot_slip_penalty = self._foot_slip_penalty()
+        # touchdown_velocity_penalty MUST be computed before
+        # _feet_air_time_reward() -- see that method's docstring, it
+        # reads self._feet_air_time before feet_air_time_reward() resets
+        # it as part of its own landing detection.
+        touchdown_velocity_penalty = self._touchdown_velocity_penalty()
         feet_air_time_reward = self._feet_air_time_reward()
 
         # Flat, NOT gated by height_progress (unlike the stand task's,
@@ -1032,6 +1097,7 @@ class DogEnv(gym.Env):
             + non_tip_penalty
             + 1.0 * foot_clearance_reward
             + 1.0 * foot_slip_penalty
+            + 5.0 * touchdown_velocity_penalty
             + 1.0 * feet_air_time_reward
             + action_rate_penalty
             + self._common_penalties(action)
