@@ -106,6 +106,15 @@ WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
 # same clean-sim swing-test method used to find this regression.
 ACTION_RATE_PENALTY_WEIGHT_RISING = -0.1
 ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
+
+# _angular_vel_penalty()'s per-task weights -- see that method's
+# docstring for the full 2026-07-30 derivation (walk-specific wobble
+# getting worse with more training while forward_velocity_reward
+# dominated it 66x). STAND unchanged from the original shared value;
+# WALK raised 10x, calibrated against measured forward_velocity_reward
+# magnitude, not a formal sweep.
+STAND_ANGULAR_VEL_PENALTY_WEIGHT = -0.02
+WALK_ANGULAR_VEL_PENALTY_WEIGHT = -0.2
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -854,25 +863,56 @@ class DogEnv(gym.Env):
         return False
 
     def _common_penalties(self, action):
-        """Terms both tasks share: IMU-based stability penalties + effort
-        + a per-step survival bonus. action_rate_penalty is NOT here --
-        see _action_rate_penalty() below, computed separately per task
-        since stand and walk need genuinely different weighting (walk
-        needs continuous leg motion forever, so it can't be gated toward
-        "should be still" the way stand's climb-then-hold structure can)."""
+        """Terms both tasks share: IMU-based shock penalty + effort + a
+        per-step survival bonus. action_rate_penalty and
+        angular_vel_penalty are NOT here -- see _action_rate_penalty()/
+        _angular_vel_penalty() below, both computed separately per task
+        since stand and walk need genuinely different weighting for each
+        (walk needs continuous leg motion forever, so action_rate can't
+        be gated toward "should be still" the way stand's climb-then-hold
+        structure can; walk's own forward-speed incentive can also make
+        a shared angular-velocity weight get run over -- see
+        _angular_vel_penalty()'s comment)."""
         # sensordata layout matches the <sensor> block in dog.mjcf.xml:
         # [0:3] accelerometer, [3:6] gyro.
         linear_accel = self.data.sensordata[0:3]
-        angular_vel = self.data.sensordata[3:6]
         gravity_m_s2 = 9.81
         accel_shock_penalty = -0.01 * (np.linalg.norm(linear_accel) - gravity_m_s2) ** 2
-        angular_vel_penalty = -0.02 * float(np.dot(angular_vel, angular_vel))
 
         effort_penalty = -0.001 * float(np.dot(action, action))
 
         survival_bonus = 0.05
 
-        return accel_shock_penalty + angular_vel_penalty + effort_penalty + survival_bonus
+        return accel_shock_penalty + effort_penalty + survival_bonus
+
+    def _angular_vel_penalty(self, weight):
+        """weight * dot(angular_vel, angular_vel) -- caller supplies the
+        weight, same pattern as _action_rate_penalty() below.
+
+        History: -0.02 was the ORIGINAL, shared value (both tasks, via
+        _common_penalties). Split out and given a walk-specific,
+        stronger weight 2026-07-30 after the user observed a walk policy
+        (PPO_18000000_walk_policy_v5) still wobbling a lot despite
+        forward tilt and upright score both clearly converging with more
+        training (15.1->10.1->5.8deg mean pitch, 0.962->0.976->0.980
+        upright across 6M/12M/18M) -- torso angular velocity (the direct
+        wobble measure) was doing the OPPOSITE, getting WORSE with more
+        training (mean 0.35->0.74->0.84 rad/s, peak 0.99->1.67->2.25
+        rad/s). Measured directly: at the shared -0.02 weight, this
+        term's weighted contribution (-0.0148/step) was 66x SMALLER than
+        forward_velocity_reward's (+0.9801/step, itself raised 2.0->5.0
+        on 2026-07-29 to fix a different exploit) -- the policy has
+        essentially free rein to trade stability for speed, since
+        wobbling costs almost nothing relative to what it gains by going
+        faster. Stand keeps the original -0.02 (unaffected, standing
+        still has no comparable "worth it for speed" incentive pulling
+        against this term). Walk gets -0.2 (10x), calibrated to give a
+        real, competitive cost (~-0.15/step at the measured wobble level,
+        roughly 15% of forward_velocity_reward's magnitude -- enough to
+        matter without eliminating forward motion outright). Still a
+        placeholder, not a formal sweep."""
+        angular_vel = self.data.sensordata[3:6]
+        return weight * float(np.dot(angular_vel, angular_vel))
 
     def _action_rate_penalty(self, action, weight):
         """weight * sum((action - prev_action)**2) -- caller supplies the
@@ -966,6 +1006,7 @@ class DogEnv(gym.Env):
             + (ACTION_RATE_PENALTY_WEIGHT_STANDING - ACTION_RATE_PENALTY_WEIGHT_RISING) * height_progress
         )
         action_rate_penalty = self._action_rate_penalty(action, action_rate_weight)
+        angular_vel_penalty = self._angular_vel_penalty(STAND_ANGULAR_VEL_PENALTY_WEIGHT)
 
         return (
             3.0 * height_reward
@@ -975,6 +1016,7 @@ class DogEnv(gym.Env):
             + symmetry_penalty
             + drift_penalty
             + action_rate_penalty
+            + angular_vel_penalty
             + self._common_penalties(action)
         )
 
@@ -1089,6 +1131,8 @@ class DogEnv(gym.Env):
         # wasn't clearly dominant over the (now-closed) exploit. Raised
         # so real forward progress is unambiguously the strongest single
         # term for a reasonable walking pace. Placeholder, not tuned.
+        angular_vel_penalty = self._angular_vel_penalty(WALK_ANGULAR_VEL_PENALTY_WEIGHT)
+
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
@@ -1100,6 +1144,7 @@ class DogEnv(gym.Env):
             + 5.0 * touchdown_velocity_penalty
             + 1.0 * feet_air_time_reward
             + action_rate_penalty
+            + angular_vel_penalty
             + self._common_penalties(action)
         )
 
