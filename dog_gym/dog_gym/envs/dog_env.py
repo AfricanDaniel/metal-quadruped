@@ -81,17 +81,31 @@ WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
 # by height_progress (0 = sitting, 1 = at standing height -- see
 # _compute_reward_stand()). RISING matches the old flat -0.1 (2026-07-27)
 # -- small enough to not fight the large, genuinely-needed corrective
-# actions during the climb. STANDING is much stronger: once actually
-# standing, nothing legitimately needs a large action anymore, so jitter
-# should cost real reward instead of being capped by what the climb phase
-# can tolerate. Both placeholders (2026-07-29, TODO 16 in
-# daniel_cl_context.md) -- not derived from a formal sweep, re-tune based
-# on the next retrain's actual steady-state smoothness. WALK's own
-# action_rate_penalty stays flat at ACTION_RATE_PENALTY_WEIGHT_RISING's
-# value -- walking needs continuous leg motion forever, there's no
-# "should now be still" phase to gate toward (see _compute_reward_walk()).
+# actions during the climb. STANDING is stronger: once actually standing,
+# nothing legitimately needs a large action anymore, so jitter should
+# cost real reward instead of being capped by what the climb phase can
+# tolerate. WALK's own action_rate_penalty stays flat at
+# ACTION_RATE_PENALTY_WEIGHT_RISING's value -- walking needs continuous
+# leg motion forever, there's no "should now be still" phase to gate
+# toward (see _compute_reward_walk()).
+#
+# STANDING LOWERED -1.0 -> -0.4 (2026-07-29, TODO 16): the original 10x
+# jump was trained and measured (stand_policy_v1, checkpoints 3M/6M/9M/
+# 11M/12M, clean-sim raw-action-swing test) -- plateaued at 23-27deg mean
+# from 6M through 12M, CONSISTENTLY WORSE than the flat-weight
+# v3_noNoise's 8.9-9.3deg plateau, not a fluke (6M span, no downward
+# trend). A 10x penalty spike concentrated right at height_progress=1 is
+# a steep, near-discontinuous reward landscape exactly where learning
+# should be cleanest -- plausibly made the value function harder to
+# settle there rather than easier, or pushed the policy to hedge against
+# the harsh penalty zone rather than commit to stillness. Softened to a
+# gentler 4x jump. Still a placeholder, not derived from a formal sweep
+# -- needs a FRESH retrain to evaluate (not a continuation of the -1.0
+# run's checkpoints, which are already reinforced into the worse
+# plateau) -- re-tune based on that run's actual steady-state smoothness,
+# same clean-sim swing-test method used to find this regression.
 ACTION_RATE_PENALTY_WEIGHT_RISING = -0.1
-ACTION_RATE_PENALTY_WEIGHT_STANDING = -1.0
+ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -204,6 +218,20 @@ FOOT_CLEARANCE_TARGET_M = 0.03
 # since this robot is a comparable size/leg-length quadruped. Placeholder,
 # not derived from a real measured gait for THIS robot.
 FEET_AIR_TIME_TARGET_S = 0.1
+
+# Cap (seconds) beyond which a currently-airborne leg starts accruing a
+# GROWING per-tick penalty in _feet_air_time_reward(), even before it
+# ever lands. Closes a real exploit found 2026-07-29
+# (PPO_13000000_walk_policy_v3): the landing-only reward above can only
+# judge a swing's duration once contact resumes -- a policy that lifts
+# one leg and simply never re-plants it (leg_b measured airborne 98.7%
+# of a 1000-step rollout, forward distance ~0.000m) never triggers that
+# check at all, while foot_clearance_reward scores it ~0.99/1.0 the
+# whole time (rewards elevation unconditionally, doesn't know or care
+# how long the leg has been up) -- a strongly rewarding, exploitable
+# local optimum with zero forward progress. 3x target, loose enough not
+# to punish ordinary swing-duration variance during exploration.
+FEET_AIR_TIME_MAX_S = 3.0 * FEET_AIR_TIME_TARGET_S
 
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
@@ -673,7 +701,20 @@ class DogEnv(gym.Env):
         Rewarded once per landing (the step contact resumes after a
         nonzero air time), scaled by how far that swing's duration was
         from the target -- positive if the swing ran long enough,
-        negative if it was too short (foot barely left the ground)."""
+        negative if it was too short (foot barely left the ground).
+
+        Also applies a GROWING per-tick penalty (see FEET_AIR_TIME_MAX_S)
+        to a leg that's been airborne past that cap, EVERY tick it stays
+        up -- not just at landing. Closes a real exploit found
+        2026-07-29 (PPO_13000000_walk_policy_v3): a policy that lifts one
+        leg and simply never re-plants it never triggers the landing-only
+        check above at all, while scoring ~max on _foot_clearance_reward
+        (which rewards elevation unconditionally, with no notion of how
+        long the leg has been up) -- a strongly rewarding, exploitable
+        local optimum with zero forward progress (leg airborne 98.7% of
+        a 1000-step rollout, ~0.000m traveled). This term now costs that
+        strategy real, growing reward regardless of whether the leg ever
+        lands."""
         contacted = self._foot_contact_per_leg()
         dt = self.model.opt.timestep
         reward = 0.0
@@ -684,6 +725,8 @@ class DogEnv(gym.Env):
                 self._feet_air_time[i] = 0.0
             else:
                 self._feet_air_time[i] += dt
+                if self._feet_air_time[i] > FEET_AIR_TIME_MAX_S:
+                    reward -= (self._feet_air_time[i] - FEET_AIR_TIME_MAX_S)
         return reward
 
     def _foot_tip_contact_count(self):
@@ -966,8 +1009,23 @@ class DogEnv(gym.Env):
         # "should now be still" phase to gate toward here.
         action_rate_penalty = self._action_rate_penalty(action, ACTION_RATE_PENALTY_WEIGHT_RISING)
 
+        # forward_velocity_reward weight raised 2.0 -> 5.0 (2026-07-29):
+        # PPO_13000000_walk_policy_v3 measured foot_clearance_reward's
+        # weighted contribution at +0.99/step (near its 1.0 ceiling,
+        # trivially reached by permanently holding one leg up) against
+        # forward_velocity_reward's actual +0.0067/step (the robot
+        # wasn't moving, 0.000m traveled over 10s) -- ~148x gap. The
+        # FEET_AIR_TIME_MAX_S fix above closes the specific exploit that
+        # let clearance hit its ceiling for free, but a genuinely modest
+        # walking pace's raw forward_velocity_reward (~0.1-0.3 m/s,
+        # cross-referencing walk_policy_v2's 6M/27M runs) still only
+        # reached ~0.2-0.6 weighted at the old 2.0 -- smaller than
+        # clearance's own 1.0 ceiling, i.e. even a genuinely decent gait
+        # wasn't clearly dominant over the (now-closed) exploit. Raised
+        # so real forward progress is unambiguously the strongest single
+        # term for a reasonable walking pace. Placeholder, not tuned.
         return (
-            2.0 * forward_velocity_reward
+            5.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 0.6 * height_reward
             + 1.5 * tip_reward
