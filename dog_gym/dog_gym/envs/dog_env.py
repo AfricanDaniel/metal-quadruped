@@ -115,6 +115,17 @@ ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
 # magnitude, not a formal sweep.
 STAND_ANGULAR_VEL_PENALTY_WEIGHT = -0.02
 WALK_ANGULAR_VEL_PENALTY_WEIGHT = -0.2
+
+# Weight for -( _torso_pitch_rad() )**2 in the WALK task only -- see that
+# method's docstring for why up_z's cosine-based sensitivity wasn't
+# enough on its own. Calibrated against PPO_18000000_walk_policy_v6's
+# measured 12.9deg (~0.225rad) mean pitch: weight 3.0 gives a weighted
+# contribution of about -0.15/step at that pitch level, comparable in
+# scale to WALK_ANGULAR_VEL_PENALTY_WEIGHT's calibrated cost -- a real,
+# competitive signal without being so strong it would likely forbid any
+# forward lean at all (some lean during dynamic walking gaits is normal).
+# Placeholder, not a formal sweep.
+WALK_PITCH_PENALTY_WEIGHT = 3.0
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -576,6 +587,26 @@ class DogEnv(gym.Env):
         perfectly upright, drops towards 0 as the robot tips over."""
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         return xmat[2, 2]
+
+    def _torso_pitch_rad(self):
+        """Forward/backward tilt (radians): 0 = level, positive = nose-
+        down (pitching forward). World-z component of the torso's local
+        FORWARD (y) axis -- see _torso_up_z()'s comment for the xmat
+        layout convention (columns = local axes in world coords).
+
+        Added 2026-07-30 alongside WALK_PITCH_PENALTY_WEIGHT: up_z alone
+        is a poor signal for THIS specific failure mode -- it's a cosine
+        of the tilt angle, which is very flat near 0 (a 15deg lean only
+        costs 1-cos(15deg)=0.034 out of a 1.0 max), so upright_reward
+        barely registers a sustained forward lean as long as the robot
+        doesn't fully tip over. This gives a direct, much more sensitive
+        signal for exactly that lean (verified: PPO_18000000_
+        walk_policy_v6 measured 12.9deg mean forward pitch, barely
+        improving over 6M-18M of training, while wobble improved
+        substantially over the same span -- a real, still-uncorrected
+        gap up_z's insensitivity was masking)."""
+        xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
+        return np.arcsin(np.clip(-xmat[2, 1], -1.0, 1.0))
 
     def _num_feet_grounded(self):
         """How many of the 4 calf capsules are in actual contact with the
@@ -1133,6 +1164,13 @@ class DogEnv(gym.Env):
         # term for a reasonable walking pace. Placeholder, not tuned.
         angular_vel_penalty = self._angular_vel_penalty(WALK_ANGULAR_VEL_PENALTY_WEIGHT)
 
+        # -(pitch)^2, already negative -- weight applied externally as a
+        # positive coefficient, same convention as foot_slip_penalty/
+        # touchdown_velocity_penalty. See _torso_pitch_rad()'s docstring
+        # for why up_z's cosine-based upright_reward wasn't sensitive
+        # enough to a sustained forward lean on its own.
+        pitch_penalty = -(self._torso_pitch_rad() ** 2)
+
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
@@ -1145,6 +1183,7 @@ class DogEnv(gym.Env):
             + 1.0 * feet_air_time_reward
             + action_rate_penalty
             + angular_vel_penalty
+            + WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + self._common_penalties(action)
         )
 
