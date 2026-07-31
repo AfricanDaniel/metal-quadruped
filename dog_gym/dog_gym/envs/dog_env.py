@@ -126,6 +126,14 @@ WALK_ANGULAR_VEL_PENALTY_WEIGHT = -0.2
 # forward lean at all (some lean during dynamic walking gaits is normal).
 # Placeholder, not a formal sweep.
 WALK_PITCH_PENALTY_WEIGHT = 3.0
+
+# Reference forward speed (m/s) for gating WALK's upright_reward -- see
+# that gating's comment in _compute_reward_walk(). A genuinely walking
+# policy in this project has reached ~0.15-0.2 m/s (walk_policy_v2 @27M:
+# 0.1575 m/s; v5 @18M: 0.199 m/s; v6 @18M: 0.169 m/s) -- 0.15 is
+# reachable by real walking but requires actually moving, not just
+# standing still, to collect full credit.
+WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -264,11 +272,26 @@ FEET_AIR_TIME_MAX_S = 3.0 * FEET_AIR_TIME_TARGET_S
 # back legs airborne only 0.7-2.5% of a full 10s episode vs front legs'
 # ~44%, with much smaller knee range of motion -- a real, longstanding
 # per-leg asymmetry, predating the pitch-penalty work and not caused by
-# it). 1.0s -- generous relative to this project's observed swing/stance
-# cadence (individual swings commonly land well under 1s), loose enough
-# not to punish normal stance-phase variance, but far below the
-# near-entire-episode stance duration the affected legs were showing.
-FEET_STANCE_TIME_MAX_S = 1.0
+# it).
+#
+# RAISED 1.0 -> 2.0 (2026-07-31): PPO_20000000_walk_policy_v8 (trained
+# with the 1.0s cap) measured with -0.149m forward distance and each
+# leg lifting only 1-8 times across a full 10s episode -- not a smooth
+# gait, an occasional forced "snap" once the growing (UNBOUNDED) stance
+# penalty finally outweighed everything else, with long stretches of
+# standing still in between (measured stance durations regularly
+# 1.5-1.9s, 50-90% past the old 1.0s cap, before each forced lift).
+# Diagnosis: 1.0s was calibrated against the ORIGINAL problem (a leg
+# stuck planted for nearly the ENTIRE ~10s episode) -- an extreme case
+# -- but was almost certainly too tight for what a normal, unhurried
+# walking stance phase for this robot actually needs, especially
+# stacked alongside several other recently-added, fairly strong
+# penalties (touchdown_velocity_penalty, walk's angular_vel_penalty,
+# pitch_penalty) all also pulling against movement. Loosened to 2.0s --
+# still far below the original ~10s near-permanent-stance exploit (would
+# still clearly catch that), but real room for a natural cadence instead
+# of forcing premature, poorly-timed corrections.
+FEET_STANCE_TIME_MAX_S = 2.0
 
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
@@ -1101,7 +1124,23 @@ class DogEnv(gym.Env):
         # rightward motion in this frame). Revisit this line together with
         # the frame remap if that ever gets applied.
         forward_velocity_reward = self.data.qvel[1]
-        upright_reward = self._torso_up_z()
+        # Gated by forward progress (0 at zero/negative velocity, 1 at
+        # WALK_FORWARD_PROGRESS_TARGET_M_S+) -- mirrors the stand task's
+        # own height_progress gate on its upright_reward, same underlying
+        # reason: an UNCONDITIONAL upright_reward was collectible almost
+        # in full just by standing mostly still and level, with no
+        # requirement to actually walk. Measured directly on
+        # PPO_21000000_walk_policy_v9 (2026-07-30): a near-stationary,
+        # drifting-backward policy scored upright_reward=+0.4965/step
+        # (near its 0.5 max) while forward_velocity_reward was only
+        # -0.0896/step and the movement-triggered penalties (wobble,
+        # pitch) stayed small precisely BECAUSE the robot wasn't moving
+        # -- "stay safe and still" was a more reliable reward-collection
+        # strategy than attempting real dynamic walking, which risks
+        # several other movement-triggered penalties at once. This
+        # closes that specific escape hatch directly.
+        forward_progress = np.clip(forward_velocity_reward / WALK_FORWARD_PROGRESS_TARGET_M_S, 0.0, 1.0)
+        upright_reward = self._torso_up_z() * forward_progress
         # Targets WALK_TARGET_HEIGHT_M (WALK_HEIGHT_FRACTION * full
         # standing height, 2026-07-28 -- see that constant's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
