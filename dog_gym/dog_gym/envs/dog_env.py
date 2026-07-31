@@ -253,6 +253,23 @@ FEET_AIR_TIME_TARGET_S = 0.1
 # to punish ordinary swing-duration variance during exploration.
 FEET_AIR_TIME_MAX_S = 3.0 * FEET_AIR_TIME_TARGET_S
 
+# Mirror image of FEET_AIR_TIME_MAX_S: cap (seconds) beyond which a
+# currently-PLANTED leg starts accruing a GROWING per-tick penalty in
+# _feet_air_time_reward(), even before it ever swings. Closes the
+# symmetric exploit -- FEET_AIR_TIME_MAX_S stops a leg from staying
+# airborne forever, but nothing previously stopped one from staying
+# PLANTED forever, which is exactly what real hardware/sim data showed
+# (2026-07-30, user: "the back feet have always been dragging" --
+# confirmed on PPO_10000000_walk_policy_v7 with a corrected measurement:
+# back legs airborne only 0.7-2.5% of a full 10s episode vs front legs'
+# ~44%, with much smaller knee range of motion -- a real, longstanding
+# per-leg asymmetry, predating the pitch-penalty work and not caused by
+# it). 1.0s -- generous relative to this project's observed swing/stance
+# cadence (individual swings commonly land well under 1s), loose enough
+# not to punish normal stance-phase variance, but far below the
+# near-entire-episode stance duration the affected legs were showing.
+FEET_STANCE_TIME_MAX_S = 1.0
+
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
     """Returns MJCF joint names ["leg_a_thigh", ...] indexed motor 1..8,
@@ -418,6 +435,9 @@ class DogEnv(gym.Env):
         # leg's last ground contact -- persistent state for
         # _feet_air_time_reward(), reset in reset() below.
         self._feet_air_time = np.zeros(4)
+        # Mirror image: seconds spent PLANTED since that leg's last
+        # swing -- see FEET_STANCE_TIME_MAX_S's comment.
+        self._feet_stance_time = np.zeros(4)
 
         # motor qpos (8) + motor qvel (8) + IMU sensordata + prev_action (8)
         obs_dim = NUM_MOTORS + NUM_MOTORS + self.model.nsensordata + NUM_MOTORS
@@ -432,6 +452,7 @@ class DogEnv(gym.Env):
         mujoco.mj_resetData(self.model, self.data)
         self.prev_action = np.zeros(NUM_MOTORS, dtype=np.float32)
         self._feet_air_time = np.zeros(4)
+        self._feet_stance_time = np.zeros(4)
         self._step_count = 0
 
         if self.task == 'walk':
@@ -814,7 +835,20 @@ class DogEnv(gym.Env):
         local optimum with zero forward progress (leg airborne 98.7% of
         a 1000-step rollout, ~0.000m traveled). This term now costs that
         strategy real, growing reward regardless of whether the leg ever
-        lands."""
+        lands.
+
+        MIRROR-IMAGE addition (2026-07-30, FEET_STANCE_TIME_MAX_S): the
+        same growing per-tick penalty applied to a leg that's been
+        PLANTED past that cap -- closes the symmetric gap. User reported
+        the back legs "have always been dragging" (confirmed on
+        PPO_10000000_walk_policy_v7: back legs airborne only 0.7-2.5% of
+        a full 10s episode vs front legs' ~44%, much smaller knee range
+        of motion) -- nothing previously penalized a leg for simply never
+        swinging; foot_clearance_reward only judges swing legs,
+        foot_slip_penalty only judges stance-phase SLIDING (a rigid,
+        motionless planted leg costs nothing there), and the ABOVE
+        air-time cap only catches legs stuck in the air, not stuck on
+        the ground."""
         contacted = self._foot_contact_per_leg()
         dt = self.model.opt.timestep
         reward = 0.0
@@ -823,8 +857,12 @@ class DogEnv(gym.Env):
                 if self._feet_air_time[i] > 0.0:
                     reward += self._feet_air_time[i] - FEET_AIR_TIME_TARGET_S
                 self._feet_air_time[i] = 0.0
+                self._feet_stance_time[i] += dt
+                if self._feet_stance_time[i] > FEET_STANCE_TIME_MAX_S:
+                    reward -= (self._feet_stance_time[i] - FEET_STANCE_TIME_MAX_S)
             else:
                 self._feet_air_time[i] += dt
+                self._feet_stance_time[i] = 0.0
                 if self._feet_air_time[i] > FEET_AIR_TIME_MAX_S:
                     reward -= (self._feet_air_time[i] - FEET_AIR_TIME_MAX_S)
         return reward
