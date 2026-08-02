@@ -146,6 +146,34 @@ WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 # it can become a new instance of the same problem. Placeholder weight,
 # not a formal sweep.
 WALK_TROT_SYMMETRY_WEIGHT = 1.5
+
+# WALK-specific RESIDUAL action space (2026-08-02) -- inspired by both
+# reference repos in this workspace (quadrupeds_locomotion/friend_code),
+# which structure their action as target = default_pose +
+# action_scale*residual rather than an absolute target the way this
+# project's action space always has been. NOT applied to STAND
+# (unaffected, still absolute) -- stand's episode starts at qpos=0 and
+# has to climb to a completely different pose, so a residual-around-
+# standing baseline doesn't fit its dynamics the way it fits walk (which
+# always resets AT the standing pose and stays near it the whole
+# episode). The motivation: exploring small adjustments around an
+# already-good baseline is plausibly easier than exploring the full
+# absolute joint range from scratch, which may be part of why one
+# diagonal leg pair (b/c) has repeatedly lagged the other (a/d) in
+# walk_policy_v11 -- see daniel_cl_context.md's TODO 16 for the
+# trot-symmetry investigation this follows from. This is a real
+# architectural change, not a reward tweak -- ALL existing walk
+# checkpoints are trained under the old absolute action space and are
+# NOT compatible with this one (the same numeric action value now means
+# something completely different) -- requires a fresh run.
+#
+# Range: real measured gait amplitudes this project has seen (thigh
+# ranges ~40-75deg, calf/knee ranges ~30-80deg peak-to-peak across
+# multiple checkpoints) need roughly half that as a one-sided residual
+# from center. 75deg gives real headroom above that while still being
+# ~3-4x smaller than the full absolute per-motor range (~220-370deg) --
+# preserving the intended exploration-efficiency benefit.
+WALK_ACTION_RESIDUAL_RANGE_RAD = np.radians(75)
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -219,6 +247,22 @@ CALF_SYMMETRY_SIGN = np.array([1, -1, 1, -1])
 # stand task's own starting pose would immediately count as "fallen".
 FALL_HEIGHT_M = 0.10
 MAX_TILT_RAD = 0.9  # ~51 degrees from vertical before an episode ends
+# WALK-specific, MUCH tighter tilt termination (2026-08-02) -- inspired
+# by two reference quadruped-RL repos (quadrupeds_locomotion/friend_code
+# in this workspace), both of which terminate hard on tilt (10deg and
+# 45deg respectively) rather than relying only on a soft reward penalty
+# the way this project's WALK_PITCH_PENALTY_WEIGHT/
+# WALK_ANGULAR_VEL_PENALTY_WEIGHT do. A hard cutoff needs no weight
+# calibration against competing reward terms -- a policy that starts
+# tipping badly just loses the rest of that episode's reward, a
+# self-scaling deterrent. NOT applied to STAND (unaffected, MAX_TILT_RAD
+# above still used there) -- stand hasn't shown tilt problems and this
+# is specifically motivated by walk's dynamics. 20deg -- meaningfully
+# tighter than STAND's 51deg, but still ~3x headroom above
+# walk_policy_v11's actual measured worst-case tilt (5.8-6.8deg at
+# 24-35M) so it won't spuriously end otherwise-reasonable episodes
+# early, especially during a fresh run's noisier early exploration.
+WALK_MAX_TILT_RAD = np.radians(20)
 MAX_EPISODE_STEPS = 1000
 NUM_MOTORS = 8
 
@@ -303,7 +347,7 @@ FEET_AIR_TIME_MAX_S = 3.0 * FEET_AIR_TIME_TARGET_S
 # still far below the original ~10s near-permanent-stance exploit (would
 # still clearly catch that), but real room for a natural cadence instead
 # of forcing premature, poorly-timed corrections.
-FEET_STANCE_TIME_MAX_S = 2.0
+FEET_STANCE_TIME_MAX_S = 3.0
 
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
@@ -451,6 +495,22 @@ class DogEnv(gym.Env):
             calf_belt_sign.append(-1.0 if same_direction else 1.0)
         self.calf_belt_sign = np.array(calf_belt_sign)
 
+        # WALK's residual-action baseline (see WALK_ACTION_RESIDUAL_RANGE_RAD's
+        # comment) -- the ABSOLUTE, belt-compensated equivalent of
+        # STANDING_QPOS_DEG (matching the SAME conversion reset() applies
+        # to its own prev_action, minus reset()'s domain_randomization
+        # noise -- this baseline is deliberately FIXED/noise-free, unlike
+        # reset()'s prev_action, since it's the reference the policy's
+        # residual output is added to every step, not a one-time initial
+        # condition; a per-episode-randomized baseline would make the
+        # network's learned residual behavior inconsistent across
+        # episodes). Computed once here (fully static) and used by
+        # step() only.
+        walk_default_rad = np.radians(STANDING_QPOS_DEG).copy()
+        walk_default_rad[self.calf_idx] -= (
+            self.calf_belt_sign * np.radians(STANDING_QPOS_DEG)[self.calf_thigh_idx])
+        self._walk_default_action_rad = walk_default_rad.astype(np.float32)
+
         # NOTE: for calf motors, this is the raw MJCF actuator's
         # thigh-relative ctrlrange, used as-is for the ABSOLUTE action
         # space too (see calf_idx's comment above) -- an approximation,
@@ -460,10 +520,22 @@ class DogEnv(gym.Env):
         # clamp MuJoCo enforces regardless of what ctrl requests, this
         # box is only PPO's action-distribution bound.
         ctrlrange = self.model.actuator_ctrlrange.copy()
-        self.action_space = spaces.Box(
-            low=ctrlrange[:, 0].astype(np.float32),
-            high=ctrlrange[:, 1].astype(np.float32),
-            dtype=np.float32)
+        if self.task == 'walk':
+            # RESIDUAL action space -- see WALK_ACTION_RESIDUAL_RANGE_RAD's
+            # comment. step() converts this back to an absolute target
+            # (self._walk_default_action_rad + action) before anything
+            # else (slew clamp, belt compensation, reward) touches it --
+            # everything downstream of that conversion is unchanged from
+            # STAND's absolute-action behavior.
+            self.action_space = spaces.Box(
+                low=-WALK_ACTION_RESIDUAL_RANGE_RAD,
+                high=WALK_ACTION_RESIDUAL_RANGE_RAD,
+                shape=(NUM_MOTORS,), dtype=np.float32)
+        else:
+            self.action_space = spaces.Box(
+                low=ctrlrange[:, 0].astype(np.float32),
+                high=ctrlrange[:, 1].astype(np.float32),
+                dtype=np.float32)
 
         self.prev_action = np.zeros(NUM_MOTORS, dtype=np.float32)
         # Per-leg (leg_a..leg_d order) seconds spent airborne since that
@@ -544,6 +616,17 @@ class DogEnv(gym.Env):
 
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)
+        if self.task == 'walk':
+            # RESIDUAL -> ABSOLUTE conversion (see
+            # WALK_ACTION_RESIDUAL_RANGE_RAD's comment) -- action was just
+            # clipped to the residual range above; convert it to the same
+            # absolute-angle terms STAND's action always was, BEFORE any
+            # of the logic below (slew clamp, belt compensation, reward
+            # computation) touches it. Everything downstream is completely
+            # unchanged from the pre-residual behavior -- prev_action,
+            # ctrl, and every reward term still operate on absolute
+            # angles exactly as before.
+            action = self._walk_default_action_rad + action
         # Rate-limit how far any single motor's target can move per step,
         # same idea (and same underlying number) as dog_deploy/policy_node.py's
         # real-hardware safety clamp: that clamps 5deg per 20Hz control tick
@@ -993,7 +1076,8 @@ class DogEnv(gym.Env):
     def _is_fallen(self):
         if self._torso_height() < FALL_HEIGHT_M:
             return True
-        if self._torso_up_z() < np.cos(MAX_TILT_RAD):
+        max_tilt = WALK_MAX_TILT_RAD if self.task == 'walk' else MAX_TILT_RAD
+        if self._torso_up_z() < np.cos(max_tilt):
             return True
         return False
 
