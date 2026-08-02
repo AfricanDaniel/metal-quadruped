@@ -134,6 +134,18 @@ WALK_PITCH_PENALTY_WEIGHT = 3.0
 # reachable by real walking but requires actually moving, not just
 # standing still, to collect full credit.
 WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
+
+# Weight for _trot_symmetry_reward(). GATED by the same forward_progress
+# as upright_reward -- deliberately, not an oversight: this term is
+# satisfiable (partially) by a robot standing perfectly still (all 4
+# feet grounded gives a==d and b==c both true, only the pairs_offset
+# term is unsatisfied, netting a POSITIVE 1/3 score for doing nothing)
+# -- exactly the class of "free reward without actually walking" bug
+# just fixed for upright_reward (2026-07-30/31, TODO 16 in
+# daniel_cl_context.md). Gating it the same way closes that off before
+# it can become a new instance of the same problem. Placeholder weight,
+# not a formal sweep.
+WALK_TROT_SYMMETRY_WEIGHT = 1.5
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -684,6 +696,37 @@ class DogEnv(gym.Env):
                 contacted[self.calf_geom_ids.index(c.geom1)] = True
         return contacted
 
+    def _trot_symmetry_reward(self):
+        """Rewards a diagonal-pair TROT contact pattern -- leg_a (front-
+        right) + leg_d (back-left) sharing the same contact state
+        (both grounded or both swinging together), leg_b (front-left) +
+        leg_c (back-right) likewise, and the two diagonal PAIRS offset
+        from each other (one pair grounded while the other swings) --
+        the standard, most efficient quadruped gait at moderate speed,
+        matching how real dogs/horses trot.
+
+        Added 2026-08-01 (TODO, user's diagonal-pairing idea) after
+        repeated evidence across walk_policy_v8/v9/v10 that closing the
+        "two legs do all the work, two stay planted" shortcut (see
+        FEET_STANCE_TIME_MAX_S) wasn't enough on its own: every
+        checkpoint kept rediscovering a DIFFERENT 2-leg-dominant
+        shortcut (a/d dominant, then b/c, then back) rather than genuine
+        4-leg coordination, because forcing all 4 legs to move doesn't
+        by itself teach a WORKING coordination pattern -- nothing
+        previously told the policy what a good one looks like. This is
+        that missing piece: a direct, concrete signal for how 4 legs
+        should coordinate, not just that they should all eventually
+        move.
+
+        Returns a value in [-1, 1]: 1.0 = perfect trot contact pattern
+        this tick, -1.0 = the worst possible (both pairs desynced AND
+        the two pairs in phase instead of offset)."""
+        a, b, c, d = self._foot_contact_per_leg()
+        pair_ad_synced = 1.0 if a == d else -1.0
+        pair_bc_synced = 1.0 if b == c else -1.0
+        pairs_offset = 1.0 if a != b else -1.0
+        return (pair_ad_synced + pair_bc_synced + pairs_offset) / 3.0
+
     def _foot_clearance_reward(self):
         """Rewards a SWINGING (non-contacting) foot for actually being
         elevated, not dragged along the ground -- adapted from the
@@ -1141,6 +1184,11 @@ class DogEnv(gym.Env):
         # closes that specific escape hatch directly.
         forward_progress = np.clip(forward_velocity_reward / WALK_FORWARD_PROGRESS_TARGET_M_S, 0.0, 1.0)
         upright_reward = self._torso_up_z() * forward_progress
+        # See _trot_symmetry_reward()'s docstring -- gated by the SAME
+        # forward_progress as upright_reward, for the same reason (this
+        # term is partially satisfiable by standing still, so it needs
+        # the same "must actually be walking" gate).
+        trot_symmetry_reward = self._trot_symmetry_reward() * forward_progress
         # Targets WALK_TARGET_HEIGHT_M (WALK_HEIGHT_FRACTION * full
         # standing height, 2026-07-28 -- see that constant's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
@@ -1261,6 +1309,7 @@ class DogEnv(gym.Env):
             + action_rate_penalty
             + angular_vel_penalty
             + WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
+            + WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + self._common_penalties(action)
         )
 
