@@ -67,14 +67,13 @@ STAND_HEIGHT_M = 0.313
 STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 
 # Walk task's target torso height, as a fraction of STAND_HEIGHT_M
-# (2026-07-28, user request: "the robot stays at 75% its maximum height
-# ... this way the robot is guaranteed to stay on 4 legs"). A crouched
+# RAISED 0.75 -> 0.90 (2026-08-02, user request). A crouched
 # target -- legs more bent than full standing extension -- is standard
 # practice for quadruped locomotion RL: lower CoM for stability, more
 # leg travel available for the swing phase without needing near-maximal
 # joint excursions. Easy to change: edit this one fraction, everything
 # else derives from it. See _compute_reward_walk()'s height_reward.
-WALK_HEIGHT_FRACTION = 0.75
+WALK_HEIGHT_FRACTION = 0.90
 WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
 
 # action_rate_penalty's weight for the STAND task, linearly interpolated
@@ -135,17 +134,12 @@ WALK_PITCH_PENALTY_WEIGHT = 3.0
 # standing still, to collect full credit.
 WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 
-# Weight for _trot_symmetry_reward(). GATED by the same forward_progress
-# as upright_reward -- deliberately, not an oversight: this term is
-# satisfiable (partially) by a robot standing perfectly still (all 4
-# feet grounded gives a==d and b==c both true, only the pairs_offset
-# term is unsatisfied, netting a POSITIVE 1/3 score for doing nothing)
-# -- exactly the class of "free reward without actually walking" bug
-# just fixed for upright_reward (2026-07-30/31, TODO 16 in
-# daniel_cl_context.md). Gating it the same way closes that off before
-# it can become a new instance of the same problem. Placeholder weight,
-# not a formal sweep.
-WALK_TROT_SYMMETRY_WEIGHT = 1.5
+# Weight for _trot_symmetry_reward(). ZEROED (2026-08-02, user request:
+# "symmetry is not worth anything") -- _trot_symmetry_reward() itself is
+# left in place (and still gated by forward_progress, see git history for
+# why that gate exists if this is ever raised again), just contributes
+# nothing to the reward while this is 0.0.
+WALK_TROT_SYMMETRY_WEIGHT = 0.0
 
 # WALK-specific RESIDUAL action space (2026-08-02) -- inspired by both
 # reference repos in this workspace (quadrupeds_locomotion/friend_code),
@@ -296,12 +290,12 @@ FOOT_CONTACT_RADIUS_M = 0.03
 # demanding an unnaturally high step.
 FOOT_CLEARANCE_TARGET_M = 0.03
 
-# Target swing-phase duration (seconds) for _feet_air_time_reward() -- a
-# labmate's Go2/Genesis walk implementation (friend_code/go2_env_walk.py's
-# _reward_feet_air_time) uses 0.1s as its default; kept close to that
-# since this robot is a comparable size/leg-length quadruped. Placeholder,
-# not derived from a real measured gait for THIS robot.
-FEET_AIR_TIME_TARGET_S = 0.1
+# RAISED 0.1 -> 3.0 (2026-08-02, user request: "allow the feet to swing
+# for 3 seconds in the air"). NOTE this also raises FEET_AIR_TIME_MAX_S
+# (defined as 3x this) to 9.0s -- within a 10s episode that's close to
+# removing the swing-duration cap's teeth entirely, flagged to the user
+# at the time of this change.
+FEET_AIR_TIME_TARGET_S = 3.0
 
 # Cap (seconds) beyond which a currently-airborne leg starts accruing a
 # GROWING per-tick penalty in _feet_air_time_reward(), even before it
@@ -1387,7 +1381,7 @@ class DogEnv(gym.Env):
             + 1.5 * tip_reward
             + non_tip_penalty
             + 1.0 * foot_clearance_reward
-            + 1.0 * foot_slip_penalty
+            + 0.0 * foot_slip_penalty  # ZEROED 2026-08-02, user request: no penalty for dragging
             + 5.0 * touchdown_velocity_penalty
             + 1.0 * feet_air_time_reward
             + action_rate_penalty
