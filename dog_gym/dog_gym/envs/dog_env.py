@@ -367,10 +367,22 @@ class DogEnv(gym.Env):
 
     def __init__(self, model_path=DEFAULT_MODEL_PATH,
                  motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH,
-                 render_mode=None, domain_randomization=False, task='stand'):
+                 render_mode=None, domain_randomization=False, task='stand',
+                 walk_start_pose='standing'):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
+        # WALK-only (2026-08-03, user request, inspired by friend_code's
+        # approach of training one policy to climb from home AND walk,
+        # rather than assuming a separate stand policy always runs first).
+        # 'standing' is the original/default behavior -- episode starts
+        # already standing (see module docstring for why: composing a
+        # stand policy + a walk policy was the original plan). 'home'
+        # starts from the sitting/home pose instead, same starting state
+        # STAND's own task uses -- see reset()'s walk branch.
+        if walk_start_pose not in ('standing', 'home'):
+            raise ValueError(f"walk_start_pose must be 'standing' or 'home', got {walk_start_pose!r}")
+        self.walk_start_pose = walk_start_pose
         self.task = task
         self.model_path = model_path
         self.render_mode = render_mode
@@ -562,10 +574,20 @@ class DogEnv(gym.Env):
         self._step_count = 0
 
         if self.task == 'walk':
-            # Start already standing -- see module docstring: composing a
-            # stand policy + a walk policy is the plan, not one policy
-            # learning to stand up and walk forward at once.
-            qpos_rad = np.radians(STANDING_QPOS_DEG)
+            if self.walk_start_pose == 'standing':
+                # Start already standing -- see module docstring: composing
+                # a stand policy + a walk policy is the plan, not one
+                # policy learning to stand up and walk forward at once.
+                qpos_rad = np.radians(STANDING_QPOS_DEG)
+            else:
+                # 'home' (2026-08-03, user request): start from the
+                # sitting/home pose instead, same starting state STAND's
+                # task uses -- mj_resetData already leaves motor qpos at
+                # the model's default 0 for this, nothing to set here. One
+                # policy now has to climb to standing height AND walk
+                # forward, rather than assuming a separate stand policy
+                # always runs first.
+                qpos_rad = np.zeros(NUM_MOTORS)
             if self.domain_randomization:
                 qpos_rad = qpos_rad + self.np_random.uniform(-0.02, 0.02, size=NUM_MOTORS)
             self.data.qpos[self.motor_qpos_adr] = qpos_rad
@@ -579,25 +601,32 @@ class DogEnv(gym.Env):
             # calf_idx's comment in __init__), so the calf entries of this
             # raw (thigh-relative) qpos snapshot need the same
             # qpos[calf]-qpos[paired thigh] conversion _get_obs() uses.
+            # This formula is agnostic to which branch above set qpos_rad,
+            # so it's correct for either start pose.
             prev_action = qpos_rad.copy()
             prev_action[self.calf_idx] -= self.calf_belt_sign * qpos_rad[self.calf_thigh_idx]
             self.prev_action = prev_action.astype(np.float32)
-            # The free joint's own z (qpos[2]) still defaults to the
-            # model's qpos=0 spawn height (0.287m, chosen to clear the
-            # floor at the CAD-captured/sitting leg pose) -- leaving it
-            # there while the legs are suddenly snapped to the standing
-            # pose drives the feet deep through the floor on the very
-            # first physics step (extended legs + unchanged torso height
-            # = feet well below z=0), producing a violent contact impulse
-            # that was observed to tip the robot over and leave it stuck
-            # in a partial, off-balance crouch instead of standing
-            # (verified: torso settled around 0.19m tilted ~16deg, not
-            # 0.277m level, regardless of how far the commanded target
-            # was pushed beyond the real standing angles -- confirms the
-            # cause was the initial impact, not insufficient PD gain).
-            # Starting at the real settled standing height directly
-            # avoids that transient.
-            self.data.qpos[2] = STAND_HEIGHT_M
+            if self.walk_start_pose == 'standing':
+                # The free joint's own z (qpos[2]) still defaults to the
+                # model's qpos=0 spawn height (0.287m, chosen to clear the
+                # floor at the CAD-captured/sitting leg pose) -- leaving it
+                # there while the legs are suddenly snapped to the standing
+                # pose drives the feet deep through the floor on the very
+                # first physics step (extended legs + unchanged torso height
+                # = feet well below z=0), producing a violent contact impulse
+                # that was observed to tip the robot over and leave it stuck
+                # in a partial, off-balance crouch instead of standing
+                # (verified: torso settled around 0.19m tilted ~16deg, not
+                # 0.277m level, regardless of how far the commanded target
+                # was pushed beyond the real standing angles -- confirms the
+                # cause was the initial impact, not insufficient PD gain).
+                # Starting at the real settled standing height directly
+                # avoids that transient.
+                self.data.qpos[2] = STAND_HEIGHT_M
+            # else ('home'): qpos_rad is already the model's own qpos=0
+            # configuration, so the default spawn height (0.287m) is
+            # already the physically correct one for it -- same reasoning
+            # as STAND's task, nothing to override.
         # 'stand' task starts from the model's default qpos=0 (the
         # sitting/home pose, see STAND_HEIGHT_M's comment) -- nothing to do.
 

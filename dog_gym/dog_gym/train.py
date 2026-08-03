@@ -104,17 +104,18 @@ class DecayScheduleCallback(BaseCallback):
         return True
 
 
-def make_env(env_id, domain_randomization):
-    return lambda: gym.make(env_id, domain_randomization=domain_randomization)
+def make_env(env_id, domain_randomization, walk_start_pose):
+    return lambda: gym.make(env_id, domain_randomization=domain_randomization,
+                             walk_start_pose=walk_start_pose)
 
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
           learning_rate, ent_coef, ent_coef_end, learning_rate_end, decay_steps,
-          init_from=None):
-    print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs)')
+          init_from=None, walk_start_pose='standing'):
+    print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, walk_start_pose={walk_start_pose})')
 
-    env_fns = [make_env(env_id, domain_randomization) for _ in range(num_envs)]
+    env_fns = [make_env(env_id, domain_randomization, walk_start_pose) for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
     elif env_type == 'subproc':
@@ -224,8 +225,10 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         print(f'Completed iteration {iteration}, model saved to {save_path}')
 
 
-def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None):
-    env = gym.make(env_id, render_mode='human', domain_randomization=domain_randomization)
+def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
+         walk_start_pose='standing'):
+    env = gym.make(env_id, render_mode='human', domain_randomization=domain_randomization,
+                    walk_start_pose=walk_start_pose)
 
     if algo not in ALGOS:
         raise ValueError(f'Unknown algorithm: {algo}')
@@ -310,6 +313,16 @@ def main():
     parser.add_argument('--log-dir', default='dogGymTrain_logs')
     parser.add_argument('--model-dir', default='models')
     parser.add_argument('--domain-randomization', action='store_true')
+    parser.add_argument('--walk-start-pose', default='standing', choices=['standing', 'home'],
+                         help='Dog-Walk-v0 only: episode starting pose. \'standing\' (default) '
+                              'is the original behavior -- starts already standing, see this '
+                              'module\'s docstring for why (composing a stand policy + a walk '
+                              'policy was the original plan). \'home\' starts from the sitting/'
+                              'home pose instead (same start state STAND uses) -- one policy '
+                              'has to climb to standing height AND walk forward, inspired by '
+                              'friend_code\'s approach of training a single policy end-to-end '
+                              'rather than assuming a separate stand policy always runs first. '
+                              'No effect on Dog-Stand-v0.')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -373,9 +386,10 @@ def main():
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
               args.learning_rate, args.ent_coef, ent_coef_end, learning_rate_end,
-              args.decay_steps, args.init_from)
+              args.decay_steps, args.init_from, args.walk_start_pose)
     elif args.test:
-        test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv)
+        test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
+             args.walk_start_pose)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 
