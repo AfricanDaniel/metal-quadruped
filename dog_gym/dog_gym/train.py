@@ -104,18 +104,21 @@ class DecayScheduleCallback(BaseCallback):
         return True
 
 
-def make_env(env_id, domain_randomization, walk_start_pose):
+def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction):
     return lambda: gym.make(env_id, domain_randomization=domain_randomization,
-                             walk_start_pose=walk_start_pose)
+                             walk_start_pose=walk_start_pose,
+                             walk_height_fraction=walk_height_fraction)
 
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
           learning_rate, ent_coef, ent_coef_end, learning_rate_end, decay_steps,
-          init_from=None, walk_start_pose='standing'):
-    print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, walk_start_pose={walk_start_pose})')
+          init_from=None, walk_start_pose='standing', walk_height_fraction=0.90):
+    print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
+          f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction})')
 
-    env_fns = [make_env(env_id, domain_randomization, walk_start_pose) for _ in range(num_envs)]
+    env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction)
+               for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
     elif env_type == 'subproc':
@@ -128,7 +131,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     os.makedirs(model_dir, exist_ok=True)
 
     policy_kwargs = dict(
-        net_arch=dict(pi=[256, 256], vf=[256, 256]),
+        net_arch=dict(pi=[512, 256, 128], vf=[512, 256, 128]),
         activation_fn=nn.Tanh,
     )
 
@@ -226,9 +229,9 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 
 
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
-         walk_start_pose='standing'):
+         walk_start_pose='standing', walk_height_fraction=0.90):
     env = gym.make(env_id, render_mode='human', domain_randomization=domain_randomization,
-                    walk_start_pose=walk_start_pose)
+                    walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction)
 
     if algo not in ALGOS:
         raise ValueError(f'Unknown algorithm: {algo}')
@@ -323,6 +326,12 @@ def main():
                               'friend_code\'s approach of training a single policy end-to-end '
                               'rather than assuming a separate stand policy always runs first. '
                               'No effect on Dog-Stand-v0.')
+    parser.add_argument('--walk-height-fraction', type=float, default=0.90,
+                         help='Dog-Walk-v0 only: target torso height during walking, as a '
+                              'fraction of STAND_HEIGHT_M (0.313m). Was a hardcoded constant '
+                              '(WALK_HEIGHT_FRACTION in dog_env.py), now a CLI flag. A crouched '
+                              'target (< 1.0) keeps the CoM lower and legs bent -- standard '
+                              'practice for quadruped locomotion RL. No effect on Dog-Stand-v0.')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -386,10 +395,10 @@ def main():
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
               args.learning_rate, args.ent_coef, ent_coef_end, learning_rate_end,
-              args.decay_steps, args.init_from, args.walk_start_pose)
+              args.decay_steps, args.init_from, args.walk_start_pose, args.walk_height_fraction)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
-             args.walk_start_pose)
+             args.walk_start_pose, args.walk_height_fraction)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 

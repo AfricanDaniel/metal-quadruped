@@ -66,15 +66,17 @@ DEFAULT_MOTOR_MAPPING_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'config', 'moto
 STAND_HEIGHT_M = 0.313
 STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 
-# Walk task's target torso height, as a fraction of STAND_HEIGHT_M
+# Walk task's target torso height, as a fraction of STAND_HEIGHT_M.
 # RAISED 0.75 -> 0.90 (2026-08-02, user request). A crouched
 # target -- legs more bent than full standing extension -- is standard
 # practice for quadruped locomotion RL: lower CoM for stability, more
 # leg travel available for the swing phase without needing near-maximal
-# joint excursions. Easy to change: edit this one fraction, everything
-# else derives from it. See _compute_reward_walk()'s height_reward.
-WALK_HEIGHT_FRACTION = 0.95
-WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
+# joint excursions. This is just the DEFAULT now (2026-08-03) -- exposed
+# as DogEnv's walk_height_fraction kwarg / train.py's --walk-height-fraction
+# CLI flag, so it no longer requires editing this file to change. See
+# __init__'s self._walk_target_height_m and _compute_reward_walk()'s
+# height_reward, the only place that reads it.
+WALK_HEIGHT_FRACTION = 0.90
 
 # action_rate_penalty's weight for the STAND task, linearly interpolated
 # by height_progress (0 = sitting, 1 = at standing height -- see
@@ -262,6 +264,33 @@ MAX_TILT_RAD = 0.9  # ~51 degrees from vertical before an episode ends
 # 24-35M) so it won't spuriously end otherwise-reasonable episodes
 # early, especially during a fresh run's noisier early exploration.
 WALK_MAX_TILT_RAD = np.radians(20)
+
+# WALK-specific soft-trigger termination on prolonged knee/shin contact
+# (2026-08-03, user request -- motivated by --walk-start-pose home, where
+# the policy has to climb from a curled-up sitting pose and will
+# genuinely touch down wrong plenty of times early in training before it
+# learns better). NOT a hard "any single bad touch ends the episode"
+# trigger -- that would very likely crush early exploration on the home-
+# start task, ending nearly every episode almost immediately before the
+# policy ever experiences enough of an attempt to learn anything (see
+# daniel_cl_context.md's discussion of this tradeoff). Instead, a leg has
+# to stay in CONTINUOUS non-tip contact for WALK_NONTIP_TERMINATION_S
+# seconds before it counts -- gives real room to recover from a single
+# bad landing, still cuts off episodes that settle into genuinely
+# knee-walking. See _knee_walking_too_long().
+#
+# Easy on/off switch, per user request: flip this bool, no other code
+# needs to change.
+WALK_NONTIP_TERMINATION_ENABLED = True
+# LOWERED 1.0 -> 0.5 (2026-08-03): checked directly against
+# walk_policy_home_v11/v12 -- knees WERE touching down (confirmed nonzero
+# non-tip contact time), but kept recovering (air or back on the true
+# tip) before ever reaching a full continuous second, so this never
+# fired. v11 separately measured 0.72s/0.55s continuous non-tip time on
+# two legs (before an unrelated fall ended that episode first) -- 0.5s
+# catches contact durations in that range instead of only much longer,
+# fully-settled knee-walking.
+WALK_NONTIP_TERMINATION_S = 0.0
 MAX_EPISODE_STEPS = 1000
 NUM_MOTORS = 8
 
@@ -368,10 +397,19 @@ class DogEnv(gym.Env):
     def __init__(self, model_path=DEFAULT_MODEL_PATH,
                  motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH,
                  render_mode=None, domain_randomization=False, task='stand',
-                 walk_start_pose='standing'):
+                 walk_start_pose='standing', walk_height_fraction=WALK_HEIGHT_FRACTION):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
+        # WALK-only (2026-08-03, user request: make this a CLI-tunable
+        # parameter instead of a hardcoded constant). Defaults to the
+        # module-level WALK_HEIGHT_FRACTION so existing calls/tests that
+        # don't pass this keep behaving exactly as before. Computed as an
+        # INSTANCE attribute (self._walk_target_height_m), not a module
+        # global, since it can now differ per-env-instance -- see
+        # _compute_reward_walk()'s height_reward, the only place that
+        # reads it.
+        self._walk_target_height_m = walk_height_fraction * STAND_HEIGHT_M
         # WALK-only (2026-08-03, user request, inspired by friend_code's
         # approach of training one policy to climb from home AND walk,
         # rather than assuming a separate stand policy always runs first).
@@ -556,6 +594,9 @@ class DogEnv(gym.Env):
         # Mirror image: seconds spent PLANTED since that leg's last
         # swing -- see FEET_STANCE_TIME_MAX_S's comment.
         self._feet_stance_time = np.zeros(4)
+        # Per-leg seconds spent in CONTINUOUS non-tip (knee/shin) contact
+        # -- see WALK_NONTIP_TERMINATION_S's comment / _knee_walking_too_long().
+        self._non_tip_contact_time = np.zeros(4)
 
         # motor qpos (8) + motor qvel (8) + IMU sensordata + prev_action (8)
         obs_dim = NUM_MOTORS + NUM_MOTORS + self.model.nsensordata + NUM_MOTORS
@@ -571,6 +612,7 @@ class DogEnv(gym.Env):
         self.prev_action = np.zeros(NUM_MOTORS, dtype=np.float32)
         self._feet_air_time = np.zeros(4)
         self._feet_stance_time = np.zeros(4)
+        self._non_tip_contact_time = np.zeros(4)
         self._step_count = 0
 
         if self.task == 'walk':
@@ -692,7 +734,10 @@ class DogEnv(gym.Env):
 
         obs = self._get_obs()
         reward = self._compute_reward(action)
-        terminated = self._is_fallen()
+        # MUST update before checking _knee_walking_too_long() -- see that
+        # method's docstring.
+        self._update_nontip_contact_time()
+        terminated = self._is_fallen() or self._knee_walking_too_long()
         truncated = self._step_count >= MAX_EPISODE_STEPS
 
         self.prev_action = action.astype(np.float32)
@@ -1109,6 +1154,34 @@ class DogEnv(gym.Env):
             return True
         return False
 
+    def _update_nontip_contact_time(self):
+        """Advances self._non_tip_contact_time per leg -- MUST be called
+        once per step, after mj_step (so contact state reflects the step
+        just taken). Grows while a leg stays in CONTINUOUS non-tip
+        contact, resets to 0 the instant that leg is either airborne or
+        back on the true tip -- a single-step recovery is enough to clear
+        it, only a sustained bad landing accumulates. See
+        WALK_NONTIP_TERMINATION_S's comment for why this is soft
+        (duration-based) rather than firing on the first bad touch."""
+        state = self._foot_contact_state_per_leg()
+        dt = self.model.opt.timestep
+        for i in range(4):
+            if state[i] == 'nontip':
+                self._non_tip_contact_time[i] += dt
+            else:
+                self._non_tip_contact_time[i] = 0.0
+
+    def _knee_walking_too_long(self):
+        """True if any leg has been in continuous non-tip (knee/shin)
+        contact for longer than WALK_NONTIP_TERMINATION_S. WALK only
+        (stand's grounded_reward already gates on true tip contact, but
+        stand has no analogous "give up" termination and this wasn't
+        requested for it); no-ops entirely (always False) if
+        WALK_NONTIP_TERMINATION_ENABLED is off."""
+        if not WALK_NONTIP_TERMINATION_ENABLED or self.task != 'walk':
+            return False
+        return bool(np.any(self._non_tip_contact_time > WALK_NONTIP_TERMINATION_S))
+
     def _common_penalties(self, action):
         """Terms both tasks share: IMU-based shock penalty + effort + a
         per-step survival bonus. action_rate_penalty and
@@ -1301,8 +1374,8 @@ class DogEnv(gym.Env):
         # term is partially satisfiable by standing still, so it needs
         # the same "must actually be walking" gate).
         trot_symmetry_reward = self._trot_symmetry_reward() * forward_progress
-        # Targets WALK_TARGET_HEIGHT_M (WALK_HEIGHT_FRACTION * full
-        # standing height, 2026-07-28 -- see that constant's comment),
+        # Targets self._walk_target_height_m (walk_height_fraction * full
+        # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
         # height keeps the CoM lower and legs bent, discouraging both
         # crawling/belly-flopping AND an overextended, easy-to-topple
@@ -1312,7 +1385,7 @@ class DogEnv(gym.Env):
         # weight wasn't enough to reliably hold this if the goal is a
         # real height-based stability guarantee -- reassess based on
         # the next walk training run's actual height-tracking behavior).
-        height_reward = -abs(self._torso_height() - WALK_TARGET_HEIGHT_M)
+        height_reward = -abs(self._torso_height() - self._walk_target_height_m)
 
         # Walk on the feet, not the knees/shins -- this task previously had
         # NO foot-placement term at all, which is exactly why a trained
@@ -1404,7 +1477,15 @@ class DogEnv(gym.Env):
         # reads self._feet_air_time before feet_air_time_reward() resets
         # it as part of its own landing detection.
         touchdown_velocity_penalty = self._touchdown_velocity_penalty()
-        feet_air_time_reward = self._feet_air_time_reward()
+        # GATED by forward_progress (2026-08-03, user request) -- same
+        # pattern/reason as upright_reward/trot_symmetry_reward/tip_reward:
+        # ungated, correct swing-duration cadence is fully collectible
+        # (including the per-tick stance-cap penalty component -- see this
+        # method's own docstring) whether or not the body ever translates.
+        # State tracking (self._feet_air_time/self._feet_stance_time)
+        # still updates every call regardless of this gate -- only the
+        # REWARD contribution is scaled, not the underlying measurement.
+        feet_air_time_reward = self._feet_air_time_reward() * forward_progress
 
         # Flat, NOT gated by height_progress (unlike the stand task's,
         # see ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING's comment) --
@@ -1450,17 +1531,17 @@ class DogEnv(gym.Env):
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 0.6 * height_reward
-            + 1.5 * tip_reward
-            + 1.0 * non_tip_penalty
+            + 0.0 * tip_reward
+            + 0.0 * non_tip_penalty
             + 0.0 * foot_clearance_reward
-            + 0.0 * foot_slip_penalty  # was 0.5 on main, see that branch's history for the full note
+            + 0.0 * foot_slip_penalty
             + 0.0 * touchdown_velocity_penalty
-            + 1.0 * feet_air_time_reward
+            + 0.0 * feet_air_time_reward
             + 0.0 * action_rate_penalty
-            + 1.0 * angular_vel_penalty
+            + 0.0 * angular_vel_penalty
             + 0.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 0.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
-            + 1.0 * self._common_penalties(action)
+            + 0.0 * self._common_penalties(action)
         )
 
     def _ensure_viewer(self):
