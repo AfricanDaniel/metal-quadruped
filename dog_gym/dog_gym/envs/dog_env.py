@@ -73,7 +73,7 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 # leg travel available for the swing phase without needing near-maximal
 # joint excursions. Easy to change: edit this one fraction, everything
 # else derives from it. See _compute_reward_walk()'s height_reward.
-WALK_HEIGHT_FRACTION = 0.90
+WALK_HEIGHT_FRACTION = 0.85
 WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
 
 # action_rate_penalty's weight for the STAND task, linearly interpolated
@@ -134,12 +134,17 @@ WALK_PITCH_PENALTY_WEIGHT = 3.0
 # standing still, to collect full credit.
 WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 
-# Weight for _trot_symmetry_reward(). ZEROED (2026-08-02, user request:
-# "symmetry is not worth anything") -- _trot_symmetry_reward() itself is
-# left in place (and still gated by forward_progress, see git history for
-# why that gate exists if this is ever raised again), just contributes
-# nothing to the reward while this is 0.0.
-WALK_TROT_SYMMETRY_WEIGHT = 0.0
+# Weight for _trot_symmetry_reward(). ZEROED then RESTORED SMALL
+# (2026-08-02): zeroing it for walk_policy_v13 (alongside dropping
+# foot_slip_penalty and loosening the air-time cap) coincided with legs
+# b/c going from actively swinging under v11/v12 (23-53% airborne) to
+# almost completely frozen (0.3%/1.8% airborne) -- the pairs_offset term
+# (penalizes all 4 feet sharing one contact state) was real per-tick
+# pressure against exactly that "two legs go dormant" pattern, apparently
+# doing more work than assumed. Back at 0.5 -- a third of the original
+# 1.5, enough to reapply that pressure without letting it dominate
+# forward_velocity_reward (5.0) again.
+WALK_TROT_SYMMETRY_WEIGHT = 0.5
 
 # WALK-specific RESIDUAL action space (2026-08-02) -- inspired by both
 # reference repos in this workspace (quadrupeds_locomotion/friend_code),
@@ -1300,7 +1305,19 @@ class DogEnv(gym.Env):
         # foot_clearance pattern in quadruped locomotion RL (a labmate's
         # Go2/Genesis implementation, friend_code/go2_env_walk.py, uses
         # the same idea).
-        foot_clearance_reward = self._foot_clearance_reward()
+        # PARTIAL gate (2026-08-02): walk_policy_v14 measured this term at
+        # 1.84/step weighted (near its ceiling) while forward_velocity_reward
+        # was only 0.024/step weighted -- a ~75x gap, with legs a/d swinging
+        # 76-85% of the episode for ~0.05m of actual forward travel over 10s.
+        # Ungated, this is fully satisfiable by bobbing legs up and down in
+        # place. A FULL gate (matching upright_reward/trot_symmetry_reward's
+        # pattern) risks the same bootstrap problem flagged for those terms
+        # (TODO in daniel_cl_context.md, v9 era): a robot that hasn't started
+        # moving forward yet would then get zero credit for its very first
+        # liftoffs, which is what needs encouraging in order to ever start
+        # moving in the first place. Split the difference: never fully zero,
+        # but scaled down to half strength until real forward progress exists.
+        foot_clearance_reward = self._foot_clearance_reward() * (0.5 + 0.5 * forward_progress)
 
         # foot_clearance_reward only judges SWING legs (rewards them for
         # being elevated); nothing above judges STANCE legs, so a policy
@@ -1380,8 +1397,22 @@ class DogEnv(gym.Env):
             + 0.6 * height_reward
             + 1.5 * tip_reward
             + non_tip_penalty
-            + 1.0 * foot_clearance_reward
-            + 0.0 * foot_slip_penalty  # ZEROED 2026-08-02, user request: no penalty for dragging
+            + 2.0 * foot_clearance_reward  # RAISED 1.0 -> 2.0 (2026-08-02, user request: increase
+                                            # reward for feet swinging in the air -- this is the dense
+                                            # per-tick elevation signal, unlike feet_air_time_reward
+                                            # which only pays out on landing and can't bootstrap a leg
+                                            # that's currently never lifting at all)
+            + 0.5 * foot_slip_penalty  # ZEROED then PARTIALLY RESTORED (2026-08-02): walk_policy_v14
+                                        # (trained with this at 0.0) measured planted feet sliding
+                                        # 0.09-0.15 m/s on average (up to 0.32 m/s) -- comparable to or
+                                        # exceeding WALK_FORWARD_PROGRESS_TARGET_M_S (0.15) itself --
+                                        # while joints WERE sweeping through a real range (thighs moving
+                                        # 18-34deg even on planted legs), just not converting into torso
+                                        # displacement because the foot skates instead of gripping.
+                                        # Restored at half the original 1.0 -- enough pressure to grip
+                                        # without re-imposing the full cost that was originally
+                                        # calibrated against a much weaker forward_velocity weight (2.0,
+                                        # since raised to 5.0).
             + 5.0 * touchdown_velocity_penalty
             + 1.0 * feet_air_time_reward
             + action_rate_penalty
