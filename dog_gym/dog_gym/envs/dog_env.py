@@ -73,7 +73,7 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 # leg travel available for the swing phase without needing near-maximal
 # joint excursions. Easy to change: edit this one fraction, everything
 # else derives from it. See _compute_reward_walk()'s height_reward.
-WALK_HEIGHT_FRACTION = 0.85
+WALK_HEIGHT_FRACTION = 0.95
 WALK_TARGET_HEIGHT_M = WALK_HEIGHT_FRACTION * STAND_HEIGHT_M
 
 # action_rate_penalty's weight for the STAND task, linearly interpolated
@@ -1420,35 +1420,31 @@ class DogEnv(gym.Env):
         # enough to a sustained forward lean on its own.
         pitch_penalty = -(self._torso_pitch_rad() ** 2)
 
+        # SIMPLIFIED-REWARD EXPERIMENT (2026-08-02, `simple_rewards` branch,
+        # user request: "only include forward movement, base height").
+        # Every OTHER term below is deliberately zeroed via its coefficient,
+        # not deleted -- the intent is to test whether real gait coordination
+        # can emerge from just forward_velocity_reward + height_reward (this
+        # project's own version of the TODO #3 "simplify the reward" fallback
+        # in daniel_cl_context.md, inspired by quadrupeds_locomotion's much
+        # simpler reward set). Flip any coefficient back to its prior
+        # (pre-2026-08-02) value to restore that term -- see git history/
+        # daniel_cl_context.md for what each one was before this branch.
         return (
             5.0 * forward_velocity_reward
-            + 0.5 * upright_reward
+            + 0.0 * upright_reward
             + 0.6 * height_reward
-            + 1.5 * tip_reward
-            + non_tip_penalty
-            + 2.0 * foot_clearance_reward  # RAISED 1.0 -> 2.0 (2026-08-02, user request: increase
-                                            # reward for feet swinging in the air -- this is the dense
-                                            # per-tick elevation signal, unlike feet_air_time_reward
-                                            # which only pays out on landing and can't bootstrap a leg
-                                            # that's currently never lifting at all)
-            + 0.5 * foot_slip_penalty  # ZEROED then PARTIALLY RESTORED (2026-08-02): walk_policy_v14
-                                        # (trained with this at 0.0) measured planted feet sliding
-                                        # 0.09-0.15 m/s on average (up to 0.32 m/s) -- comparable to or
-                                        # exceeding WALK_FORWARD_PROGRESS_TARGET_M_S (0.15) itself --
-                                        # while joints WERE sweeping through a real range (thighs moving
-                                        # 18-34deg even on planted legs), just not converting into torso
-                                        # displacement because the foot skates instead of gripping.
-                                        # Restored at half the original 1.0 -- enough pressure to grip
-                                        # without re-imposing the full cost that was originally
-                                        # calibrated against a much weaker forward_velocity weight (2.0,
-                                        # since raised to 5.0).
-            + 5.0 * touchdown_velocity_penalty
-            + 1.0 * feet_air_time_reward
-            + action_rate_penalty
-            + angular_vel_penalty
-            + WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
-            + WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
-            + self._common_penalties(action)
+            + 0.0 * tip_reward
+            + 0.0 * non_tip_penalty
+            + 0.0 * foot_clearance_reward
+            + 0.0 * foot_slip_penalty  # was 0.5 on main, see that branch's history for the full note
+            + 0.0 * touchdown_velocity_penalty
+            + 0.0 * feet_air_time_reward
+            + 0.0 * action_rate_penalty
+            + 0.0 * angular_vel_penalty
+            + 0.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
+            + 0.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            + 0.0 * self._common_penalties(action)
         )
 
     def _ensure_viewer(self):
