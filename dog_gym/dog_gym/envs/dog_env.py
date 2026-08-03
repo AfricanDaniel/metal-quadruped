@@ -1317,10 +1317,26 @@ class DogEnv(gym.Env):
         # Walk on the feet, not the knees/shins -- this task previously had
         # NO foot-placement term at all, which is exactly why a trained
         # policy was observed walking on its knees: nothing in the reward
-        # distinguished that from walking on its feet. Not gated by height
-        # progress (unlike the stand task's version) since the walk task
-        # is always meant to be standing/walking, never mid-climb.
+        # distinguished that from walking on its feet.
         tip_reward, non_tip_penalty = self._foot_placement_terms()
+        # GATED by forward_progress (2026-08-03) -- same pattern/reason as
+        # upright_reward and trot_symmetry_reward: measured directly on
+        # walk_policy_home_v2 (1M steps, --walk-start-pose home) at
+        # 1.10/step weighted (73% of its 1.5 ceiling) while
+        # forward_velocity_reward was only 0.066/step -- a ~17x gap, with
+        # forward distance ~0.013 m/s (essentially not moving). Ungated,
+        # correct tip contact is fully collectible whether or not the body
+        # ever translates -- ungating it was itself the earlier mistake
+        # (comment used to say "not gated... walk task is always meant to
+        # be standing/walking, never mid-climb", which stopped being true
+        # once --walk-start-pose home was added: a home-start episode DOES
+        # have a real climb phase, exactly where "reward feet contact
+        # regardless of movement" is most exploitable). non_tip_penalty
+        # left ungated -- currently zeroed anyway (see the return
+        # statement), and it's a penalty (discourages knee-walking
+        # unconditionally), not a positive term with a standing-still
+        # escape hatch the way tip_reward has.
+        tip_reward = tip_reward * forward_progress
 
         # This alone wasn't enough -- a later, much-longer-trained walk
         # policy (43M timesteps) converged back to knee-walking despite
@@ -1432,19 +1448,19 @@ class DogEnv(gym.Env):
         # daniel_cl_context.md for what each one was before this branch.
         return (
             5.0 * forward_velocity_reward
-            + 0.0 * upright_reward
+            + 0.5 * upright_reward
             + 0.6 * height_reward
-            + 0.0 * tip_reward
-            + 0.0 * non_tip_penalty
+            + 1.5 * tip_reward
+            + 1.0 * non_tip_penalty
             + 0.0 * foot_clearance_reward
             + 0.0 * foot_slip_penalty  # was 0.5 on main, see that branch's history for the full note
             + 0.0 * touchdown_velocity_penalty
-            + 0.0 * feet_air_time_reward
+            + 1.0 * feet_air_time_reward
             + 0.0 * action_rate_penalty
-            + 0.0 * angular_vel_penalty
+            + 1.0 * angular_vel_penalty
             + 0.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 0.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
-            + 0.0 * self._common_penalties(action)
+            + 1.0 * self._common_penalties(action)
         )
 
     def _ensure_viewer(self):
