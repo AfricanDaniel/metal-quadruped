@@ -271,32 +271,39 @@ MAX_TILT_RAD = 0.9  # ~51 degrees from vertical before an episode ends
 # early, especially during a fresh run's noisier early exploration.
 WALK_MAX_TILT_RAD = np.radians(20)
 
-# WALK-specific soft-trigger termination on prolonged knee/shin contact
-# (2026-08-03, user request -- motivated by --walk-start-pose home, where
-# the policy has to climb from a curled-up sitting pose and will
-# genuinely touch down wrong plenty of times early in training before it
-# learns better). NOT a hard "any single bad touch ends the episode"
-# trigger -- that would very likely crush early exploration on the home-
-# start task, ending nearly every episode almost immediately before the
-# policy ever experiences enough of an attempt to learn anything (see
-# daniel_cl_context.md's discussion of this tradeoff). Instead, a leg has
-# to stay in CONTINUOUS non-tip contact for WALK_NONTIP_TERMINATION_S
-# seconds before it counts -- gives real room to recover from a single
-# bad landing, still cuts off episodes that settle into genuinely
-# knee-walking. See _knee_walking_too_long().
+# Soft-trigger termination on prolonged knee/thigh/shin contact -- BOTH
+# tasks (2026-08-04, user request: "can we also end episodes where we
+# are not standing on our feet" for STAND, "just as we did for
+# walking"). Originally WALK-only (2026-08-03, motivated by
+# --walk-start-pose home, where the policy has to climb from a
+# curled-up sitting pose and will genuinely touch down wrong plenty of
+# times early in training before it learns better) -- STAND's episode
+# ALWAYS starts from that same curled/sitting pose (qpos=0), so the
+# exact same justification applies there too, arguably more so. NOT a
+# hard "any single bad touch ends the episode" trigger -- that would
+# very likely crush early exploration on the climb, ending nearly every
+# episode almost immediately before the policy ever experiences enough
+# of an attempt to learn anything (see daniel_cl_context.md's
+# discussion of this tradeoff). Instead, a leg has to stay in
+# CONTINUOUS non-tip contact for NONTIP_TERMINATION_S seconds before it
+# counts -- gives real room to recover from a single bad landing, still
+# cuts off episodes that settle into genuinely knee-walking (or, for
+# STAND, never really standing at all). See _knee_walking_too_long()
+# (renamed from a WALK_-prefixed pair of constants now that both tasks
+# use it -- see that method).
 #
 # Easy on/off switch, per user request: flip this bool, no other code
 # needs to change.
-WALK_NONTIP_TERMINATION_ENABLED = True
-# LOWERED 1.0 -> 0.5 (2026-08-03): checked directly against
-# walk_policy_home_v11/v12 -- knees WERE touching down (confirmed nonzero
-# non-tip contact time), but kept recovering (air or back on the true
-# tip) before ever reaching a full continuous second, so this never
-# fired. v11 separately measured 0.72s/0.55s continuous non-tip time on
-# two legs (before an unrelated fall ended that episode first) -- 0.5s
-# catches contact durations in that range instead of only much longer,
-# fully-settled knee-walking.
-WALK_NONTIP_TERMINATION_S = 0.0
+NONTIP_TERMINATION_ENABLED = True
+# LOWERED 1.0 -> 0.5 (2026-08-03, WALK only at the time): checked
+# directly against walk_policy_home_v11/v12 -- knees WERE touching down
+# (confirmed nonzero non-tip contact time), but kept recovering (air or
+# back on the true tip) before ever reaching a full continuous second,
+# so this never fired. v11 separately measured 0.72s/0.55s continuous
+# non-tip time on two legs (before an unrelated fall ended that episode
+# first) -- 0.5s catches contact durations in that range instead of
+# only much longer, fully-settled knee-walking.
+NONTIP_TERMINATION_S = 0.0
 MAX_EPISODE_STEPS = 1000
 NUM_MOTORS = 8
 
@@ -637,7 +644,7 @@ class DogEnv(gym.Env):
         # swing -- see FEET_STANCE_TIME_MAX_S's comment.
         self._feet_stance_time = np.zeros(4)
         # Per-leg seconds spent in CONTINUOUS non-tip (knee/shin) contact
-        # -- see WALK_NONTIP_TERMINATION_S's comment / _knee_walking_too_long().
+        # -- see NONTIP_TERMINATION_S's comment / _knee_walking_too_long().
         self._non_tip_contact_time = np.zeros(4)
 
         # motor qpos (8) + motor qvel (8) + IMU sensordata + prev_action (8)
@@ -718,8 +725,29 @@ class DogEnv(gym.Env):
             # configuration, so the default spawn height (0.287m) is
             # already the physically correct one for it -- same reasoning
             # as STAND's task, nothing to override.
-        # 'stand' task starts from the model's default qpos=0 (the
-        # sitting/home pose, see STAND_HEIGHT_M's comment) -- nothing to do.
+        elif self.task == 'stand':
+            # FIXED 2026-08-04 (user question: "this is a policy to stand
+            # up from a sitting position ON THE GROUND, will this still
+            # work?"): motor qpos is already 0 (mj_resetData's default),
+            # but the free joint's z (qpos[2]) was previously left at the
+            # model's raw qpos=0 spawn height (0.287m, chosen only to
+            # clear the floor at the CAD pose, not the real settled
+            # height) -- meaning every STAND episode ever trained started
+            # AIRBORNE, with legs curled and nothing touching the ground,
+            # then fell for ~10 steps before any foot made contact. That
+            # never matches how a real robot actually starts (already
+            # resting on the ground, weight already supported, feet
+            # already in contact). Verified directly: letting the robot
+            # settle under zero torque from the old spawn reaches
+            # height=0.1403m with all 4 feet in clean tip contact --
+            # matches SIT_HEIGHT_M (0.14) almost exactly, and a direct
+            # qpos[2]=SIT_HEIGHT_M assignment (no settling simulation
+            # needed) reproduces that same state (up_z=1.0, all 4 tip
+            # contacts, contact penetration depths of a few mm -- normal
+            # soft-contact overlap, not an invalid configuration).
+            # Cheaper than re-running a settling simulation every reset,
+            # since it's just the already-measured constant.
+            self.data.qpos[2] = SIT_HEIGHT_M
 
         if self.domain_randomization:
             self._randomize_ground()
@@ -1166,7 +1194,7 @@ class DogEnv(gym.Env):
         tip contact -- the old calf-only version of this function
         classified that leg as 'tip' outright, completely blind to the
         thigh touching down, so nothing (non_tip_penalty,
-        WALK_NONTIP_TERMINATION) ever saw it. Thigh contact is given
+        NONTIP_TERMINATION) ever saw it. Thigh contact is given
         PRIORITY over a same-step calf classification for that same leg
         (see the `continue` below) precisely to fix that exact case: a
         clean foot-tip plant does not excuse a simultaneously-grounded
@@ -1225,7 +1253,7 @@ class DogEnv(gym.Env):
         contact, resets to 0 the instant that leg is either airborne or
         back on the true tip -- a single-step recovery is enough to clear
         it, only a sustained bad landing accumulates. See
-        WALK_NONTIP_TERMINATION_S's comment for why this is soft
+        NONTIP_TERMINATION_S's comment for why this is soft
         (duration-based) rather than firing on the first bad touch."""
         state = self._foot_contact_state_per_leg()
         dt = self.model.opt.timestep
@@ -1236,15 +1264,17 @@ class DogEnv(gym.Env):
                 self._non_tip_contact_time[i] = 0.0
 
     def _knee_walking_too_long(self):
-        """True if any leg has been in continuous non-tip (knee/shin)
-        contact for longer than WALK_NONTIP_TERMINATION_S. WALK only
-        (stand's grounded_reward already gates on true tip contact, but
-        stand has no analogous "give up" termination and this wasn't
-        requested for it); no-ops entirely (always False) if
-        WALK_NONTIP_TERMINATION_ENABLED is off."""
-        if not WALK_NONTIP_TERMINATION_ENABLED or self.task != 'walk':
+        """True if any leg has been in continuous non-tip (knee/thigh/shin)
+        contact for longer than NONTIP_TERMINATION_S. BOTH tasks
+        (2026-08-04 -- originally WALK only; STAND's grounded_reward
+        already SCORES true tip contact via height_progress-gated
+        grounded_reward, but had no analogous "give up and end the
+        episode" termination until the user asked for one, matching
+        WALK's existing mechanism). No-ops entirely (always False) if
+        NONTIP_TERMINATION_ENABLED is off."""
+        if not NONTIP_TERMINATION_ENABLED:
             return False
-        return bool(np.any(self._non_tip_contact_time > WALK_NONTIP_TERMINATION_S))
+        return bool(np.any(self._non_tip_contact_time > NONTIP_TERMINATION_S))
 
     def _common_penalties(self, action):
         """Terms both tasks share: IMU-based shock penalty + effort + a
@@ -1374,11 +1404,26 @@ class DogEnv(gym.Env):
         return self._compute_reward_walk(action)
 
     def _compute_reward_stand(self, action):
+        # UNCAPPED height reward (2026-08-04, user request: "make the
+        # robot stand to its maximum height") -- was -abs(height -
+        # STAND_HEIGHT_M), which penalized exceeding STAND_HEIGHT_M
+        # exactly as much as falling short of it. STAND_HEIGHT_M is only
+        # ever a hand-posed APPROXIMATION of "near max" (see its own
+        # comment), not a verified true maximum, so treating it as a
+        # target to match rather than a floor to clear was actively
+        # capping the policy below whatever the real achievable max is.
+        # Relative to SIT_HEIGHT_M (not raw torso_height) so the scale/
+        # slope stays comparable to the old term (same ~0 at sitting,
+        # growing with height) -- just uncapped above STAND_HEIGHT_M
+        # instead of penalized there.
+        height_reward = self._torso_height() - SIT_HEIGHT_M
         height_error = abs(self._torso_height() - STAND_HEIGHT_M)
-        height_reward = -height_error
         # Bonus on top of the continuous shaping term once within
         # tolerance -- gives "close enough" a distinctly better return
         # than "still closing in", per the requested error tolerance.
+        # Still anchored on STAND_HEIGHT_M as a known-reachable
+        # checkpoint bonus, layered under the uncapped term above (which
+        # keeps pushing higher if more height is actually achievable).
         height_bonus = 0.2 if height_error < STAND_HEIGHT_TOLERANCE_M else 0.0
 
         # Gate uprightness by standing progress (0 at sitting height, 1 at
