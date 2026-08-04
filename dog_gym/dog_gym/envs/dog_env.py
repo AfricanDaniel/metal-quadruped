@@ -1430,6 +1430,24 @@ class DogEnv(gym.Env):
         action_rate_penalty = self._action_rate_penalty(action, action_rate_weight)
         angular_vel_penalty = self._angular_vel_penalty(STAND_ANGULAR_VEL_PENALTY_WEIGHT)
 
+        # action_rate_penalty/common_penalties ZEROED (2026-08-04, user
+        # request, matching _compute_reward_walk()'s simple_rewards
+        # treatment) -- NOT deleted, same convention as that branch (flip
+        # the coefficient back to 1.0 to restore). This return was never
+        # touched by the original simple_rewards experiment (that only
+        # zeroed WALK's terms), which turned out to matter for
+        # control_mode='torque': measured directly on stand_policy_torque_v4
+        # (2M steps) that STAND, still carrying these two terms at real
+        # weight, had settled into a static, WRONG-SIGNED, low-magnitude
+        # action (mean |action| 2-3 out of +-20) while WALK (already
+        # zeroed) was freely exploring toward a real, correctly-signed
+        # push -- action_rate_penalty rewards keeping the action similar
+        # step-to-step, which gave STAND no pressure to escape an early,
+        # accidentally-wrong-signed local optimum once it settled there.
+        # ruled out accel_shock_penalty as an alternative explanation
+        # first (measured: a genuine stand-up attempt has a SMALLER
+        # shock penalty than doing nothing, -0.73 vs -1.73 over 3s) --
+        # this asymmetry was the real, confirmed cause.
         return (
             3.0 * height_reward
             + height_bonus
@@ -1437,9 +1455,9 @@ class DogEnv(gym.Env):
             + 1.5 * grounded_reward
             + symmetry_penalty
             + drift_penalty
-            + action_rate_penalty
+            + 0.0 * action_rate_penalty
             + angular_vel_penalty
-            + self._common_penalties(action)
+            + 0.0 * self._common_penalties(action)
         )
 
     def _compute_reward_walk(self, action):
@@ -1632,7 +1650,7 @@ class DogEnv(gym.Env):
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
-            + 0.6 * height_reward
+            + 0.9 * height_reward
             + 0.0 * tip_reward
             + 0.0 * non_tip_penalty
             + 0.0 * foot_clearance_reward
