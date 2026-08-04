@@ -296,13 +296,13 @@
   </sensor>
 
   <actuator>
-    <motor joint="leg_a_thigh" name="motor_1" ctrlrange="-20 20"/>
-    <motor joint="leg_a_calf" name="motor_2" ctrlrange="-20 20"/>
-    <motor joint="leg_b_calf" name="motor_3" ctrlrange="-20 20"/>
-    <motor joint="leg_b_thigh" name="motor_4" ctrlrange="-20 20"/>
-    <motor joint="leg_c_thigh" name="motor_5" ctrlrange="-20 20"/>
-    <motor joint="leg_c_calf" name="motor_6" ctrlrange="-20 20"/>
-    <motor joint="leg_d_calf" name="motor_7" ctrlrange="-20 20"/>
-    <motor joint="leg_d_thigh" name="motor_8" ctrlrange="-20 20"/>
+    <motor joint="leg_a_thigh" name="motor_1" ctrlrange="-5 5"/>
+    <motor joint="leg_a_calf" name="motor_2" ctrlrange="-5 5"/>
+    <motor joint="leg_b_calf" name="motor_3" ctrlrange="-5 5"/>
+    <motor joint="leg_b_thigh" name="motor_4" ctrlrange="-5 5"/>
+    <motor joint="leg_c_thigh" name="motor_5" ctrlrange="-5 5"/>
+    <motor joint="leg_c_calf" name="motor_6" ctrlrange="-5 5"/>
+    <motor joint="leg_d_calf" name="motor_7" ctrlrange="-5 5"/>
+    <motor joint="leg_d_thigh" name="motor_8" ctrlrange="-5 5"/>
   </actuator>
 </mujoco>

@@ -1263,7 +1263,28 @@ class DogEnv(gym.Env):
         gravity_m_s2 = 9.81
         accel_shock_penalty = -0.01 * (np.linalg.norm(linear_accel) - gravity_m_s2) ** 2
 
-        effort_penalty = -0.001 * float(np.dot(action, action))
+        # SCALE BUG FIXED 2026-08-04: this -0.001 weight was calibrated
+        # against position mode's action (radians, ~4-8 rad span per
+        # motor). control_mode='torque' actions are in N*m (+-20 span,
+        # see WALK/STAND_ACTION_RESIDUAL... no -- see control_mode's
+        # comment in __init__) -- unnormalized, max-torque-on-every-motor
+        # costs -3.2 here, dwarfing height_reward's entire ~0.5 ceiling
+        # even before counting _action_rate_penalty's much larger version
+        # of the same bug (see that method). Found diagnosing
+        # stand_policy_torque_v2: mean |action| was 0.1-1.2 out of a +-20
+        # range at 1M steps -- the policy had learned to barely apply any
+        # torque at all, because doing so was reward-negative regardless
+        # of whether it helped stand up. Normalizing by the actuator's
+        # own range (symmetric for <motor>, so dividing by .high alone is
+        # valid) makes this weight mean the same thing regardless of
+        # control_mode's physical units -- NOT applied to position mode,
+        # whose calibration (and every existing trained checkpoint) this
+        # must not disturb.
+        if self.control_mode == 'torque':
+            normalized_action = action / self.action_space.high
+            effort_penalty = -0.001 * float(np.dot(normalized_action, normalized_action))
+        else:
+            effort_penalty = -0.001 * float(np.dot(action, action))
 
         survival_bonus = 0.05
 
@@ -1327,8 +1348,25 @@ class DogEnv(gym.Env):
         RISING/STANDING and _compute_reward_stand()'s height_progress
         gating below -- same "gate by climb progress" pattern
         upright_reward/grounded_reward already use, applied here for
-        the first time (TODO 16 in daniel_cl_context.md)."""
-        return weight * float(np.sum((action - self.prev_action) ** 2))
+        the first time (TODO 16 in daniel_cl_context.md).
+
+        SCALE BUG FIXED 2026-08-04 (same root cause as effort_penalty's
+        matching fix in _common_penalties(), much bigger impact here):
+        unnormalized, a full torque-mode swing (delta up to 40 per motor,
+        N*m units) costs up to -1280 to -5120 depending on which weight
+        is active -- thousands of times larger than height_reward's
+        entire ~0.5 ceiling. This was the DOMINANT cause of
+        stand_policy_torque_v2 barely applying any torque at all (mean
+        |action| 0.1-1.2 out of +-20 at 1M steps): any real torque
+        commitment was reward-catastrophic regardless of whether it
+        helped stand up, so near-zero action was the only locally safe
+        policy. Normalized the same way as effort_penalty -- NOT applied
+        to position mode, whose calibration (and every existing trained
+        checkpoint) this must not disturb."""
+        delta = action - self.prev_action
+        if self.control_mode == 'torque':
+            delta = delta / self.action_space.high
+        return weight * float(np.sum(delta ** 2))
 
     def _compute_reward(self, action):
         if self.task == 'stand':

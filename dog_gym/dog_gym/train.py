@@ -36,6 +36,7 @@ import time
 
 import dog_gym  # noqa: F401  (registers Dog-v0)
 import gymnasium as gym
+import numpy as np
 import torch.nn as nn
 from stable_baselines3 import A2C, PPO, SAC
 from stable_baselines3.common.callbacks import BaseCallback
@@ -104,23 +105,35 @@ class DecayScheduleCallback(BaseCallback):
         return True
 
 
-def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode):
-    return lambda: gym.make(env_id, domain_randomization=domain_randomization,
-                             walk_start_pose=walk_start_pose,
-                             walk_height_fraction=walk_height_fraction,
-                             control_mode=control_mode)
+def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
+             model_path=None):
+    kwargs = dict(domain_randomization=domain_randomization,
+                  walk_start_pose=walk_start_pose,
+                  walk_height_fraction=walk_height_fraction,
+                  control_mode=control_mode)
+    # --model-path (2026-08-04): lets --test load a checkpoint against the
+    # EXACT MJCF/ctrlrange it was actually trained on, overriding
+    # control_mode's own default resolution -- needed once a shared file
+    # like dog_torque.mjcf.xml gets regenerated with different values
+    # (e.g. --torque-limit fixed 5.0 -> 20.0) out from under an older
+    # checkpoint's saved action_space, which otherwise fails to load at
+    # all (SB3's check_for_correct_spaces).
+    if model_path is not None:
+        kwargs['model_path'] = model_path
+    return lambda: gym.make(env_id, **kwargs)
 
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
           learning_rate, ent_coef, ent_coef_end, learning_rate_end, decay_steps,
           init_from=None, walk_start_pose='standing', walk_height_fraction=0.90,
-          control_mode='position'):
+          control_mode='position', model_path=None):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
           f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction}, '
           f'control_mode={control_mode})')
 
-    env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode)
+    env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
+                         control_mode, model_path)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -137,6 +150,26 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         net_arch=dict(pi=[512, 256, 128], vf=[512, 256, 128]),
         activation_fn=nn.Tanh,
     )
+    # control_mode='torque' only (2026-08-04): SB3's PPO default
+    # log_std_init=0.0 means the initial per-motor exploration std is
+    # 1.0, in RAW action-space units. Position mode's action range is
+    # already a few radians wide, so std=1 explores a real chunk of it.
+    # Torque mode's range is the actuator's full +-ctrlrange (e.g. +-20
+    # N*m) -- with std=1, exploration noise barely reaches +-3, well
+    # short of the ~15-20 N*m a stand policy actually needs (measured
+    # directly: a stand_policy_torque_v3 checkpoint at 1M steps still
+    # had std~1.08 despite the effort_penalty/action_rate_penalty scale
+    # fix, and mean |action| stayed 0.1-0.6 out of +-20 -- the policy
+    # was never SAMPLING large torques during rollout collection in the
+    # first place, so there was no gradient signal that they help,
+    # independent of whether they'd be rewarded once tried). Scaling the
+    # initial std to a meaningful fraction (1/3) of the actuator's own
+    # range fixes this at the source rather than waiting for ent_coef to
+    # slowly grow it. Reads the env's OWN action_space (not a hardcoded
+    # 20) so this stays correct if --torque-limit ever changes.
+    if control_mode == 'torque':
+        torque_range = float(env.action_space.high[0])
+        policy_kwargs['log_std_init'] = float(np.log(torque_range / 3.0))
 
     device = 'cuda'  # VM with a real GPU -- swap for 'cpu' on a dev machine (small MLP,
                       # GPU transfer overhead isn't worth it there)
@@ -232,10 +265,14 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 
 
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
-         walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position'):
-    env = gym.make(env_id, render_mode='human', domain_randomization=domain_randomization,
-                    walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
-                    control_mode=control_mode)
+         walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position',
+         model_path=None):
+    kwargs = dict(render_mode='human', domain_randomization=domain_randomization,
+                  walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
+                  control_mode=control_mode)
+    if model_path is not None:
+        kwargs['model_path'] = model_path
+    env = gym.make(env_id, **kwargs)
 
     if algo not in ALGOS:
         raise ValueError(f'Unknown algorithm: {algo}')
@@ -347,6 +384,15 @@ def main():
                               'a clearly separate --fname so they never get mixed up with a '
                               'position-mode lineage (the action spaces are incompatible, same '
                               'as WALK_ACTION_RESIDUAL_RANGE_RAD\'s old-checkpoint break).')
+    parser.add_argument('--model-path', default=None,
+                         help='Override which MJCF file DogEnv loads, instead of control_mode\'s '
+                              'own default (dog.mjcf.xml for position, dog_torque.mjcf.xml for '
+                              'torque). Mainly for --test: a checkpoint\'s saved action_space must '
+                              'exactly match ctrlrange in whatever MJCF is loaded now, so if a '
+                              'shared file like dog_torque.mjcf.xml gets regenerated with '
+                              'different values (e.g. --torque-limit) after a checkpoint was '
+                              'trained, that older checkpoint needs this pointed at a copy of the '
+                              'file with its original values, or it fails to load.')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -411,10 +457,10 @@ def main():
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
               args.learning_rate, args.ent_coef, ent_coef_end, learning_rate_end,
               args.decay_steps, args.init_from, args.walk_start_pose, args.walk_height_fraction,
-              args.control_mode)
+              args.control_mode, args.model_path)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
-             args.walk_start_pose, args.walk_height_fraction, args.control_mode)
+             args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 

@@ -262,12 +262,22 @@ def parse_args():
                          'instead, for a sim-only comparison of training behavior under direct '
                          'torque control (2026-08-03, user request) -- NOT deployable to real '
                          'hardware as-is, since actuator has no torque-command service yet.')
-    p.add_argument('--torque-limit', type=float, default=5.0,
+    p.add_argument('--torque-limit', type=float, default=20.0,
                     help='--actuator-type torque only: symmetric +-ctrlrange (N*m, output shaft) '
-                         'per motor. PLACEHOLDER -- not derived from the GO-M8010-6 datasheet, '
-                         'just a plausible order-of-magnitude starting point for a first '
-                         'comparison run. Tune from observed behavior (saturating constantly vs. '
-                         'never using the range) same as --kp/--kv.')
+                         'per motor. RAISED 5.0 -> 20.0 (2026-08-04): 5.0 was an unverified '
+                         'placeholder that turned out to be PHYSICALLY UNABLE to lift the robot '
+                         'at all -- direct test (constant torque, correct STANDING_QPOS_DEG sign '
+                         'per motor, no policy involved) plateaued at height=0.166m/~26-33deg leg '
+                         'extension after 5s regardless of anything a policy could do, vs. '
+                         'STAND_HEIGHT_M=0.313m/~90-115deg needed -- a 21M-step PPO run against '
+                         'that ceiling converged to a degenerate, wrong-signed-on-thighs local '
+                         'optimum instead of standing, which looked like a sign bug but wasn\'t '
+                         '(same constant-torque test with the CORRECT sign, just more of it, '
+                         'reaches height=0.3126m at 20 N*m -- confirms both the sign convention '
+                         'and this new default are right). Matches Shane\'s Fast-Quadruped- '
+                         '<motor ctrlrange="-20 20"> for the same source geometry -- still not '
+                         'from a real GO-M8010-6 datasheet, but now empirically confirmed '
+                         'sufficient rather than an unverified guess, same as --kp/--kv.')
     p.add_argument('--print-masses', action='store_true',
                     help='print every body mass in --robot-xml-dir/robot.xml and exit')
     return p.parse_args()
