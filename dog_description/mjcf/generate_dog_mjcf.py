@@ -255,6 +255,19 @@ def parse_args():
                     help='<position> actuator kp, all 8 motors (see actuator_lines\' comment)')
     p.add_argument('--kv', type=float, default=4.0,
                     help='<position> actuator kv, all 8 motors')
+    p.add_argument('--actuator-type', choices=['position', 'torque'], default='position',
+                    help="'position' (default) emits <position> PD actuators, matching real "
+                         'hardware\'s position-mode control (actuator package only exposes '
+                         "position/velocity services). 'torque' emits <motor> actuators "
+                         'instead, for a sim-only comparison of training behavior under direct '
+                         'torque control (2026-08-03, user request) -- NOT deployable to real '
+                         'hardware as-is, since actuator has no torque-command service yet.')
+    p.add_argument('--torque-limit', type=float, default=5.0,
+                    help='--actuator-type torque only: symmetric +-ctrlrange (N*m, output shaft) '
+                         'per motor. PLACEHOLDER -- not derived from the GO-M8010-6 datasheet, '
+                         'just a plausible order-of-magnitude starting point for a first '
+                         'comparison run. Tune from observed behavior (saturating constantly vs. '
+                         'never using the range) same as --kp/--kv.')
     p.add_argument('--print-masses', action='store_true',
                     help='print every body mass in --robot-xml-dir/robot.xml and exit')
     return p.parse_args()
@@ -652,12 +665,24 @@ def main():
     # hinge was still counter-rotating in the correct direction the whole
     # time, just not by enough). Still placeholder values, not derived
     # from the real motor firmware's kp/kd -- see --kp/--kv.
-    actuator_lines = '\n'.join(
-        f'    <position joint="{j}" name="{n}" kp="{args.kp:.6g}" kv="{args.kv:.6g}" '
-        f'ctrlrange="{np.radians(lo):.6g} {np.radians(hi):.6g}"/>'
-        for j, n in ACTUATOR_ORDER
-        for lo, hi in [joint_range_deg(j, args.joint_range)]
-    )
+    # --actuator-type torque (2026-08-03): <motor> actuators command raw
+    # joint torque directly (ctrlrange is +-N*m, not an angle) -- no
+    # kp/kv, no angle-based ctrlrange conversion, since there's no PD
+    # target being tracked at all. See --actuator-type's help for why
+    # this exists (sim-only training-behavior comparison, not a
+    # deployable control mode yet).
+    if args.actuator_type == 'torque':
+        actuator_lines = '\n'.join(
+            f'    <motor joint="{j}" name="{n}" ctrlrange="{-args.torque_limit:.6g} {args.torque_limit:.6g}"/>'
+            for j, n in ACTUATOR_ORDER
+        )
+    else:
+        actuator_lines = '\n'.join(
+            f'    <position joint="{j}" name="{n}" kp="{args.kp:.6g}" kv="{args.kv:.6g}" '
+            f'ctrlrange="{np.radians(lo):.6g} {np.radians(hi):.6g}"/>'
+            for j, n in ACTUATOR_ORDER
+            for lo, hi in [joint_range_deg(j, args.joint_range)]
+        )
     meshdir_rel = Path('..') / robot_assets.relative_to(HERE.parent)
 
     xml = f'''<mujoco model="dog">

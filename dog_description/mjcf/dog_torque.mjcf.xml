@@ -1,0 +1,308 @@
+<mujoco model="dog">
+  <!--
+    8-DOF quadruped (thigh + calf per leg, no hip motors). Built from
+    robot_dog (real CAD meshes/masses/colors, MuJoCo
+    export) + full_dog (real joint kinematics, URDF
+    export) by generate_dog_mjcf.py (this directory) -- re-run that
+    script and regenerate this file if the CAD changes (needs
+    dog_ros2_ws/.venv, which has mujoco + trimesh).
+
+    IMPORTANT, see converter_context.md (dog_description/) for the full
+    story: onshape-to-robot's MuJoCo exporter computes WRONG mesh
+    ORIENTATIONS (confirmed by direct comparison against the URDF
+    exporter's orientation for the same mesh -- positions agreed, rotation
+    matrices did not). So every body/geom pos+quat here comes from
+    forward-kinematics composition of the URDF export instead of
+    robot.xml's own geom_quat -- only mesh files, colors, and per-body
+    masses are taken from robot.xml. This was validated on a single leg
+    first (user-confirmed correct via interactive mujoco.viewer) before
+    being extended to all 4 legs, auto-detected by graph traversal of the
+    URDF's joint tree (not hand-enumerated).
+
+    Frame: this file's body/geom values are in the CAD's own native frame
+    (+y=front, +x=right), NOT yet remapped to ROS REP-103 (+x=forward,
+    +y=left). TODO before real use: apply that remap (a single
+    Rz(-90deg) on just the torso body's own pos/quat -- it does NOT need
+    to touch any of the internal parent-relative body/geom transforms,
+    those are frame-invariant to a whole-tree reorientation).
+
+    qpos=0 for every leg joint is the CAD assembly's own captured/exported
+    configuration, NOT necessarily the real hardware's "standing" pose --
+    verify visually before assuming otherwise.
+
+    Masses (torso 4.72603kg, thigh 0.22746kg x4, calf
+    0.18357kg x4) are real, from robot.xml, passed in via
+    --mass-torso/--mass-thigh/--mass-calf (see --print-masses). Torso mass
+    includes the real battery and IMU now that both are modeled in the CAD
+    (mate-fixed into the torso's rigid group, so onshape-to-robot already
+    folds their mass into the single "torso" body -- no separate
+    placeholder needed). Diagonal inertia is a box approximation using
+    each body's REAL combined mesh bounding box (computed from actual STL
+    vertex data via trimesh, transformed into each body's frame), not the
+    CAD's real `fullinertia` tensor.
+
+    Joint positions are auto-detected per leg from the URDF's own joint
+    tree (see detect_legs() in the generator script). Joint AXES start
+    from the URDF's auto-detected values but 6 of the 8 are then
+    deliberately NEGATED (see AXIS_FLIP in the generator, user decision
+    2026-07-26) so that every joint's raw qpos direction in this file
+    matches the REAL robot motor's direction 1:1 -- `python3 -m
+    mujoco.viewer` on this file shows real-life directions directly,
+    and motor_mapping.yaml's sign is +1 for all 8 motors. Directions
+    are still mirrored left-vs-right (matching the real mirror-mounted
+    motors): thigh "away from front" = increase for motors 1/5,
+    decrease for 4/8; calf "towards front" = increase for motors 2/6,
+    decrease for 3/7.
+    Leg corner naming (leg_a=front_right, leg_b=front_left,
+    leg_c=back_right, leg_d=back_left) matches
+    dog_description/config/motor_mapping.yaml, assigned from each leg's
+    real hip-pivot (x,y) sign in the CAD frame.
+
+    Collision geometry stays simple capsules (not the visual meshes) for
+    RL training speed. Joint limits: +-150deg on both sides by default for
+    any joint not listed in JOINT_RANGE_OVERRIDES_DEG (generator script --
+    edit that dict directly to change limits). All 8 motors currently
+    have an override, and as of 2026-07-25 those are REAL hardware
+    mechanical hard-stops (bench-measured by hanging the robot and
+    driving each motor to both physical limits, sign-corrected into
+    sim's convention, 5% margin pulled in from each side) -- not
+    self-collision placeholders anymore. See JOINT_RANGE_OVERRIDES_DEG's
+    own comment for the measurement/sign-correction methodology, and
+    daniel_cl_context.md for the raw bench data. Still confirmed
+    self-collision-free at these exact values (300-sample random-pose
+    sweep of the other 7 joints).
+
+    NOTE: <compiler angle="degree"> below means <joint range> values in
+    this file are DEGREES (MuJoCo auto-converts them at compile time).
+    <position ctrlrange> values are NOT auto-converted by that setting
+    (verified empirically, not just undocumented) -- they're written in
+    RADIANS below, hand-converted by the generator script from the same
+    degree-based JOINT_RANGE_OVERRIDES_DEG/--joint-range values. If
+    hand-editing this file directly rather than regenerating it, remember
+    <joint range> and <position ctrlrange> for the same joint are in
+    different units.
+
+    PD gains (kp=60 kv=4) are still placeholder, not derived from the
+    real motor's firmware kp/kd -- raised from an original 15/1 (2026-07-25)
+    after 15/1 was found to droop ~40% short of a commanded target for a
+    fully-extended, gravity-loaded leg (see --kp/--kv in the generator
+    script).
+  -->
+  <compiler angle="degree" coordinate="local" inertiafromgeom="false" meshdir="../onshape_folders/robot_dog/assets"/>
+  <default>
+    <joint armature=".05" damping="1.5" limited="true" solimplimit="0 .8 .03" solreflimit=".02 1" stiffness="10"/>
+    <geom conaffinity="0" condim="3" contype="1" friction=".4 .1 .1" rgba="0.8 0.6 .4 1" solimp="0.0 0.8 0.01" solref="0.02 1"/>
+    <!-- rgba="0.5 0.5 0.5 1" here is MuJoCo's own compiled-in geom default,
+         set explicitly (not left unset) so it doesn't inherit the parent
+         default's rgba above. MuJoCo renders a geom's own material color
+         only when its rgba exactly equals that internal default; any
+         other value -- inherited or explicit -- overrides the material
+         and every mesh below renders as one flat color instead of its
+         real CAD color. -->
+    <default class="visual">
+      <geom type="mesh" contype="0" conaffinity="0" group="2" rgba="0.5 0.5 0.5 1"/>
+    </default>
+  </default>
+
+  <option gravity="0 0 -9.81" timestep="0.01"/>
+
+  <asset>
+    <texture builtin="gradient" height="100" rgb1="1 1 1" rgb2="0 0 0" type="skybox" width="100"/>
+    <texture builtin="checker" height="100" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d" width="100"/>
+    <material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
+
+    <mesh name="motor" file="motor.stl"/>
+    <mesh name="shoulder" file="shoulder.stl"/>
+    <mesh name="motor_casing_spacers" file="motor_casing_spacers.stl"/>
+    <mesh name="motor_casing" file="motor_casing.stl"/>
+    <mesh name="battery" file="battery.stl"/>
+    <mesh name="torso" file="torso.stl"/>
+    <mesh name="imu" file="imu.stl"/>
+    <mesh name="timing_belt_pulley_upper" file="timing_belt_pulley_upper.stl"/>
+    <mesh name="spacer_between_thigh_connector" file="spacer_between_thigh_connector.stl"/>
+    <mesh name="thigh_connecor_full" file="thigh_connecor_full.stl"/>
+    <mesh name="thigh_connector_hollow" file="thigh_connector_hollow.stl"/>
+    <mesh name="timing_belt_pulley_lower_shaft" file="timing_belt_pulley_lower_shaft.stl"/>
+    <mesh name="timing_belt_pulley_lower" file="timing_belt_pulley_lower.stl"/>
+    <mesh name="feet_connector" file="feet_connector.stl"/>
+    <mesh name="ball_for_feet" file="ball_for_feet.stl"/>
+    <mesh name="lower_shaft_connector_to_feet" file="lower_shaft_connector_to_feet.stl"/>
+    <material name="motor_material" rgba="0.647059 0.647059 0.647059 1"/>
+    <material name="shoulder_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="motor_casing_spacers_material" rgba="0 0 0 1"/>
+    <material name="motor_casing_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="battery_material" rgba="0.301961 0.290196 0.262745 1"/>
+    <material name="torso_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="imu_material" rgba="0 0 0 1"/>
+    <material name="timing_belt_pulley_upper_material" rgba="0.541176 0.682353 0.839216 1"/>
+    <material name="spacer_between_thigh_connector_material" rgba="0.764706 0.545098 0.803922 1"/>
+    <material name="thigh_connecor_full_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="thigh_connector_hollow_material" rgba="0.6 0.6 0.6 1"/>
+    <material name="timing_belt_pulley_lower_shaft_material" rgba="0.701961 0.701961 0.701961 1"/>
+    <material name="timing_belt_pulley_lower_material" rgba="0.541176 0.682353 0.839216 1"/>
+    <material name="feet_connector_material" rgba="0 0 0 1"/>
+    <material name="ball_for_feet_material" rgba="0 0 0 1"/>
+    <material name="lower_shaft_connector_to_feet_material" rgba="0.6 0.6 0.6 1"/>
+  </asset>
+
+  <worldbody>
+    <light cutoff="150" diffuse="1 1 1" dir="0 0 -1" directional="true" exponent="1" pos="0 0 2" specular=".1 .1 .1"/>
+    <geom conaffinity="1" condim="3" material="MatPlane" name="floor" pos="0 0 0" rgba="0.8 0.9 0.8 1" size="40 40 40" type="plane"/>
+
+    <!-- Spawn height chosen only to clear the floor at qpos=0's
+         CAD-captured (non-standing) leg pose, not a real measurement --
+         see file header. -->
+    <body name="torso" pos="0 0 0.287">
+      <camera name="track" mode="trackcom" pos="0 -1.2 0.15" xyaxes="1 0 0 0 0 1"/>
+      <joint armature="0" damping="0" limited="false" name="root" pos="0 0 0" stiffness="0" type="free"/>
+      <inertial pos="0 0.0005 -0.065342" mass="4.72603" diaginertia="0.10259 0.075676 0.15932"/>
+      <geom name="torso_body" type="box" size="0.205 0.24312 0.077542" pos="0 0.0005 -0.065342" group="3"/>
+
+      <!-- IMU: colocated with the real LSM6DSO32 -- real mounting
+           position/orientation not yet given, placed at torso origin. -->
+      <site name="imu_site" pos="0 0 0" rgba="1 0 0 1" size="0.02 0.02 0.02" type="box"/>
+
+      <geom class="visual" pos="0 0 0" quat="1 0 0 0" mesh="torso" material="torso_material"/>
+      <geom class="visual" pos="-4.33681e-19 0.1945 -0.0065" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
+      <geom class="visual" pos="-4.33681e-19 -0.1935 -0.0065" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
+      <geom class="visual" pos="0.0377501 -2.82977e-17 -0.0307499" quat="0.707105 -2.41702e-17 -0.707108 -2.41701e-17" mesh="battery" material="battery_material"/>
+      <geom class="visual" pos="1.15094e-06 -0.000216697 0.0072" quat="1 0 0 0" mesh="imu" material="imu_material"/>
+      <geom class="visual" pos="-0.0692004 0.194873 -0.0941405" quat="0.499998 -0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="-0.20245 0.194873 -0.0941405" quat="0.499998 -0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="0.19595 0.194873 -0.0941405" quat="0.499998 -0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="0.0626996 0.194873 -0.0941405" quat="0.499998 -0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="-0.0626996 -0.193873 -0.0941405" quat="-0.499998 0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="-0.19595 -0.193873 -0.0941405" quat="-0.499998 0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="0.20245 -0.193873 -0.0941405" quat="-0.499998 0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="0.0692004 -0.193873 -0.0941405" quat="-0.499998 0.5 0.500002 -0.5" mesh="motor_casing" material="motor_casing_material"/>
+      <geom class="visual" pos="-0.0730004 0.194873 -0.094141" quat="0.499998 -0.5 0.500002 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="-0.0730004 0.194873 -0.0941405" quat="0.500001 0.500001 0.500001 0.499997" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="-0.19595 0.194873 -0.0941405" quat="0.499999 0.500002 0.499999 0.499999" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.195949 0.194873 -0.0941405" quat="0.500001 0.499997 -0.499999 -0.500002" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.0691996 0.194873 -0.0941405" quat="0.500001 0.500001 0.500001 0.499997" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="-0.0691996 -0.193873 -0.0941405" quat="0.500001 0.500001 -0.500001 -0.499997" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="-0.195949 -0.193873 -0.0941405" quat="0.500001 0.499997 0.499999 0.500002" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.19595 -0.193873 -0.0941405" quat="0.499999 0.500002 -0.499999 -0.499999" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.0730004 -0.193873 -0.094141" quat="-0.499998 0.5 0.500002 -0.5" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.0730004 -0.193873 -0.0941405" quat="0.499999 0.500002 -0.499999 -0.499999" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="-0.0750004 0.194873 -0.0941405" quat="0.500002 0.499999 -0.500001 0.499997" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="-0.19015 0.194873 -0.0941405" quat="-0.499997 -0.500001 -0.499999 0.500003" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="0.190149 0.194873 -0.0941405" quat="0.500002 0.500001 -0.499997 0.499999" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="0.0749996 0.194873 -0.0941405" quat="-0.499999 -0.499999 -0.499997 0.500004" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="-0.0749996 -0.193873 -0.0941405" quat="0.500001 -0.500001 0.499999 0.499999" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="-0.190149 -0.193873 -0.0941405" quat="0.500001 -0.499996 -0.500002 -0.500001" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="0.19015 -0.193873 -0.0941405" quat="0.500002 -0.499999 0.499997 0.500001" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="0.0750004 -0.193873 -0.0941405" quat="-0.499999 0.499999 0.500001 0.500001" mesh="motor" material="motor_material"/>
+      <geom class="visual" pos="-0.134725 0.194874 -0.0941402" quat="0.707108 -3.53554e-06 -0.707105 -4.25651e-06" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <geom class="visual" pos="-0.19595 0.194873 -0.0941405" quat="0.499998 -0.5 0.500001 -0.500001" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.195949 0.194873 -0.0941405" quat="0.500001 -0.500001 -0.499998 0.500001" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.0691996 0.194873 -0.0941405" quat="-0.499997 0.500001 -0.5 0.500002" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.134725 0.194872 -0.0941408" quat="0.707105 -9.38187e-07 0.707108 -3.53553e-06" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <geom class="visual" pos="-0.0691998 -0.193873 -0.0941405" quat="-0.499997 0.500001 0.500003 -0.499999" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="-0.134725 -0.193873 -0.0941408" quat="9.38184e-07 0.707108 1.65917e-06 -0.707105" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+      <geom class="visual" pos="-0.195949 -0.193873 -0.0941405" quat="0.500002 -0.499999 0.499999 -0.499999" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.19595 -0.193873 -0.0941405" quat="-0.5 0.499998 0.500003 -0.499999" mesh="motor_casing_spacers" material="motor_casing_spacers_material"/>
+      <geom class="visual" pos="0.134725 -0.193873 -0.0941402" quat="1.65916e-06 0.707105 -9.38193e-07 0.707108" mesh="timing_belt_pulley_upper" material="timing_belt_pulley_upper_material"/>
+
+      <body name="leg_a_thigh" pos="0.158449 0.194873 -0.0941403" quat="0.500002 0.499996 -0.499999 -0.500002">
+        <joint axis="-0 -0 1" name="leg_a_thigh" pos="0 0 0" range="-11.6 230.6" type="hinge"/>
+        <inertial pos="-0.049315 0.0041836 0.02175" mass="0.22746" diaginertia="0.00033244 0.00096869 0.0012294"/>
+        <geom name="leg_a_thigh" fromto="0 0 0  -0.12588 0.039193 0.04" size="0.02" type="capsule" group="3"/>
+        <geom class="visual" pos="0.00136471 -0.0031313 -1.30889e-17" quat="0.1476 -1.09363e-22 4.01222e-22 0.989047" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+        <geom class="visual" pos="0.0508206 -0.0140973 0.04" quat="-1.06638e-06 0.803729 0.594995 -7.89437e-07" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+        <geom class="visual" pos="0.00136468 -0.00313163 0.0400001" quat="0.147595 1.11643e-06 -1.5081e-06 0.989048" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+
+        <body name="leg_a_calf" pos="-0.125878 0.0391933 0.0400005" quat="-2.92221e-06 0.803729 0.594995 -5.12493e-07">
+          <joint axis="-0 -0 1" name="leg_a_calf" pos="0 0 0" range="0 206.1" type="hinge"/>
+          <inertial pos="-0.030512 0.0072378 0.01775" mass="0.18357" diaginertia="0.0001981 0.00033851 0.00031295"/>
+          <geom name="leg_a_calf" fromto="0 0 0  -0.07138 0.02396 0.017595" rgba="0.9 0.6 0.6 1" size="0.017" type="capsule" group="3"/>
+          <site name="leg_a_foot" pos="-0.07138 0.02396 0.017595" size="0.005"/>
+          <geom class="visual" pos="1.92214e-18 -3.01189e-18 0.01825" quat="0.811857 3.64366e-22 1.37673e-22 0.583856" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+          <geom class="visual" pos="-2.32063e-14 7.80901e-15 0.01775" quat="0.697855 -0.114001 -0.697858 -0.114001" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+          <geom class="visual" pos="-0.0321145 0.0143136 0.0177499" quat="0.574068 0.412848 -0.57407 0.41285" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+          <geom class="visual" pos="-0.0713801 0.0239601 0.017595" quat="0.113999 0.697856 -0.113998 0.697858" mesh="feet_connector" material="feet_connector_material"/>
+          <geom class="visual" pos="-0.0903404 0.0303245 0.0175949" quat="0.113999 0.697856 -0.113998 0.697858" mesh="ball_for_feet" material="ball_for_feet_material"/>
+        </body>
+      </body>
+
+      <body name="leg_b_thigh" pos="-0.15825 0.194873 -0.0941407" quat="-0.499997 -0.499997 0.500003 0.500002">
+        <joint axis="-0 -0 -1" name="leg_b_thigh" pos="0 0 0" range="-231.8 11" type="hinge"/>
+        <inertial pos="-0.04923 0.0043404 -0.02175" mass="0.22746" diaginertia="0.00033422 0.00096781 0.0012303"/>
+        <geom name="leg_b_thigh" fromto="0 0 0  -0.1254 0.040731 -0.0035" size="0.02" type="capsule" group="3"/>
+        <geom class="visual" pos="0.00135594 -0.00313511 -0.0035" quat="0.148985 -5.58752e-23 2.33841e-22 0.98884" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+        <geom class="visual" pos="0.0507809 -0.0142396 -0.0035" quat="1.06749e-06 0.804561 0.59387 7.87943e-07" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+        <geom class="visual" pos="0.00135599 -0.00313549 -0.0435001" quat="0.14898 -1.50965e-06 -1.11432e-06 0.98884" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+
+        <body name="leg_b_calf" pos="-0.125403 0.0407312 -0.0035" quat="7.87939e-07 -0.593867 0.804563 -1.06749e-06">
+          <joint axis="0 0 -1" name="leg_b_calf" pos="0 0 0" range="-213.3 0" type="hinge"/>
+          <inertial pos="0.030553 -0.0071241 0.01775" mass="0.18357" diaginertia="0.0001976 0.00033881 0.00031276"/>
+          <geom name="leg_b_calf" fromto="0 0 0  0.071462 -0.023714 0.017595" rgba="0.9 0.6 0.6 1" size="0.017" type="capsule" group="3"/>
+          <site name="leg_b_foot" pos="0.071462 -0.023714 0.017595" size="0.005"/>
+          <geom class="visual" pos="1.2436e-18 1.46378e-17 0.01825" quat="0.585252 1.1459e-21 -2.24966e-21 -0.810851" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+          <geom class="visual" pos="2.32568e-14 -7.5644e-15 0.01775" quat="0.112799 0.698053 -0.112799 0.698051" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+          <geom class="visual" pos="0.0321636 -0.0142029 0.0177499" quat="-0.413838 0.573358 0.413836 0.573357" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+          <geom class="visual" pos="0.0714622 -0.0237141 0.017595" quat="0.698054 -0.112796 -0.698051 -0.112797" mesh="feet_connector" material="feet_connector_material"/>
+          <geom class="visual" pos="0.0904443 -0.0300132 0.0175949" quat="0.698054 -0.112796 -0.698051 -0.112797" mesh="ball_for_feet" material="ball_for_feet_material"/>
+        </body>
+      </body>
+
+      <body name="leg_c_thigh" pos="0.15825 -0.193873 -0.0941407" quat="0.499999 0.500003 0.499998 0.500001">
+        <joint axis="-0 -0 -1" name="leg_c_thigh" pos="0 0 0" range="-7.6 235.6" type="hinge"/>
+        <inertial pos="0.050242 0.0013005 -0.02175" mass="0.22746" diaginertia="0.00032916 0.00097039 0.0012278"/>
+        <geom name="leg_c_thigh" fromto="0 0 0  0.12686 0.035951 -0.0035" size="0.02" type="capsule" group="3"/>
+        <geom class="visual" pos="-0.00287135 0.00185009 -0.0035" quat="0.989424 1.96994e-23 -1.8349e-23 0.145053" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+        <geom class="visual" pos="-0.0501147 -0.0164309 -0.0035" quat="-1.06435e-06 0.802197 -0.597059 7.92175e-07" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+        <geom class="visual" pos="-0.00287132 0.00185045 -0.0434999" quat="0.989423 -1.12031e-06 -1.50522e-06 0.145056" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+
+        <body name="leg_c_calf" pos="0.126856 0.0359509 -0.0035" quat="7.92176e-07 0.59706 0.802196 1.06435e-06">
+          <joint axis="0 0 -1" name="leg_c_calf" pos="0 0 0" range="0 215.8" type="hinge"/>
+          <inertial pos="-0.030329 -0.0077097 0.01775" mass="0.18357" diaginertia="0.00020036 0.00033712 0.00031383"/>
+          <geom name="leg_c_calf" fromto="0 0 0  -0.071012 -0.025029 0.017595" rgba="0.9 0.6 0.6 1" size="0.017" type="capsule" group="3"/>
+          <site name="leg_c_foot" pos="-0.071012 -0.025029 0.017595" size="0.005"/>
+          <geom class="visual" pos="1.64675e-20 -5.72386e-18 0.01825" quat="0.577748 -6.46284e-22 -6.8713e-22 0.816216" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+          <geom class="visual" pos="-2.31149e-14 -8.1508e-15 0.01775" quat="0.69698 0.119235 -0.696983 0.119234" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+          <geom class="visual" pos="-0.0341232 -0.00847523 0.0177499" quat="0.408527 0.577152 -0.408529 0.577153" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+          <geom class="visual" pos="-0.0710122 -0.0250294 0.017595" quat="-0.119237 0.69698 0.119237 0.696982" mesh="feet_connector" material="feet_connector_material"/>
+          <geom class="visual" pos="-0.0898748 -0.0316779 0.0175949" quat="-0.119237 0.69698 0.119237 0.696982" mesh="ball_for_feet" material="ball_for_feet_material"/>
+        </body>
+      </body>
+
+      <body name="leg_d_thigh" pos="-0.158449 -0.193873 -0.0941403" quat="0.500001 0.499998 0.499997 0.500004">
+        <joint axis="-0 -0 1" name="leg_d_thigh" pos="0 0 0" range="-234 6.8" type="hinge"/>
+        <inertial pos="0.050284 0.0012051 0.02175" mass="0.22746" diaginertia="0.00032809 0.00097096 0.0012273"/>
+        <geom name="leg_d_thigh" fromto="0 0 0  0.12656 0.036927 0.04" size="0.02" type="capsule" group="3"/>
+        <geom class="visual" pos="-0.00286824 0.00185491 -9.94546e-18" quat="0.989545 3.56577e-22 -4.93286e-23 0.144222" mesh="thigh_connecor_full" material="thigh_connecor_full_material"/>
+        <geom class="visual" pos="-0.0501422 -0.0163467 0.04" quat="1.06369e-06 0.801695 -0.597733 -7.93069e-07" mesh="spacer_between_thigh_connector" material="spacer_between_thigh_connector_material"/>
+        <geom class="visual" pos="-0.00286829 0.00185526 0.0399999" quat="0.989545 1.12157e-06 1.50428e-06 0.144225" mesh="thigh_connector_hollow" material="thigh_connector_hollow_material"/>
+
+        <body name="leg_d_calf" pos="0.126562 0.0369268 0.0399995" quat="-7.93065e-07 0.801695 -0.597733 -1.06369e-06">
+          <joint axis="-0 -0 1" name="leg_d_calf" pos="0 0 0" range="-213.7 0" type="hinge"/>
+          <inertial pos="0.030428 0.007458 0.01775" mass="0.18357" diaginertia="0.00019915 0.00033788 0.00031337"/>
+          <geom name="leg_d_calf" fromto="0 0 0  0.071211 0.024457 0.017595" rgba="0.9 0.6 0.6 1" size="0.017" type="capsule" group="3"/>
+          <site name="leg_d_foot" pos="0.071211 0.024457 0.017595" size="0.005"/>
+          <geom class="visual" pos="-6.39351e-19 -5.60961e-20 0.01825" quat="0.813884 -6.86267e-23 1.07165e-21 -0.581027" mesh="timing_belt_pulley_lower" material="timing_belt_pulley_lower_material"/>
+          <geom class="visual" pos="2.31511e-14 7.96703e-15 0.01775" quat="-0.116429 0.697457 0.116429 0.697454" mesh="timing_belt_pulley_lower_shaft" material="timing_belt_pulley_lower_shaft_material"/>
+          <geom class="visual" pos="0.0341903 0.00820034 0.0177499" quat="0.575505 -0.410848 -0.575503 -0.410846" mesh="lower_shaft_connector_to_feet" material="lower_shaft_connector_to_feet_material"/>
+          <geom class="visual" pos="0.0712113 0.0244571 0.017595" quat="0.697456 0.116431 -0.697454 0.116432" mesh="feet_connector" material="feet_connector_material"/>
+          <geom class="visual" pos="0.0901268 0.0309536 0.0175949" quat="0.697456 0.116431 -0.697454 0.116432" mesh="ball_for_feet" material="ball_for_feet_material"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <sensor>
+    <accelerometer name="accelerometer" site="imu_site"/>
+    <gyro name="gyro" site="imu_site"/>
+  </sensor>
+
+  <actuator>
+    <motor joint="leg_a_thigh" name="motor_1" ctrlrange="-5 5"/>
+    <motor joint="leg_a_calf" name="motor_2" ctrlrange="-5 5"/>
+    <motor joint="leg_b_calf" name="motor_3" ctrlrange="-5 5"/>
+    <motor joint="leg_b_thigh" name="motor_4" ctrlrange="-5 5"/>
+    <motor joint="leg_c_thigh" name="motor_5" ctrlrange="-5 5"/>
+    <motor joint="leg_c_calf" name="motor_6" ctrlrange="-5 5"/>
+    <motor joint="leg_d_calf" name="motor_7" ctrlrange="-5 5"/>
+    <motor joint="leg_d_thigh" name="motor_8" ctrlrange="-5 5"/>
+  </actuator>
+</mujoco>

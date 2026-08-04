@@ -104,20 +104,23 @@ class DecayScheduleCallback(BaseCallback):
         return True
 
 
-def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction):
+def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode):
     return lambda: gym.make(env_id, domain_randomization=domain_randomization,
                              walk_start_pose=walk_start_pose,
-                             walk_height_fraction=walk_height_fraction)
+                             walk_height_fraction=walk_height_fraction,
+                             control_mode=control_mode)
 
 
 def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
           learning_rate, ent_coef, ent_coef_end, learning_rate_end, decay_steps,
-          init_from=None, walk_start_pose='standing', walk_height_fraction=0.90):
+          init_from=None, walk_start_pose='standing', walk_height_fraction=0.90,
+          control_mode='position'):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
-          f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction})')
+          f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction}, '
+          f'control_mode={control_mode})')
 
-    env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction)
+    env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -229,9 +232,10 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 
 
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
-         walk_start_pose='standing', walk_height_fraction=0.90):
+         walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position'):
     env = gym.make(env_id, render_mode='human', domain_randomization=domain_randomization,
-                    walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction)
+                    walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
+                    control_mode=control_mode)
 
     if algo not in ALGOS:
         raise ValueError(f'Unknown algorithm: {algo}')
@@ -332,6 +336,17 @@ def main():
                               '(WALK_HEIGHT_FRACTION in dog_env.py), now a CLI flag. A crouched '
                               'target (< 1.0) keeps the CoM lower and legs bent -- standard '
                               'practice for quadruped locomotion RL. No effect on Dog-Stand-v0.')
+    parser.add_argument('--control-mode', default='position', choices=['position', 'torque'],
+                         help="'position' (default, unchanged): <position> PD actuators, action "
+                              '= target joint angle -- the only mode that matches real hardware '
+                              "(actuator package exposes position/velocity services, no torque "
+                              "command yet). 'torque' (2026-08-03, sim-only comparison run): "
+                              '<motor> actuators (dog_torque.mjcf.xml), action = raw joint '
+                              'torque directly -- NOT deployable to real hardware as-is. Same '
+                              '--fname/checkpoints as any other run; keep torque-mode runs under '
+                              'a clearly separate --fname so they never get mixed up with a '
+                              'position-mode lineage (the action spaces are incompatible, same '
+                              'as WALK_ACTION_RESIDUAL_RANGE_RAD\'s old-checkpoint break).')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -395,10 +410,11 @@ def main():
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
               args.learning_rate, args.ent_coef, ent_coef_end, learning_rate_end,
-              args.decay_steps, args.init_from, args.walk_start_pose, args.walk_height_fraction)
+              args.decay_steps, args.init_from, args.walk_start_pose, args.walk_height_fraction,
+              args.control_mode)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
-             args.walk_start_pose, args.walk_height_fraction)
+             args.walk_start_pose, args.walk_height_fraction, args.control_mode)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 
