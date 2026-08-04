@@ -1692,20 +1692,38 @@ class DogEnv(gym.Env):
         # simpler reward set). Flip any coefficient back to its prior
         # (pre-2026-08-02) value to restore that term -- see git history/
         # daniel_cl_context.md for what each one was before this branch.
+        # RESTORED 2026-08-04 (user: torque-control walk checkpoints v5/v6
+        # measured genuinely hopping/bounding -- 3-4 legs airborne
+        # simultaneously 28-52% of steps, swing feet reaching 0.075-0.20m
+        # (2.5-6.7x FOOT_CLEARANCE_TARGET_M), landings as hard as -10.35
+        # on touchdown_velocity_penalty's own raw scale, height stuck at
+        # 0.20-0.22m vs a 0.28m target -- while forward_velocity_reward
+        # alone was weighted 20-30x larger than height_reward, with
+        # nothing at all penalizing hard landings or rewarding
+        # diagonal-pair alternation over an all-4-legs-together gait.
+        # touchdown_velocity_penalty: 0.0 -> 1.0 (direct hard-landing
+        # signal). trot_symmetry_reward: 0.0 -> 1.0*WALK_TROT_SYMMETRY_
+        # WEIGHT=0.5 (already scoring +0.3 incidentally with zero reward
+        # pressure reinforcing it). height_reward: 0.9 -> 2.5 (closer to
+        # forward_velocity_reward's scale, real competing incentive to
+        # actually rise off a crouch). foot_clearance_reward left at 0.0
+        # -- its formula only rewards MORE elevation up to a 0.03m
+        # ceiling, doesn't penalize the actual problem (over-jumping to
+        # 0.2m), so it wasn't a useful lever here.
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
-            + 0.9 * height_reward
+            + 2.5 * height_reward
             + 0.0 * tip_reward
             + 0.0 * non_tip_penalty
             + 0.0 * foot_clearance_reward
             + 1.0 * foot_slip_penalty
-            + 0.0 * touchdown_velocity_penalty
+            + 1.0 * touchdown_velocity_penalty
             + 0.5 * feet_air_time_reward
             + 0.0 * action_rate_penalty
             + 0.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
-            + 0.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + 0.0 * self._common_penalties(action)
         )
 
