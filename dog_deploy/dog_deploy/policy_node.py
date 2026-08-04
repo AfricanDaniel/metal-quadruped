@@ -5,10 +5,12 @@ Builds the same observation dog_gym's DogEnv trains on (8 motor qpos + 8
 motor qvel + IMU accel/gyro + previous action, all in motor_1..motor_8
 order -- see dog_gym/envs/dog_env.py) from actuator's read_motor_positions
 service and dog_imu's IMU topic, runs the policy, and sends the result to
-actuator's set_motor_targets service. motor_mapping.yaml (dog_description)
-supplies the per-motor sign flip between the sim's joint-angle convention
-and the real motor's command direction -- see that file's docstring/README
-for exactly what `sign` means.
+actuator's set_motor_targets service (control_mode='position', the
+default) or its set_motor_torque service (control_mode='torque' -- see
+this docstring's "control_mode" section below). motor_mapping.yaml
+(dog_description) supplies the per-motor sign flip between the sim's
+joint-angle convention and the real motor's command direction -- see that
+file's docstring/README for exactly what `sign` means.
 
 Safety: `max_delta_deg_per_step` clamps how far any single motor's target
 may move in one control tick, and `dry_run_hold_pose` bypasses the policy
@@ -52,6 +54,23 @@ rotation (not something recalibration ever needs to redo) to match what
 the policy actually saw during training. Remove this conversion (and just
 use imu/data directly) if dog.mjcf.xml ever gets the full ROS remap and
 policies get retrained against it.
+
+control_mode (2026-08-04): 'position' (default, unchanged) sends
+actuator's set_motor_targets service an absolute output-shaft ANGLE per
+motor, tracked by the firmware's own position-mode PD -- this is the
+only path that existed before. 'torque' sends actuator's NEW
+set_motor_torque service a raw output-shaft TORQUE (N*m) per motor
+instead, for a policy trained with dog_gym's control_mode='torque'
+(dog_torque.mjcf.xml's <motor> actuators, no PD tracking at all). The
+observation build (motor qpos/qvel + IMU + prev_action) is IDENTICAL
+either way -- only how `action_rad` gets turned into a real command
+differs, see _on_positions_read()'s branch. Torque mode has real,
+different safety characteristics from position mode: there is no
+firmware-side <joint range>-equivalent hard stop the way MuJoCo enforces
+in sim, and a stale/un-refreshed torque command is actively dangerous
+(unlike a stale position target, which is at least a bounded, PD-held
+pose) -- see max_torque_nm/max_delta_torque_nm_per_step below and
+actuator's own torque_timeout_s watchdog in basic_control.cpp.
 """
 
 import csv
@@ -64,7 +83,7 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
-from actuator.srv import ReadMotorPositions, SetMotorTargets
+from actuator.srv import ReadMotorPositions, SetMotorTargets, SetMotorTorque
 
 NUM_MOTORS = 8
 DEFAULT_MOTOR_MAPPING_PATH = os.path.join(
@@ -151,6 +170,25 @@ class PolicyNode(Node):
         self.declare_parameter('max_delta_deg_per_step', 5.0)
         self.declare_parameter('imu_timeout_sec', 0.5)
         self.declare_parameter('dry_run_hold_pose', True)
+        # 'position' (default, unchanged) or 'torque' -- see this module's
+        # docstring's "control_mode" section. MUST match whatever
+        # control_mode the loaded policy_path was actually trained with
+        # (dog_gym.train's --control-mode) -- nothing here can detect a
+        # mismatch the way SB3's check_for_correct_spaces does at training
+        # time, since the exported TorchScript module has no action-space
+        # metadata attached.
+        self.declare_parameter('control_mode', 'position')
+        # TORQUE MODE ONLY, both below. Client-side clamps -- DELIBERATELY
+        # redundant with actuator's own max_torque_nm/torque_timeout_s
+        # server-side safety net (basic_control.cpp) -- neither should be
+        # the only thing standing between a bad policy output and full
+        # motor torque. max_delta_torque_nm_per_step is NOT something
+        # dog_gym's sim training itself enforces (control_mode='torque'
+        # has no slew clamp in DogEnv.step()) -- it's an extra
+        # conservative safety net specific to this being the first-ever
+        # real torque deployment, not a sim-fidelity requirement.
+        self.declare_parameter('max_torque_nm', 3.0)
+        self.declare_parameter('max_delta_torque_nm_per_step', 2.0)
         # Overridable so a corrected/test copy of motor_mapping.yaml can be
         # used for a specific run (e.g. while a known sign issue in the
         # shared file is still being investigated) without touching the
@@ -197,6 +235,9 @@ class PolicyNode(Node):
         # is simpler and actually works. See _on_positions_read().
         self.declare_parameter('freeze_after_sec', 0.0)
 
+        self.control_mode = self.get_parameter('control_mode').value
+        if self.control_mode not in ('position', 'torque'):
+            raise ValueError(f"control_mode must be 'position' or 'torque', got {self.control_mode!r}")
         self.control_rate_hz = self.get_parameter('control_rate_hz').value
         self.max_delta_rad = (
             self.get_parameter('max_delta_deg_per_step').value * DEG_TO_RAD)
@@ -248,11 +289,18 @@ class PolicyNode(Node):
 
         self.imu_sub = self.create_subscription(Imu, 'imu/data', self._on_imu, 10)
         self.read_client = self.create_client(ReadMotorPositions, 'read_motor_positions')
+        # Both clients are always created (harmless), but only the one
+        # actually needed for control_mode is waited on below -- no reason
+        # to block startup on a service this run will never call.
         self.set_targets_client = self.create_client(SetMotorTargets, 'set_motor_targets')
+        self.set_torque_client = self.create_client(SetMotorTorque, 'set_motor_torque')
+        command_client, command_service_name = (
+            (self.set_torque_client, 'set_motor_torque') if self.control_mode == 'torque'
+            else (self.set_targets_client, 'set_motor_targets'))
 
         for client, name in (
             (self.read_client, 'read_motor_positions'),
-            (self.set_targets_client, 'set_motor_targets'),
+            (command_client, command_service_name),
         ):
             while not client.wait_for_service(timeout_sec=2.0):
                 self.get_logger().warning(f'Waiting for {name} service (is actuator running?)...')
@@ -280,27 +328,43 @@ class PolicyNode(Node):
             self.get_logger().info(f'Captured home_position_deg: {self.home_position_deg}')
 
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self._control_step)
-        self.get_logger().info(
-            f'policy_node ready: control_rate_hz={self.control_rate_hz}, '
-            f'max_delta_deg_per_step={self.get_parameter("max_delta_deg_per_step").value}, '
-            f'dry_run_hold_pose={self.dry_run_hold_pose}')
+        if self.control_mode == 'torque':
+            self.get_logger().warning(
+                f'policy_node ready: control_mode=torque, control_rate_hz={self.control_rate_hz}, '
+                f'max_torque_nm={self.get_parameter("max_torque_nm").value}, '
+                f'max_delta_torque_nm_per_step={self.get_parameter("max_delta_torque_nm_per_step").value}, '
+                f'dry_run_hold_pose={self.dry_run_hold_pose}. TORQUE MODE: no firmware position '
+                'clamp protects this the way position mode has -- start with dry_run_hold_pose=true '
+                'and a low max_torque_nm, confirm expected behavior before raising either.')
+        else:
+            self.get_logger().info(
+                f'policy_node ready: control_mode=position, control_rate_hz={self.control_rate_hz}, '
+                f'max_delta_deg_per_step={self.get_parameter("max_delta_deg_per_step").value}, '
+                f'dry_run_hold_pose={self.dry_run_hold_pose}')
 
     def _open_log(self, path):
         self.csv_file = open(path, 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
+        # Last column's meaning depends on control_mode: 'target_deg' (real
+        # absolute output-shaft angle sent to set_motor_targets) for
+        # position, 'command_torque_nm' (real output-shaft torque sent to
+        # set_motor_torque) for torque -- raw_action/clamped_action are
+        # always in the policy's own action-space units (radians for
+        # position, N*m for torque).
+        last_col = 'command_torque_nm' if self.control_mode == 'torque' else 'target_deg'
         self.csv_writer.writerow([
             'tick', 'motor_id', 'joint', 'sign',
             'real_position_deg', 'real_velocity_deg_s',
-            'sim_qpos_rad', 'raw_action_rad', 'clamped_action_rad', 'target_deg', 'frozen',
+            'sim_qpos_rad', 'raw_action', 'clamped_action', last_col, 'frozen',
         ])
         self.get_logger().info(f'Logging per-motor control data to {path}')
 
-    def _log_row(self, response, motor_qpos_rad, raw_action_rad, clamped_action_rad, target_deg):
+    def _log_row(self, response, motor_qpos_rad, raw_action, clamped_action, command_value):
         for i in range(NUM_MOTORS):
             self.csv_writer.writerow([
                 self.tick, i + 1, self.motor_joint_names[i], self.motor_sign[i],
                 response.position_deg[i], response.velocity_deg_s[i],
-                motor_qpos_rad[i], raw_action_rad[i], clamped_action_rad[i], target_deg[i],
+                motor_qpos_rad[i], raw_action[i], clamped_action[i], command_value[i],
                 self._frozen,
             ])
         self.csv_file.flush()  # real-hardware runs are often killed abruptly (Ctrl-C) -- don't lose rows
@@ -358,10 +422,16 @@ class PolicyNode(Node):
         ]
 
         # First control cycle: seed the slew-limiter anchor (and the
-        # observation's prev_action slot) with the actual measured pose,
-        # matching DogEnv.reset()'s "prev_action = current pose" semantics.
+        # observation's prev_action slot). 'position': the actual measured
+        # pose, matching DogEnv.reset()'s "prev_action = current pose"
+        # semantics for control_mode='position'. 'torque': zero -- no
+        # torque has been commanded yet, matching DogEnv.reset()'s
+        # control_mode='torque' branch (prev_action stays at its zero
+        # default regardless of the legs' actual starting pose; seeding it
+        # from motor_qpos_rad here would wrongly treat a position-radians
+        # reading as if it were an N*m torque).
         if self.prev_action is None:
-            self.prev_action = list(motor_qpos_rad)
+            self.prev_action = [0.0] * NUM_MOTORS if self.control_mode == 'torque' else list(motor_qpos_rad)
 
         imu = self.latest_imu
         accel_cad = ros_to_cad(imu.linear_acceleration.x, imu.linear_acceleration.y,
@@ -377,11 +447,22 @@ class PolicyNode(Node):
         )
 
         if self.dry_run_hold_pose:
-            action_rad = list(motor_qpos_rad)
+            # 'position': hold the current pose (matches this parameter's
+            # name literally). 'torque': there's no meaningful "current
+            # torque" to hold -- motor_qpos_rad is a POSITION in radians,
+            # reusing it as a torque value here would silently send
+            # nonsense-scaled torque commands. Zero torque is the correct
+            # dry-run no-op for torque mode (passive, doesn't move
+            # anything on its own).
+            action_rad = [0.0] * NUM_MOTORS if self.control_mode == 'torque' else list(motor_qpos_rad)
         else:
             with torch.no_grad():
                 obs_tensor = torch.tensor([obs], dtype=torch.float32)
                 action_rad = self.policy(obs_tensor)[0].tolist()
+
+        if self.control_mode == 'torque':
+            self._send_torque_command(response, motor_qpos_rad, action_rad)
+            return
 
         # Safety clamp, anchored to the PREVIOUS COMMANDED TARGET (not
         # the measured position) -- exactly like DogEnv.step()'s slew
@@ -461,13 +542,92 @@ class PolicyNode(Node):
         set_request.motor_id = list(range(1, NUM_MOTORS + 1))
         set_request.position_deg = target_deg
         future = self.set_targets_client.call_async(set_request)
-        future.add_done_callback(self._on_targets_set)
+        future.add_done_callback(self._on_command_sent)
 
-    def _on_targets_set(self, future):
+    def _send_torque_command(self, response, motor_qpos_rad, action_rad):
+        """control_mode='torque' counterpart to the position-mode tail of
+        _on_positions_read() above -- action_rad is already the policy's
+        raw output (or the dry-run zero-torque no-op), in N*m, sim-frame
+        sign convention. Separate method (not inlined into
+        _on_positions_read) since torque needs a genuinely different
+        sequence of clamps -- no slew-anchored-to-target/windup-guard
+        pair (those are position-specific concepts), no home-offset
+        degree conversion (torque isn't a frame-relative angle), but a
+        NEW calf mechanical end-stop protection position mode doesn't
+        need (see below)."""
+        # Magnitude clamp -- defense in depth, mirroring actuator's own
+        # max_torque_nm server-side clamp (basic_control.cpp). See
+        # max_torque_nm's declare_parameter comment.
+        max_torque_nm = self.get_parameter('max_torque_nm').value
+        magnitude_clamped = [
+            max(-max_torque_nm, min(max_torque_nm, a)) for a in action_rad
+        ]
+        # Rate clamp, anchored to the previous COMMANDED torque (same
+        # "anchor to commanded, not measured" reasoning as position
+        # mode's slew clamp above) -- an EXTRA safety net beyond what sim
+        # training itself enforced, see max_delta_torque_nm_per_step's
+        # declare_parameter comment.
+        max_delta = self.get_parameter('max_delta_torque_nm_per_step').value
+        clamped_action = [
+            self.prev_action[i] + max(
+                -max_delta, min(max_delta, magnitude_clamped[i] - self.prev_action[i]))
+            for i in range(NUM_MOTORS)
+        ]
+
+        # Calf mechanical end-stop protection (see this module's
+        # docstring's "Sliding calf range" section) -- position mode
+        # clamps the TARGET ANGLE to stay inside CALF_RANGE_DEG; torque
+        # has no target angle to clamp the same way, so instead this
+        # zeros a calf motor's torque outright if its CURRENT measured
+        # position is already outside the known mechanical range, rather
+        # than letting it keep grinding a real physical stop under real
+        # force. Same raw/relative conversion as the position-mode
+        # clamp (calf_absolute + thigh_absolute).
+        for calf_i, thigh_i in self.calf_thigh_pairs.items():
+            lo, hi = self.calf_range_rad[calf_i]
+            raw_equivalent = motor_qpos_rad[calf_i] + CALF_BELT_SIGN * motor_qpos_rad[thigh_i]
+            if not (lo <= raw_equivalent <= hi):
+                clamped_action[calf_i] = 0.0
+
+        # Freeze (torque mode): going PASSIVE (zero torque) once
+        # triggered, NOT holding the last nonzero torque forever --
+        # unlike position mode, where the firmware PD genuinely holds a
+        # frozen TARGET pose, holding a frozen nonzero TORQUE forever
+        # would just keep applying constant, unopposed force (a runaway
+        # risk, not a stable hold).
+        if self.freeze_after_sec > 0.0:
+            self._control_tick_count += 1
+            if not self._frozen and (
+                    self._control_tick_count / self.control_rate_hz >= self.freeze_after_sec):
+                self._frozen = True
+                self.get_logger().info(
+                    f'freeze_after_sec={self.freeze_after_sec}s reached -- '
+                    'freezing (torque mode: going passive, zero torque).')
+            if self._frozen:
+                clamped_action = [0.0] * NUM_MOTORS
+
+        self.prev_action = clamped_action
+
+        # Sign flip only -- no home-offset/degree conversion needed
+        # (torque isn't a frame-relative angle the way position is),
+        # same sign convention as the qpos/qvel observation build.
+        torque_nm = [self.motor_sign[i] * clamped_action[i] for i in range(NUM_MOTORS)]
+
+        if self.csv_writer is not None:
+            self._log_row(response, motor_qpos_rad, action_rad, clamped_action, torque_nm)
+
+        set_request = SetMotorTorque.Request()
+        set_request.motor_id = list(range(1, NUM_MOTORS + 1))
+        set_request.torque_nm = torque_nm
+        future = self.set_torque_client.call_async(set_request)
+        future.add_done_callback(self._on_command_sent)
+
+    def _on_command_sent(self, future):
         try:
             future.result()
         except Exception as e:
-            self.get_logger().error(f'set_motor_targets call failed: {e}')
+            service = 'set_motor_torque' if self.control_mode == 'torque' else 'set_motor_targets'
+            self.get_logger().error(f'{service} call failed: {e}')
         self.busy = False
 
 

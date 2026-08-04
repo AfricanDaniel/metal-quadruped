@@ -31,6 +31,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GoToPose.srv"
   "srv/SetHome.srv"
   "srv/SetMotorTargets.srv"
+  "srv/SetMotorTorque.srv"
 )
 
 # Unitree SDK — sits two levels above the ros2 workspace root

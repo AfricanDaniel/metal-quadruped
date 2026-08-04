@@ -157,9 +157,14 @@ each session. Directories are created automatically if they don't exist.
 | `position_kp`      | double | `450.0`        | Position gain, applied in position mode. Under active hand-tuning against real stand-up behavior (originally `32.0`) — check the source for the current value, this table has gone stale before |
 | `position_kd`      | double | `6.0`          | Damping gain, applied in position mode. Tuned together with `position_kp` — same staleness caveat |
 | `pose_speed_deg_s` | double | `30.0`         | Default ramp speed (deg/s) for position-mode moves — see [Ramped moves](#ramped-position-moves) |
+| `max_torque_nm`    | double | `3.0`          | Hard safety ceiling for `set_motor_torque` — every requested torque is clamped to `[-max_torque_nm, max_torque_nm]` server-side, regardless of what the client asks for. **Conservative on purpose**: this is the first-ever real torque command path on this robot, well below the `±20 N·m` `dog_gym` sim training used — raise deliberately, only after confirming expected behavior. |
+| `torque_timeout_s` | double | `0.5`          | Watchdog for `set_motor_torque` — a motor's torque is force-zeroed if it hasn't received a fresh command within this many seconds. Unlike position mode (a stale target is still a bounded, PD-held pose), an un-refreshed torque command from a hung/crashed client would otherwise keep being blindly resent forever. |
 
 `ros2 param set /motor_test pose_speed_deg_s 10.0` takes effect on the very
-next move — it's read fresh each time, not cached at startup.
+next move — it's read fresh each time, not cached at startup. Same for
+`max_torque_nm`/`torque_timeout_s` — both are read live, not cached, so
+`max_torque_nm` can be lowered instantly mid-run if something looks wrong,
+with no node restart (which would drop all motor state).
 
 ### Service: `set_motor_velocity` (`actuator/srv/SetMotorVelocity`)
 
@@ -321,6 +326,40 @@ already active, same as the other services.
 ```bash
 ros2 service call /set_motor_targets actuator/srv/SetMotorTargets \
   "{motor_id: [1, 2], position_deg: [10.0, -5.0]}"
+```
+
+### Service: `set_motor_torque` (`actuator/srv/SetMotorTorque`)
+
+```
+int32[] motor_id
+float32[] torque_nm
+---
+bool success
+```
+
+Batch, raw, **immediate** torque control: sets each listed motor's
+commanded torque directly (`torque_nm`, output-shaft N·m) with **no PD
+position/velocity tracking at all** (`kp=kd=0`) — this is genuinely
+different from every other service above, all of which hold a target via
+firmware PD. Added for `dog_gym`'s `control_mode='torque'` sim-trained RL
+policies (`dog_torque.mjcf.xml`'s `<motor>` actuators, which likewise have
+no PD tracking), deployed via `dog_deploy/policy_node.py`'s
+`control_mode='torque'` — see that package's README.
+
+**This has real, different safety characteristics from every other
+service here.** There is no `<joint range>`-equivalent hard stop on the
+real robot the way MuJoCo enforces one in sim, and a stale, un-refreshed
+torque command is actively dangerous rather than merely stale (unlike a
+position target, which the firmware PD just holds safely) — see
+`max_torque_nm`/`torque_timeout_s` in [Parameters](#parameters), both
+enforced server-side regardless of what the client sends. `motor_id` and
+`torque_nm` must be the same length or the call fails (`success: false`)
+without commanding anything, same as `set_motor_targets`.
+
+```bash
+# Start small and confirm behavior before trusting this with more torque.
+ros2 service call /set_motor_torque actuator/srv/SetMotorTorque \
+  "{motor_id: [1], torque_nm: [0.5]}"
 ```
 
 ## Building

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <ctime>
@@ -20,6 +21,7 @@
 #include "actuator/srv/go_to_pose.hpp"
 #include "actuator/srv/set_home.hpp"
 #include "actuator/srv/set_motor_targets.hpp"
+#include "actuator/srv/set_motor_torque.hpp"
 
 namespace {
 // const std::string kDataDir         = std::string(ACTUATOR_PACKAGE_DIR) + "/data";
@@ -77,7 +79,7 @@ std::optional<std::map<int32_t, float>> load_pose(const std::string& pose_name,
 // }
 }  // namespace
 
-enum class ControlMode { NONE, VELOCITY, POSITION };
+enum class ControlMode { NONE, VELOCITY, POSITION, TORQUE };
 
 // Per-motor command/feedback state. A motor only gets an entry here once a
 // service call targets its ID — until then, nothing is sent to it.
@@ -95,6 +97,13 @@ struct MotorState {
     float ramp_start_rad = 0.0f;
     float ramp_duration_s = 0.0f;
     std::chrono::steady_clock::time_point ramp_start_time{};
+
+    // TORQUE mode watchdog: control_loop() zeros cmd.tau if this goes
+    // stale beyond torque_timeout_s -- see handle_set_motor_torque()'s
+    // comment for why raw torque needs this safety net that
+    // position/velocity mode don't (no bounded target/PD holding it
+    // safe if the client hangs or crashes).
+    std::chrono::steady_clock::time_point last_torque_cmd_time{};
 };
 
 class MotorTestNode : public rclcpp::Node {
@@ -116,10 +125,36 @@ public:
         // per-call via the request's speed_deg_s field.
         this->declare_parameter("pose_speed_deg_s", 30.0);
 
+        // TORQUE mode (2026-08-04, added alongside set_motor_torque for a
+        // sim-trained torque-control RL policy -- see set_motor_torque.srv
+        // and handle_set_motor_torque()). Raw torque has NO firmware-side
+        // position clamp protecting it the way position mode's <joint
+        // range> equivalent does in sim -- max_torque_nm is a hard,
+        // server-side safety ceiling enforced regardless of what any
+        // client requests. Conservative default: dog_gym's sim training
+        // used +-20 N*m (matching Shane's Fast-Quadruped- reference), but
+        // this is the FIRST time this project has ever sent a real torque
+        // command to the actual motors -- start low, raise deliberately
+        // (`ros2 param set` or a launch override) only after confirming
+        // safe, expected behavior at this conservative default.
+        this->declare_parameter("max_torque_nm", 3.0);
+        // Watchdog: a TORQUE-mode motor gets its cmd.tau force-zeroed by
+        // control_loop() if it hasn't received a fresh set_motor_torque
+        // call within this many seconds -- see MotorState::
+        // last_torque_cmd_time's comment. Position mode doesn't need this
+        // (a stale target is still just a bounded, PD-tracked position);
+        // an unbounded, un-refreshed torque command from a hung/crashed
+        // policy_node would otherwise keep being blindly resent forever.
+        this->declare_parameter("torque_timeout_s", 0.5);
+
         port_        = this->get_parameter("port").as_string();
         kd_gain_     = this->get_parameter("kd_gain").as_double();
         position_kp_ = this->get_parameter("position_kp").as_double();
         position_kd_ = this->get_parameter("position_kd").as_double();
+        RCLCPP_INFO(get_logger(), "TORQUE mode safety limit: max_torque_nm=%.2f, torque_timeout_s=%.2f "
+                    "(both live-adjustable via `ros2 param set`, no restart needed)",
+                    this->get_parameter("max_torque_nm").as_double(),
+                    this->get_parameter("torque_timeout_s").as_double());
 
         // cmd.q/cmd.dq (and the data.q/data.dq feedback) are all on the ROTOR
         // side of the gearbox, not the output side. Everything below converts
@@ -162,6 +197,11 @@ public:
         set_targets_service_ = this->create_service<actuator::srv::SetMotorTargets>(
             "set_motor_targets",
             std::bind(&MotorTestNode::handle_set_motor_targets, this,
+                       std::placeholders::_1, std::placeholders::_2));
+
+        torque_service_ = this->create_service<actuator::srv::SetMotorTorque>(
+            "set_motor_torque",
+            std::bind(&MotorTestNode::handle_set_motor_torque, this,
                        std::placeholders::_1, std::placeholders::_2));
 
         RCLCPP_INFO(get_logger(),
@@ -241,6 +281,18 @@ private:
 
     float default_pose_speed_deg_s() {
         return this->get_parameter("pose_speed_deg_s").as_double();
+    }
+
+    // Read live (not cached), same reasoning as default_pose_speed_deg_s()
+    // -- but more important here: a safety ceiling should be lowerable
+    // instantly via `ros2 param set` without needing a node restart (which
+    // would drop all motor state) if something looks wrong mid-run.
+    float max_torque_nm() {
+        return static_cast<float>(this->get_parameter("max_torque_nm").as_double());
+    }
+
+    float torque_timeout_s() {
+        return static_cast<float>(this->get_parameter("torque_timeout_s").as_double());
     }
 
     // Puts a motor into position mode (opening a new log file if it wasn't
@@ -417,6 +469,62 @@ private:
         response->success = true;
     }
 
+    // Sets a raw output-shaft TORQUE target for each listed motor -- no PD
+    // position/velocity tracking at all (kp=kd=0), matching dog_gym's sim
+    // <motor> torque actuators exactly (gear="1" there too, so the sim
+    // policy's output IS output-shaft N*m with no separate gearbox
+    // modeled) -- see set_motor_torque.srv and dog_deploy/policy_node.py's
+    // control_mode='torque' path.
+    //
+    // cmd.tau is ROTOR-side (same convention as cmd.q/cmd.dq -- see their
+    // "output -> rotor" comments elsewhere in this file), but the
+    // conversion direction is the OPPOSITE of position/velocity's: a
+    // reduction gearbox multiplies torque by gear_ratio_ going rotor ->
+    // output, so converting the other way (output target -> rotor cmd)
+    // means DIVIDING by gear_ratio_, not multiplying.
+    //
+    // max_torque_nm() is a hard, server-side safety ceiling applied
+    // regardless of what the client requests -- see its declare_parameter
+    // comment. This is the ONLY thing standing between a bad policy output
+    // and full motor torque; unlike position mode there's no <joint range>-
+    // equivalent hard stop protecting this on the real robot.
+    void handle_set_motor_torque(
+        const std::shared_ptr<actuator::srv::SetMotorTorque::Request> request,
+        std::shared_ptr<actuator::srv::SetMotorTorque::Response> response) {
+        if (request->motor_id.size() != request->torque_nm.size()) {
+            RCLCPP_ERROR(get_logger(),
+                "set_motor_torque: motor_id (%zu) and torque_nm (%zu) size mismatch",
+                request->motor_id.size(), request->torque_nm.size());
+            response->success = false;
+            return;
+        }
+
+        const float limit = max_torque_nm();
+        const auto now = std::chrono::steady_clock::now();
+        for (size_t i = 0; i < request->motor_id.size(); ++i) {
+            int32_t motor_id = request->motor_id[i];
+            float requested_nm = request->torque_nm[i];
+            float clamped_nm = std::max(-limit, std::min(limit, requested_nm));
+            if (clamped_nm != requested_nm) {
+                RCLCPP_WARN(get_logger(),
+                    "Motor %d: requested torque %.2f N*m clamped to %.2f N*m (max_torque_nm=%.2f)",
+                    motor_id, requested_nm, clamped_nm, limit);
+            }
+
+            MotorState &motor = get_or_create_motor(motor_id);
+            if (motor.mode != ControlMode::TORQUE) {
+                motor.mode = ControlMode::TORQUE;
+            }
+            motor.cmd.kp  = 0.0f;
+            motor.cmd.kd  = 0.0f;
+            motor.cmd.dq  = 0.0f;
+            motor.cmd.tau = clamped_nm / gear_ratio_;  // output N*m -> rotor N*m
+            motor.last_torque_cmd_time = now;
+        }
+
+        response->success = true;
+    }
+
     void control_loop() {
         for (auto &kv : motors_) {
             int32_t     motor_id = kv.first;
@@ -436,6 +544,22 @@ private:
                 }
                 motor.cmd.q  = commanded_rad * gear_ratio_; // output rad -> rotor rad
                 motor.cmd.dq = 0.0f;
+            } else if (motor.mode == ControlMode::TORQUE) {
+                // Watchdog (see MotorState::last_torque_cmd_time's comment
+                // and handle_set_motor_torque()): a stale, un-refreshed
+                // torque command would otherwise keep being blindly resent
+                // by sendRecv() below forever, unlike position mode where
+                // a stale target is at least a bounded, PD-tracked pose.
+                float age_s = std::chrono::duration<float>(
+                    std::chrono::steady_clock::now() - motor.last_torque_cmd_time).count();
+                if (age_s > torque_timeout_s()) {
+                    if (motor.cmd.tau != 0.0f) {
+                        RCLCPP_WARN(get_logger(),
+                            "Motor %d: no set_motor_torque call in %.2fs (> torque_timeout_s=%.2f) "
+                            "-- zeroing torque.", motor_id, age_s, torque_timeout_s());
+                    }
+                    motor.cmd.tau = 0.0f;
+                }
             }
 
             // Send command and read state
@@ -473,6 +597,7 @@ private:
     rclcpp::Service<actuator::srv::GoToPose>::SharedPtr            pose_service_;
     rclcpp::Service<actuator::srv::SetHome>::SharedPtr             home_service_;
     rclcpp::Service<actuator::srv::SetMotorTargets>::SharedPtr     set_targets_service_;
+    rclcpp::Service<actuator::srv::SetMotorTorque>::SharedPtr      torque_service_;
 
     // motor_id -> output-shaft degrees captured by the last set_home call.
     // Empty until set_home is called; not persisted across node restarts —

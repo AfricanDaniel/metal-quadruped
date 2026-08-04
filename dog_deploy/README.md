@@ -27,9 +27,17 @@ Every control tick:
    to translate between the real motor's degrees and the sim's radians
    convention.
 3. Runs the policy (or, in `dry_run_hold_pose` mode, skips the policy
-   entirely and just re-commands each motor to hold its current reading).
-4. Clamps each motor's requested move to `max_delta_deg_per_step`.
-5. Sends the result to `actuator`'s `set_motor_targets` service.
+   entirely and just re-commands each motor to hold its current reading —
+   in `control_mode='torque'`, "hold" means zero torque, the passive
+   no-op, not a position to hold).
+4. `control_mode='position'` (default): clamps each motor's requested
+   move to `max_delta_deg_per_step`, then sends the result to `actuator`'s
+   `set_motor_targets` service. `control_mode='torque'`: clamps to
+   `max_torque_nm`/`max_delta_torque_nm_per_step` instead, then sends to
+   `actuator`'s `set_motor_torque` service — see
+   [Torque-mode deployment](#torque-mode-deployment-2026-08-04) below,
+   this is NOT interchangeable with position mode and has different
+   safety characteristics.
 
 All service calls are async (`call_async` + done-callbacks) so a slow
 response never blocks the executor or re-enters a service call before the
@@ -41,14 +49,17 @@ previous one finished (`self.busy` guards that).
 |----------------------------|--------|---------|--------------|
 | `policy_path`              | string | `''`    | Path to a TorchScript `.pt` file (from `dog_gym/export_policy.py`). Required unless `dry_run_hold_pose` is true. |
 | `control_rate_hz`          | double | `20.0`  | Policy inference / command rate. |
-| `max_delta_deg_per_step`   | double | `5.0`   | Safety clamp: max per-motor target movement per control tick. Since 2026-07-27 this slews the target relative to the **previous commanded target** (matching sim's slew limiter), not the measured position — measurement-anchoring fed motor overshoot back into the reference and caused severe stand-up chatter (see daniel_cl_context.md). Note 5°@20Hz = 100°/s = exactly sim's training slew rate. |
+| `control_mode`              | string | `'position'` | `'position'` (default, unchanged) sends `set_motor_targets`; `'torque'` sends the new `set_motor_torque` instead — see [Torque-mode deployment](#torque-mode-deployment-2026-08-04). **Must match whatever `control_mode` the loaded `policy_path` was actually trained with** (`dog_gym.train`'s `--control-mode`) — nothing here can detect a mismatch (the exported `.pt` has no action-space metadata), it'll just silently send nonsense-scaled commands. |
+| `max_delta_deg_per_step`   | double | `5.0`   | `control_mode='position'` only. Safety clamp: max per-motor target movement per control tick. Since 2026-07-27 this slews the target relative to the **previous commanded target** (matching sim's slew limiter), not the measured position — measurement-anchoring fed motor overshoot back into the reference and caused severe stand-up chatter (see daniel_cl_context.md). Note 5°@20Hz = 100°/s = exactly sim's training slew rate. |
+| `max_torque_nm`            | double | `3.0`   | `control_mode='torque'` only. Client-side torque magnitude clamp — deliberately redundant with `actuator`'s own server-side `max_torque_nm` (neither should be the only thing standing between a bad policy output and full motor torque). Conservative default, well below `dog_gym` sim training's `±20 N·m` — this is the first-ever real torque deployment on this robot. |
+| `max_delta_torque_nm_per_step` | double | `2.0` | `control_mode='torque'` only. Per-tick torque rate clamp, anchored to the previous commanded torque (same reasoning as `max_delta_deg_per_step`). NOT something `dog_gym`'s sim training itself enforces (`control_mode='torque'` has no slew clamp in `DogEnv.step()`) — an extra conservative safety net specific to real hardware, not a sim-fidelity requirement. |
 | `max_target_lead_deg`      | double | `10.0`  | Windup guard for the prev-target-anchored clamp above: max degrees the commanded target may lead the measured position. Keeps a jammed motor from winding up a large error and violently catching up on release. |
 | `imu_timeout_sec`          | double | `0.5`   | Skip a control step if the latest IMU reading is older than this. |
 | `dry_run_hold_pose`        | bool   | `true`  | **Default is safe-by-default.** When true, ignores `policy_path` and just holds current position every tick — exercises the full read/observe/command loop without any policy risk. |
 | `motor_mapping_path`       | string | `dog_description/config/motor_mapping.yaml` | Override to point at a test/corrected copy of the mapping (e.g. while a sign issue is under investigation) without touching the shared canonical file. |
 | `home_position_deg`        | double[8] | `[]` | Home reference used to make the observation match sim's qpos=0-at-home convention (see "Homing/observation offset" below). Empty (default) auto-captures from the current reading at startup — **robot must already be physically posed at the tucked/home stance** when `policy_node` starts. Provide explicitly to reuse a known-good home without re-posing the robot. |
-| `log_csv`                  | string | `''`    | When set, writes one CSV row per motor per control tick (real position/velocity, the sim-convention qpos built into the observation, the policy's raw pre-clamp action, the clamped action, the real degrees actually sent, and whether that tick was frozen) to this path — for inspecting a real run after the fact. Flushed every tick so a Ctrl-C won't lose data. |
-| `freeze_after_sec`         | double | `0.0`   | 2026-07-29. `0.0` disables (default, unchanged behavior). When `> 0`, once this many seconds of control ticks have elapsed, the target is snapshotted and held **fixed forever after** — the policy keeps running every tick (still logged) but its output stops being used. Firmware position-mode PD stays fully active on the frozen target (does NOT go passive/cut torque). Added because real-hardware data showed the policy's raw action never actually settles quiet on its own even once standing is visibly complete (still large tick-to-tick swings late in a run, saturating `max_delta_deg_per_step` on most ticks) — a "wait until the policy goes quiet" trigger wouldn't reliably fire, so this is a fixed time instead, tuned by watching when the robot visibly finishes standing. |
+| `log_csv`                  | string | `''`    | When set, writes one CSV row per motor per control tick (real position/velocity, the sim-convention qpos built into the observation, the policy's raw pre-clamp action, the clamped action, the real command actually sent -- `target_deg` for position mode or `command_torque_nm` for torque mode -- and whether that tick was frozen) to this path — for inspecting a real run after the fact. Flushed every tick so a Ctrl-C won't lose data. |
+| `freeze_after_sec`         | double | `0.0`   | 2026-07-29. `0.0` disables (default, unchanged behavior). When `> 0`, once this many seconds of control ticks have elapsed, freezing kicks in — the policy keeps running every tick (still logged) but its output stops being used. **`control_mode='position'`**: the target is snapshotted and held fixed forever after; firmware PD stays fully active on it (does NOT go passive/cut torque). **`control_mode='torque'`**: freezing means going PASSIVE (zero torque) instead — holding a frozen NONZERO torque forever would just keep applying constant, unopposed force, not a stable hold the way a frozen position target is. Added because real-hardware data showed the policy's raw action never actually settles quiet on its own even once standing is visibly complete (still large tick-to-tick swings late in a run, saturating `max_delta_deg_per_step` on most ticks) — a "wait until the policy goes quiet" trigger wouldn't reliably fire, so this is a fixed time instead, tuned by watching when the robot visibly finishes standing. |
 
 ## Running with `torch` in a venv
 
@@ -89,6 +100,61 @@ python3 -m dog_deploy.policy_node --ros-args \
 Start `max_delta_deg_per_step` small (a couple of degrees) for the first
 real run with any new/undertrained policy and increase it once you trust
 the policy's behavior.
+
+## Torque-mode deployment (2026-08-04)
+
+`control_mode='torque'` is genuinely different from everything above, not
+just an alternate parameter set. Every other command path in this node
+(`set_motor_targets`, `adjust_motor_position`, `go_to_pose`) drives a
+firmware-side PD loop that **holds a bounded target** — even a bad or
+stale command just means the motor sits at (or ramps toward) some
+angle. `set_motor_torque` has no PD tracking at all: the number you send
+**is** the force applied to the joint, with no firmware-side
+`<joint range>`-equivalent hard stop protecting it the way MuJoCo enforces
+one in sim. Treat a torque-mode policy with more caution than a
+position-mode one, especially the first time:
+
+1. **Dry-run first, same as always** — `dry_run_hold_pose:=true` with
+   `control_mode:=torque` sends zero torque every tick (the correct
+   torque-mode no-op — there's no "current torque" to hold the way
+   position mode holds a current pose). Confirms the read → observe →
+   command loop and the `set_motor_torque` service call path work before
+   any real force is ever applied.
+2. **Start with `max_torque_nm` low** — the default (`3.0` client-side,
+   `3.0` server-side in `actuator`) is well below what `dog_gym` sim
+   training actually used (`±20 N·m`) on purpose. Confirm the robot
+   behaves as expected (legs move in the right direction, nothing grinds
+   against a mechanical stop) before raising it — both are live
+   parameters (`ros2 param set`), no restart needed, so you can raise (or
+   instantly lower) mid-session.
+3. **Physically spot the robot** — for at least the first several runs at
+   any new `max_torque_nm` level, have a hand ready to catch/support it.
+   Unlike position mode's bounded target, a torque policy that's still
+   converging can produce genuinely unexpected motion.
+4. **Watch for the watchdog firing** — `actuator` logs a warning
+   (`torque_timeout_s`) if a motor's torque command goes stale and gets
+   force-zeroed; if you see this during normal operation (not a
+   deliberate Ctrl-C), something upstream (network, `policy_node` itself)
+   is failing to keep up with `control_rate_hz`.
+
+```bash
+ros2 run actuator basic_control &
+ros2 run dog_imu imu_node &
+python3 -m dog_deploy.policy_node --ros-args \
+  -p control_mode:=torque \
+  -p dry_run_hold_pose:=true
+```
+
+Only once that looks right:
+
+```bash
+python3 -m dog_deploy.policy_node --ros-args \
+  -p control_mode:=torque \
+  -p dry_run_hold_pose:=false \
+  -p policy_path:=/path/to/torque_policy.pt \
+  -p max_torque_nm:=3.0 \
+  -p max_delta_torque_nm_per_step:=2.0
+```
 
 ## Open calibration TODOs (do not skip)
 

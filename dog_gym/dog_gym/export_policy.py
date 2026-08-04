@@ -8,6 +8,10 @@ not `stable_baselines3`/`gymnasium`/`mujoco` -- so training-side artifacts
 Usage:
     ros2 run dog_gym export_policy models/PPO_7000000_stand_policy_v4.zip \
         models/stand_policy_v4.pt --env-id Dog-Stand-v0
+
+    # torque-mode checkpoint (dog_deploy/policy_node.py's control_mode='torque'):
+    ros2 run dog_gym export_policy models/PPO_5000000_stand_policy_torque_v8.zip \
+        policies/stand_policy_torque_v8.pt --env-id Dog-Stand-v0 --control-mode torque
 """
 
 import argparse
@@ -46,8 +50,11 @@ class DeterministicPolicy(torch.nn.Module):
         return torch.clamp(action, self.action_low, self.action_high)
 
 
-def export(model_path, output_path, env_id='Dog-Stand-v0'):
-    env = gym.make(env_id)
+def export(model_path, output_path, env_id='Dog-Stand-v0', control_mode='position', model_xml_path=None):
+    kwargs = dict(control_mode=control_mode)
+    if model_xml_path is not None:
+        kwargs['model_path'] = model_xml_path
+    env = gym.make(env_id, **kwargs)
     # Force CPU regardless of what device the checkpoint was trained/saved
     # on (e.g. v4 was trained with device='cuda' on the VM) -- the exported
     # TorchScript module is meant to run on the Jetson's CPU anyway, and
@@ -74,8 +81,17 @@ def main():
     parser.add_argument('model_path', help='Path to the SB3 .zip checkpoint')
     parser.add_argument('output_path', help='Where to write the TorchScript .pt file')
     parser.add_argument('--env-id', default='Dog-Stand-v0', choices=['Dog-Stand-v0', 'Dog-Walk-v0'])
+    parser.add_argument('--control-mode', default='position', choices=['position', 'torque'],
+                         help='Must match whatever control_mode the checkpoint was actually '
+                              'trained with (dog_gym.train\'s --control-mode) -- a mismatch fails '
+                              'with an action-space error from SB3\'s PPO.load(), same as --test.')
+    parser.add_argument('--model-xml-path', default=None,
+                         help='Override which MJCF file the env loads (same role as train.py\'s '
+                              '--model-path) -- needed if a shared file like dog_torque.mjcf.xml '
+                              'was regenerated with different values after this checkpoint was '
+                              'trained.')
     args = parser.parse_args()
-    export(args.model_path, args.output_path, args.env_id)
+    export(args.model_path, args.output_path, args.env_id, args.control_mode, args.model_xml_path)
 
 
 if __name__ == '__main__':
