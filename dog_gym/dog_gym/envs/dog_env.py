@@ -450,6 +450,16 @@ class DogEnv(gym.Env):
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, f'{leg}_calf')
             for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
         ]
+        # Added 2026-08-03: a leg's THIGH touching the floor is a real,
+        # distinct contact geom this project's contact-checking logic
+        # previously never looked at at all (only ever checked
+        # calf_geom_ids) -- see _foot_contact_state_per_leg()'s comment
+        # for the case that surfaced this (a genuine thigh-floor contact,
+        # confirmed via MuJoCo's own contact list, that nothing detected).
+        self.thigh_geom_ids = [
+            mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, f'{leg}_thigh')
+            for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
+        ]
         self.foot_site_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, f'{leg}_foot')
             for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
@@ -839,18 +849,12 @@ class DogEnv(gym.Env):
     def _foot_contact_per_leg(self):
         """[bool x4] (leg_a, leg_b, leg_c, leg_d order, matching
         calf_geom_ids/foot_site_ids): True if that leg has ANY floor
-        contact right now (tip or knee/shin), False if fully airborne
+        contact right now (tip, knee/shin, OR thigh -- see
+        _foot_contact_state_per_leg()), False if fully airborne
         (mid-swing). Used by _foot_clearance_reward() to know which legs
         should be judged on swing height vs. which are legitimately
         planted."""
-        contacted = [False] * len(self.calf_geom_ids)
-        for i in range(self.data.ncon):
-            c = self.data.contact[i]
-            if c.geom1 == self.floor_geom_id and c.geom2 in self.calf_geom_ids:
-                contacted[self.calf_geom_ids.index(c.geom2)] = True
-            elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
-                contacted[self.calf_geom_ids.index(c.geom1)] = True
-        return contacted
+        return [state != 'air' for state in self._foot_contact_state_per_leg()]
 
     def _trot_symmetry_reward(self):
         """Rewards a diagonal-pair TROT contact pattern -- leg_a (front-
@@ -1089,53 +1093,59 @@ class DogEnv(gym.Env):
                     reward -= (self._feet_air_time[i] - FEET_AIR_TIME_MAX_S)
         return reward
 
-    def _foot_tip_contact_count(self):
-        """(num_tip, num_non_tip): of the calf-floor contacts right now,
-        how many are within FOOT_CONTACT_RADIUS_M of that leg's actual
-        foot site (standing on the foot, as intended) vs. further away
-        along the capsule (standing on the knee/shin -- e.g. a trained
-        walk policy observed doing exactly this, since
-        _num_feet_grounded() alone can't tell the two apart)."""
-        num_tip = 0
-        num_non_tip = 0
-        for i in range(self.data.ncon):
-            c = self.data.contact[i]
-            if c.geom1 == self.floor_geom_id and c.geom2 in self.calf_geom_ids:
-                calf_geom_id = c.geom2
-            elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
-                calf_geom_id = c.geom1
-            else:
-                continue
-            leg_idx = self.calf_geom_ids.index(calf_geom_id)
-            foot_pos = self.data.site_xpos[self.foot_site_ids[leg_idx]]
-            if np.linalg.norm(np.array(c.pos) - foot_pos) < FOOT_CONTACT_RADIUS_M:
-                num_tip += 1
-            else:
-                num_non_tip += 1
-        return num_tip, num_non_tip
-
     def _foot_contact_state_per_leg(self):
         """['air'|'tip'|'nontip'] x4, in (leg_a, leg_b, leg_c, leg_d)
-        order -- per-leg breakdown of _foot_tip_contact_count(), for
-        diagnosing asymmetric issues (e.g. "front legs dragging, back
-        legs fine") that the aggregate counts alone can't show. If a leg
-        somehow registers more than one contact this step, the LAST one
-        found wins -- rare (a capsule vs. a plane is usually one contact
-        point) and only matters for this diagnostic, not for reward."""
+        order -- the single source of truth for per-leg ground contact,
+        used by _foot_tip_contact_count()/_foot_contact_per_leg() below
+        as well as diagnostics. Checks BOTH calf_geom_ids (knee->foot
+        capsule -- 'tip' within FOOT_CONTACT_RADIUS_M of the true foot
+        site, 'nontip' otherwise i.e. knee/shin dragging) AND
+        thigh_geom_ids.
+
+        THIGH contact (added 2026-08-03) always maps to 'nontip'
+        unconditionally, no distance check -- a thigh can never BE the
+        foot tip, so there's nothing to measure against. Added after a
+        real, confirmed case (PPO_5000000_walk_policy_home_v18, a user-
+        supplied qpos snapshot) where leg_a's thigh had a genuine MuJoCo
+        contact with the floor (dist=-0.00374, not a rendering artifact)
+        at the same instant its calf happened to ALSO register a clean
+        tip contact -- the old calf-only version of this function
+        classified that leg as 'tip' outright, completely blind to the
+        thigh touching down, so nothing (non_tip_penalty,
+        WALK_NONTIP_TERMINATION) ever saw it. Thigh contact is given
+        PRIORITY over a same-step calf classification for that same leg
+        (see the `continue` below) precisely to fix that exact case: a
+        clean foot-tip plant does not excuse a simultaneously-grounded
+        thigh.
+
+        If a leg somehow registers more than one calf contact this step,
+        the last one found wins (rare, only matters for the tip/nontip
+        distinction, not whether contact happened at all)."""
         state = ['air'] * len(self.calf_geom_ids)
         for i in range(self.data.ncon):
             c = self.data.contact[i]
-            if c.geom1 == self.floor_geom_id and c.geom2 in self.calf_geom_ids:
-                calf_geom_id = c.geom2
-            elif c.geom2 == self.floor_geom_id and c.geom1 in self.calf_geom_ids:
-                calf_geom_id = c.geom1
-            else:
-                continue
-            leg_idx = self.calf_geom_ids.index(calf_geom_id)
-            foot_pos = self.data.site_xpos[self.foot_site_ids[leg_idx]]
-            is_tip = np.linalg.norm(np.array(c.pos) - foot_pos) < FOOT_CONTACT_RADIUS_M
-            state[leg_idx] = 'tip' if is_tip else 'nontip'
+            for near, far in ((c.geom1, c.geom2), (c.geom2, c.geom1)):
+                if near != self.floor_geom_id:
+                    continue
+                if far in self.thigh_geom_ids:
+                    state[self.thigh_geom_ids.index(far)] = 'nontip'
+                elif far in self.calf_geom_ids:
+                    leg_idx = self.calf_geom_ids.index(far)
+                    if state[leg_idx] == 'nontip':
+                        continue  # thigh already flagged this leg -- don't let a
+                                  # same-step calf-tip contact downgrade it back
+                    foot_pos = self.data.site_xpos[self.foot_site_ids[leg_idx]]
+                    is_tip = np.linalg.norm(np.array(c.pos) - foot_pos) < FOOT_CONTACT_RADIUS_M
+                    state[leg_idx] = 'tip' if is_tip else 'nontip'
         return state
+
+    def _foot_tip_contact_count(self):
+        """(num_tip, num_non_tip): aggregate counts derived from
+        _foot_contact_state_per_leg() (the single source of truth for
+        per-leg contact classification, including thigh contact -- see
+        that method's docstring)."""
+        state = self._foot_contact_state_per_leg()
+        return state.count('tip'), state.count('nontip')
 
     def _foot_placement_terms(self):
         """(tip_reward, non_tip_penalty) shared by both tasks: tip_reward
@@ -1534,12 +1544,12 @@ class DogEnv(gym.Env):
             + 0.0 * tip_reward
             + 0.0 * non_tip_penalty
             + 0.0 * foot_clearance_reward
-            + 0.0 * foot_slip_penalty
+            + 1.0 * foot_slip_penalty
             + 0.0 * touchdown_velocity_penalty
-            + 0.0 * feet_air_time_reward
+            + 0.5 * feet_air_time_reward
             + 0.0 * action_rate_penalty
             + 0.0 * angular_vel_penalty
-            + 0.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
+            + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 0.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + 0.0 * self._common_penalties(action)
         )
