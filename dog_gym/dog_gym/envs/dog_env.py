@@ -1037,6 +1037,48 @@ class DogEnv(gym.Env):
                 total += min(max(foot_z, 0.0) / FOOT_CLEARANCE_TARGET_M, 1.0)
         return total / sum(swinging)
 
+    def _calf_swing_motion_reward(self):
+        """Rewards a SWINGING leg's calf (knee) for actively moving, not
+        staying near-fixed while the thigh does all the work of the
+        swing. Added 2026-08-04 after measuring a real "stiff-legged"
+        gait on walk_policy_torque_v8 @7M: calf range of motion 16-38deg
+        across an episode vs. the thigh's 84-95deg over the SAME episode
+        -- the hip was swinging the whole leg through a wide arc while
+        the knee barely bent, unlike a natural bent-knee stride. Nothing
+        previously rewarded calf motion specifically -- foot_clearance_
+        reward only cares about the FOOT ending up elevated, however
+        that's achieved (a stiff pendulum swing satisfies it just as
+        well as a bent-knee one), so it never pushed toward this
+        specifically.
+
+        Uses the RAW (thigh-relative) calf qvel -- the actual physical
+        knee-flexion rate -- not the belt-compensated ABSOLUTE value
+        _get_obs() builds for the observation, since that conflates the
+        thigh's own motion with the calf's own (a calf held perfectly
+        rigid relative to the thigh still shows nonzero ABSOLUTE
+        velocity whenever the thigh moves, which would reward the exact
+        stiff-legged pattern this term is meant to discourage).
+
+        Returns mean squared calf angular velocity (rad/s)^2 across
+        currently-swinging legs, 0.0 if none are swinging (neutral, not
+        rewarded -- same "no swinging leg keeps this from being a free
+        collectible" pattern _foot_clearance_reward() uses, see its own
+        bug-fix note). Caller gates this by forward_progress, same as
+        every other positive term here that's otherwise satisfiable by
+        wiggling in place without genuinely walking (trot_symmetry_
+        reward, tip_reward, feet_air_time_reward) -- a rapidly
+        oscillating calf collects this reward regardless of whether the
+        robot goes anywhere, so ungated it would be exactly the kind of
+        "free reward, no forward progress required" exploit this
+        project has repeatedly had to close elsewhere."""
+        contacted = self._foot_contact_per_leg()
+        swinging = [not c for c in contacted]
+        if not any(swinging):
+            return 0.0
+        calf_qvel = self.data.qvel[self.motor_dof_adr[self.calf_idx]]
+        total = sum(calf_qvel[i] ** 2 for i in range(4) if swinging[i])
+        return total / sum(swinging)
+
     def _foot_horizontal_speed_sq(self, leg_idx):
         """Squared horizontal (world x/y) speed of a leg's foot site right
         now, via MuJoCo's site-Jacobian velocity (mj_objectVelocity, world
@@ -1669,6 +1711,17 @@ class DogEnv(gym.Env):
         # but scaled down to half strength until real forward progress exists.
         foot_clearance_reward = self._foot_clearance_reward() * (0.5 + 0.5 * forward_progress)
 
+        # NEW 2026-08-04 (user request, see _calf_swing_motion_reward()'s
+        # own docstring for the full "stiff-legged gait" diagnosis this
+        # is meant to fix). FULLY gated by forward_progress (not the
+        # partial foot_clearance_reward gate above) -- a rapidly
+        # oscillating calf costs nothing to fake while standing still,
+        # so this needs the same full gate as trot_symmetry_reward/
+        # tip_reward/feet_air_time_reward, not clearance's softer
+        # bootstrap-friendly treatment (this term isn't needed to
+        # bootstrap the very first liftoff the way clearance is).
+        calf_swing_motion_reward = self._calf_swing_motion_reward() * forward_progress
+
         # foot_clearance_reward only judges SWING legs (rewards them for
         # being elevated); nothing above judges STANCE legs, so a policy
         # could still satisfy every term while sliding a planted foot
@@ -1807,6 +1860,7 @@ class DogEnv(gym.Env):
             + 0.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            + 0.02 * calf_swing_motion_reward
             + 0.0 * self._common_penalties(action)
         )
 
