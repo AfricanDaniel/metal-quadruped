@@ -328,6 +328,26 @@ MAX_SLEW_DEG_PER_S = 100.0
 # reasoning and why 0.2 is an untuned placeholder.
 TORQUE_KD_GAIN = 0.2
 
+# TORQUE_BELT mode only (2026-08-05, user request, see
+# daniel_cl_context.md's TODO 4 refinement): gain (N*m per rad/s of
+# velocity error) for the automatic calf belt-compensation servo applied
+# in step()'s control_mode='torque_belt' branch -- see that block for the
+# full kinematic derivation. SIM-ONLY, real-hardware-only in the sense
+# that there's no matching "torque_belt" concept needed on the actuator
+# side (unlike TORQUE_KD_GAIN, which must match actuator's torque_kd_gain
+# exactly) -- the belt servo only exists to compensate for sim's calf
+# joint having NO physical belt modeled at all; the REAL robot's belt
+# already does this for free, so a torque_belt-trained policy's calf
+# torque output is meant to represent genuine flexion effort only, which
+# transfers to real deployment the same way plain 'torque' mode's calf
+# output would (straight to set_motor_torque, real belt handles the rest
+# natively) -- torque_belt has no separate real-deployment counterpart,
+# it only changes what happens in SIM during training. Untuned
+# placeholder -- stiff enough to closely track the required velocity
+# without letting much error accumulate, but not verified against a
+# formal drift measurement yet.
+BELT_SERVO_GAIN = 2.0
+
 # Real-hardware-realistic SENSOR noise (motor position/velocity + IMU),
 # opt-in via domain_randomization -- see _get_obs()'s comment for why
 # this was added (2026-07-27) and PLACEHOLDER STATUS (typical magnetic-
@@ -439,11 +459,33 @@ class DogEnv(gym.Env):
         # training behavior against the position-controlled setup; not
         # deployable to real hardware as-is. See DEFAULT_TORQUE_MODEL_PATH,
         # the action_space branch below, and step()'s control_mode branch.
-        if control_mode not in ('position', 'torque'):
-            raise ValueError(f"control_mode must be 'position' or 'torque', got {control_mode!r}")
+        # 'torque_belt' (2026-08-05, user request -- see daniel_cl_context.md
+        # TODO 4's refinement): same torque action space as 'torque', but
+        # the calf motors additionally get an automatic, NON-learned servo
+        # torque added on top of the policy's own torque -- see step()'s
+        # BELT_SERVO_GAIN block. Motivated by a real "stiff-legged" gait
+        # found under plain 'torque' mode (calf range of motion 16-38deg
+        # vs the thigh's 84-95deg, walk_policy_torque_v8 @7M): plain
+        # 'torque' has NO belt-compensation at all on the action side
+        # (unlike 'position', see step()'s belt-compensation comment),
+        # so nothing automatically cancels the "carried along" rotation
+        # the real belt cancels for free -- the policy has to spend
+        # learned torque effort reproducing something that costs the
+        # real motor nothing, and apparently hadn't discovered how.
+        # 'torque_belt' fixes that at the control-law level (not via
+        # reward shaping) so the policy's own torque output on the calf
+        # motors represents ONLY genuine, deliberate flexion; the thighs
+        # are completely unaffected in every mode.
+        if control_mode not in ('position', 'torque', 'torque_belt'):
+            raise ValueError(
+                f"control_mode must be 'position', 'torque', or 'torque_belt', got {control_mode!r}")
         self.control_mode = control_mode
         if model_path is None:
-            model_path = DEFAULT_TORQUE_MODEL_PATH if control_mode == 'torque' else DEFAULT_MODEL_PATH
+            # torque_belt reuses the exact same torque MJCF as 'torque' --
+            # no belt is physically modeled in either case, the servo is a
+            # pure control-law addition in step(), not a geometry change.
+            model_path = (DEFAULT_TORQUE_MODEL_PATH if control_mode in ('torque', 'torque_belt')
+                          else DEFAULT_MODEL_PATH)
         # WALK-only (2026-08-03, user request: make this a CLI-tunable
         # parameter instead of a hardcoded constant). Defaults to the
         # module-level WALK_HEIGHT_FRACTION so existing calls/tests that
@@ -622,10 +664,12 @@ class DogEnv(gym.Env):
         # clamp MuJoCo enforces regardless of what ctrl requests, this
         # box is only PPO's action-distribution bound.
         ctrlrange = self.model.actuator_ctrlrange.copy()
-        if self.control_mode == 'torque':
+        if self.control_mode in ('torque', 'torque_belt'):
             # Direct torque control (see control_mode's comment in __init__)
-            # -- action IS the <motor> actuator's ctrl value, no residual
-            # baseline, no belt/pulley angle compensation (that compensation
+            # -- action IS the <motor> actuator's ctrl value (torque_belt:
+            # PLUS an automatic servo term added on top for calf motors
+            # only, see step()), no residual baseline, no belt/pulley
+            # ANGLE compensation the way 'position' has (that compensation
             # is specifically about converting a target ANGLE between
             # thigh-relative and absolute frames -- torque applied to the
             # calf's modeled hinge DOF needs no such conversion, see
@@ -711,11 +755,13 @@ class DogEnv(gym.Env):
             # This formula is agnostic to which branch above set qpos_rad,
             # so it's correct for either start pose.
             #
-            # control_mode='torque' (2026-08-03): none of this applies --
-            # there's no slew clamp and no meaningful "last commanded
-            # angle" in torque units, so prev_action stays at reset()'s
-            # zero default (no torque commanded yet) regardless of the
-            # legs' actual starting pose.
+            # control_mode='torque'/'torque_belt' (2026-08-03/05): none of
+            # this applies -- there's no slew clamp and no meaningful
+            # "last commanded angle" in torque units, so prev_action stays
+            # at reset()'s zero default (no torque commanded yet)
+            # regardless of the legs' actual starting pose. Guard below is
+            # inverted (only 'position' overrides) so both torque modes
+            # correctly fall through without needing their own branch.
             if self.control_mode == 'position':
                 prev_action = qpos_rad.copy()
                 prev_action[self.calf_idx] -= self.calf_belt_sign * qpos_rad[self.calf_thigh_idx]
@@ -801,6 +847,42 @@ class DogEnv(gym.Env):
             # training experiences the SAME closed-loop dynamics real
             # deployment will actually have.
             self.data.ctrl[:] = action - TORQUE_KD_GAIN * self.data.qvel[self.motor_dof_adr]
+        elif self.control_mode == 'torque_belt':
+            # Same base torque + damping as 'torque' above, PLUS an
+            # automatic, NON-learned belt-compensation servo added to the
+            # calf motors only -- see control_mode's comment in __init__
+            # and daniel_cl_context.md's TODO 4 refinement for the full
+            # derivation. Thighs are completely untouched, identical to
+            # plain 'torque' mode.
+            #
+            # The servo drives the calf's RAW (thigh-relative) angular
+            # velocity toward calf_belt_sign*thigh_qvel -- derived
+            # directly from _get_obs()'s own RAW->ABSOLUTE conversion
+            # (absolute_qvel = raw_qvel - calf_belt_sign*thigh_qvel):
+            # setting absolute_qvel to 0 (the calf's ABSOLUTE angle
+            # staying CONSTANT while the thigh moves -- pure free
+            # counter-rotation, matching what the real belt does with NO
+            # motor effort) and solving for raw_qvel gives exactly this
+            # target. Added ON TOP of the policy's own calf torque
+            # (action[calf_idx]), not replacing it -- after this, the
+            # policy's calf output represents ONLY genuine, deliberate
+            # flexion beyond whatever the automatic tracking already
+            # provides for free.
+            #
+            # PLACEHOLDER STATUS: this is a velocity-only (damping-style)
+            # servo, not a full PD -- it corrects instantaneous rate
+            # mismatch but has no term correcting any ACCUMULATED
+            # absolute-angle drift over a long episode, unlike position
+            # mode's exact, drift-free kinematic substitution
+            # (ctrl[calf] = action[calf] + calf_belt_sign*qpos_thigh,
+            # an exact angle substitution, not an approximation). Revisit
+            # with a position-error term added if drift over a full
+            # episode turns out to matter in practice.
+            ctrl = action - TORQUE_KD_GAIN * self.data.qvel[self.motor_dof_adr]
+            target_calf_qvel = self.calf_belt_sign * self.data.qvel[self.calf_thigh_dof_adr]
+            calf_qvel_error = target_calf_qvel - self.data.qvel[self.motor_dof_adr[self.calf_idx]]
+            ctrl[self.calf_idx] += BELT_SERVO_GAIN * calf_qvel_error
+            self.data.ctrl[:] = ctrl
         else:
             if self.task == 'walk':
                 # RESIDUAL -> ABSOLUTE conversion (see
@@ -1376,7 +1458,7 @@ class DogEnv(gym.Env):
         # control_mode's physical units -- NOT applied to position mode,
         # whose calibration (and every existing trained checkpoint) this
         # must not disturb.
-        if self.control_mode == 'torque':
+        if self.control_mode in ('torque', 'torque_belt'):
             normalized_action = action / self.action_space.high
             effort_penalty = -0.001 * float(np.dot(normalized_action, normalized_action))
         else:
@@ -1460,7 +1542,7 @@ class DogEnv(gym.Env):
         to position mode, whose calibration (and every existing trained
         checkpoint) this must not disturb."""
         delta = action - self.prev_action
-        if self.control_mode == 'torque':
+        if self.control_mode in ('torque', 'torque_belt'):
             delta = delta / self.action_space.high
         return weight * float(np.sum(delta ** 2))
 
