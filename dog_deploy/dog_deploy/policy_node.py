@@ -187,7 +187,20 @@ class PolicyNode(Node):
         # has no slew clamp in DogEnv.step()) -- it's an extra
         # conservative safety net specific to this being the first-ever
         # real torque deployment, not a sim-fidelity requirement.
-        self.declare_parameter('max_torque_nm', 3.0)
+        #
+        # max_torque_nm: PER-MOTOR array, 8 values, motor 1..8 order (was
+        # a single shared double -- see actuator's matching
+        # declare_parameter comment in basic_control.cpp for the full
+        # 2026-08-04 finding: at a uniform 1.0 N*m, the 4 thigh motors
+        # were pinned at the ceiling 99.7% of a real run -- genuinely
+        # underpowered -- while the 4 calf motors swung 150-200+ degrees
+        # at that SAME limit -- a slipping foot with nothing checking the
+        # leg's motion. One shared number can't serve both. Kept in sync
+        # with actuator's own max_torque_nm default -- a client
+        # requesting more than the server allows just gets silently
+        # clamped lower there, which would be a confusing mismatch if the
+        # two drifted apart.
+        self.declare_parameter('max_torque_nm', [1.0] * NUM_MOTORS)
         self.declare_parameter('max_delta_torque_nm_per_step', 2.0)
         # Overridable so a corrected/test copy of motor_mapping.yaml can be
         # used for a specific run (e.g. while a known sign issue in the
@@ -556,11 +569,16 @@ class PolicyNode(Node):
         NEW calf mechanical end-stop protection position mode doesn't
         need (see below)."""
         # Magnitude clamp -- defense in depth, mirroring actuator's own
-        # max_torque_nm server-side clamp (basic_control.cpp). See
-        # max_torque_nm's declare_parameter comment.
+        # PER-MOTOR max_torque_nm server-side clamp (basic_control.cpp).
+        # See max_torque_nm's declare_parameter comment.
         max_torque_nm = self.get_parameter('max_torque_nm').value
+        if len(max_torque_nm) != NUM_MOTORS:
+            raise ValueError(
+                f'max_torque_nm must have exactly {NUM_MOTORS} values (motor 1..8 order), '
+                f'got {len(max_torque_nm)}')
         magnitude_clamped = [
-            max(-max_torque_nm, min(max_torque_nm, a)) for a in action_rad
+            max(-max_torque_nm[i], min(max_torque_nm[i], action_rad[i]))
+            for i in range(NUM_MOTORS)
         ]
         # Rate clamp, anchored to the previous COMMANDED torque (same
         # "anchor to commanded, not measured" reasoning as position

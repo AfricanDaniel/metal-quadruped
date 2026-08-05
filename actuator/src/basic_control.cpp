@@ -131,13 +131,25 @@ public:
         // position clamp protecting it the way position mode's <joint
         // range> equivalent does in sim -- max_torque_nm is a hard,
         // server-side safety ceiling enforced regardless of what any
-        // client requests. Conservative default: dog_gym's sim training
-        // used +-20 N*m (matching Shane's Fast-Quadruped- reference), but
-        // this is the FIRST time this project has ever sent a real torque
-        // command to the actual motors -- start low, raise deliberately
-        // (`ros2 param set` or a launch override) only after confirming
-        // safe, expected behavior at this conservative default.
-        this->declare_parameter("max_torque_nm", 3.0);
+        // client requests.
+        //
+        // PER-MOTOR array (2026-08-04, was a single shared double):
+        // real-hardware data (PPO_5000000_stand_policy_torque_v8_2.csv,
+        // run at a uniform 1.0 N*m) showed the 4 THIGH motors (1,4,5,8)
+        // pinned at the ceiling 99.7% of the run -- genuinely not enough
+        // torque to push off -- while the 4 CALF motors (2,3,6,7) swung
+        // through 150-200+ degrees at the SAME shared limit (a foot
+        // losing grip, nothing checking the leg's motion) -- confirms
+        // thighs and calves need independently-tunable ceilings, not one
+        // shared number that's simultaneously too weak for one pair and
+        // too strong for the other. Indexed by motor_id-1 (motor order:
+        // 1/4/5/8=thigh, 2/3/6/7=calf, see motor_mapping.yaml). Default
+        // keeps every motor at the previous uniform 1.0 N*m fallback --
+        // raise the thigh entries deliberately once calf slipping is
+        // otherwise addressed (see dog_gym's --domain-randomization for
+        // ground-friction robustness, a separate fix for the slip itself
+        // that this array doesn't replace).
+        this->declare_parameter("max_torque_nm", std::vector<double>(8, 1.0));
         // Watchdog: a TORQUE-mode motor gets its cmd.tau force-zeroed by
         // control_loop() if it hasn't received a fresh set_motor_torque
         // call within this many seconds -- see MotorState::
@@ -146,15 +158,67 @@ public:
         // an unbounded, un-refreshed torque command from a hung/crashed
         // policy_node would otherwise keep being blindly resent forever.
         this->declare_parameter("torque_timeout_s", 0.5);
+        // Velocity damping for TORQUE mode (2026-08-04, user request --
+        // motivated by a real breakaway event: PPO_5000000_stand_policy_
+        // torque_v8_5.csv showed torque ramping smoothly 0.2->4.0 N*m
+        // while a thigh sat essentially motionless (static friction /
+        // stiction holding it) until ~2.6-2.8 N*m, at which point it
+        // broke free -- kinetic friction is lower than static, so the
+        // NET torque driving acceleration jumped discontinuously right
+        // as commanded torque kept climbing, and with kp=kd=0 (pure
+        // feedforward, nothing resisting velocity) nothing braked it
+        // until it slammed into its mechanical end stop (real_velocity_
+        // deg_s: 21 -> 85 -> 300 -> 1682 across 4 ticks).
+        //
+        // kp stays 0 -- this does NOT turn torque mode into position
+        // mode, there is still no target angle being tracked, the
+        // policy still chooses the force. Only kd goes nonzero: tau_
+        // actual = tau_requested - kd*qvel, a physical brake proportional
+        // to velocity, applied by the FIRMWARE every tick regardless of
+        // what the policy does -- unlike a reward-shaped fix (see
+        // dog_gym's joint_velocity_penalty), this acts even in exactly
+        // the breakaway scenario above that sim never modeled (MuJoCo's
+        // <motor> actuators have no static/kinetic friction distinction),
+        // so it doesn't depend on the policy having specifically learned
+        // to handle a breakaway it never experienced in training.
+        //
+        // OUTPUT-shaft units (N*m per rad/s of OUTPUT angular velocity),
+        // matching position_kp/position_kd's convention (divided by
+        // gear_ratio^2 below to get the rotor-side value the SDK
+        // actually wants) -- NOT velocity mode's kd_gain convention
+        // (applied raw/unconverted, matching a vendor example) -- chosen
+        // deliberately so dog_gym's sim-side TORQUE_KD_GAIN (dog_env.py)
+        // means the exact same physical quantity as this parameter; the
+        // two MUST be kept equal or sim training and real deployment
+        // disagree about how much free braking exists.
+        //
+        // 0.2 N*m/(rad/s) is an UNTUNED placeholder: at a dangerous
+        // ~17.5 rad/s (1000+ deg/s, matching the breakaway above) it
+        // generates ~3.5 N*m of counter-torque -- comparable to the
+        // torques actually seen -- while at a modest ~0.35 rad/s
+        // (~20 deg/s, ordinary controlled motion) it only generates
+        // ~0.07 N*m, small enough not to meaningfully fight genuine
+        // slow movement. Needs real empirical tuning, same as position_
+        // kp/kd's own placeholder status.
+        this->declare_parameter("torque_kd_gain", 0.2);
 
         port_        = this->get_parameter("port").as_string();
         kd_gain_     = this->get_parameter("kd_gain").as_double();
         position_kp_ = this->get_parameter("position_kp").as_double();
         position_kd_ = this->get_parameter("position_kd").as_double();
-        RCLCPP_INFO(get_logger(), "TORQUE mode safety limit: max_torque_nm=%.2f, torque_timeout_s=%.2f "
-                    "(both live-adjustable via `ros2 param set`, no restart needed)",
-                    this->get_parameter("max_torque_nm").as_double(),
-                    this->get_parameter("torque_timeout_s").as_double());
+        {
+            auto limits = this->get_parameter("max_torque_nm").as_double_array();
+            std::ostringstream limits_str;
+            for (size_t i = 0; i < limits.size(); ++i) {
+                limits_str << (i == 0 ? "" : ", ") << limits[i];
+            }
+            RCLCPP_INFO(get_logger(),
+                "TORQUE mode safety limits: max_torque_nm=[%s] (motor 1..8 order), "
+                "torque_timeout_s=%.2f, torque_kd_gain=%.2f N*m/(rad/s) output-shaft "
+                "(all live-adjustable via `ros2 param set`, no restart needed)",
+                limits_str.str().c_str(), this->get_parameter("torque_timeout_s").as_double(),
+                this->get_parameter("torque_kd_gain").as_double());
+        }
 
         // cmd.q/cmd.dq (and the data.q/data.dq feedback) are all on the ROTOR
         // side of the gearbox, not the output side. Everything below converts
@@ -287,12 +351,40 @@ private:
     // -- but more important here: a safety ceiling should be lowerable
     // instantly via `ros2 param set` without needing a node restart (which
     // would drop all motor state) if something looks wrong mid-run.
-    float max_torque_nm() {
-        return static_cast<float>(this->get_parameter("max_torque_nm").as_double());
+    //
+    // Per-motor (2026-08-04, was a single shared double -- see this
+    // param's declare_parameter comment). FALLS BACK to a conservative
+    // 1.0 N*m -- not the raw request, not unlimited -- for any motor_id
+    // without an explicit entry (array shorter than 8, or motor_id out
+    // of [1,8]), and logs an error every time that happens: a
+    // misconfigured safety parameter should fail LOUD and SAFE, never
+    // silently leave a motor unclamped.
+    float max_torque_nm(int32_t motor_id) {
+        static constexpr float kFallbackNm = 1.0f;
+        auto limits = this->get_parameter("max_torque_nm").as_double_array();
+        size_t idx = static_cast<size_t>(motor_id - 1);
+        if (motor_id < 1 || idx >= limits.size()) {
+            RCLCPP_ERROR(get_logger(),
+                "max_torque_nm has no entry for motor %d (array size %zu) -- "
+                "falling back to %.2f N*m. Fix the max_torque_nm parameter "
+                "(needs exactly 8 values, motor 1..8 order).",
+                motor_id, limits.size(), kFallbackNm);
+            return kFallbackNm;
+        }
+        return static_cast<float>(limits[idx]);
     }
 
     float torque_timeout_s() {
         return static_cast<float>(this->get_parameter("torque_timeout_s").as_double());
+    }
+
+    // Rotor-side kd the SDK actually wants -- see torque_kd_gain's
+    // declare_parameter comment for the output->rotor conversion
+    // reasoning (same convention as position_kp_/position_kd_, /gear_
+    // ratio_^2, NOT velocity mode's unconverted kd_gain_).
+    float torque_kd_gain_rotor() {
+        double output_kd = this->get_parameter("torque_kd_gain").as_double();
+        return static_cast<float>(output_kd / (gear_ratio_ * gear_ratio_));
     }
 
     // Puts a motor into position mode (opening a new log file if it wasn't
@@ -483,11 +575,12 @@ private:
     // output, so converting the other way (output target -> rotor cmd)
     // means DIVIDING by gear_ratio_, not multiplying.
     //
-    // max_torque_nm() is a hard, server-side safety ceiling applied
-    // regardless of what the client requests -- see its declare_parameter
-    // comment. This is the ONLY thing standing between a bad policy output
-    // and full motor torque; unlike position mode there's no <joint range>-
-    // equivalent hard stop protecting this on the real robot.
+    // max_torque_nm(motor_id) is a hard, PER-MOTOR, server-side safety
+    // ceiling applied regardless of what the client requests -- see its
+    // declare_parameter comment. This is the ONLY thing standing between
+    // a bad policy output and full motor torque; unlike position mode
+    // there's no <joint range>-equivalent hard stop protecting this on
+    // the real robot.
     void handle_set_motor_torque(
         const std::shared_ptr<actuator::srv::SetMotorTorque::Request> request,
         std::shared_ptr<actuator::srv::SetMotorTorque::Response> response) {
@@ -499,25 +592,25 @@ private:
             return;
         }
 
-        const float limit = max_torque_nm();
         const auto now = std::chrono::steady_clock::now();
         for (size_t i = 0; i < request->motor_id.size(); ++i) {
             int32_t motor_id = request->motor_id[i];
+            float limit = max_torque_nm(motor_id);
             float requested_nm = request->torque_nm[i];
             float clamped_nm = std::max(-limit, std::min(limit, requested_nm));
             if (clamped_nm != requested_nm) {
                 RCLCPP_WARN(get_logger(),
-                    "Motor %d: requested torque %.2f N*m clamped to %.2f N*m (max_torque_nm=%.2f)",
-                    motor_id, requested_nm, clamped_nm, limit);
+                    "Motor %d: requested torque %.2f N*m clamped to %.2f N*m (max_torque_nm[%d]=%.2f)",
+                    motor_id, requested_nm, clamped_nm, motor_id, limit);
             }
 
             MotorState &motor = get_or_create_motor(motor_id);
             if (motor.mode != ControlMode::TORQUE) {
                 motor.mode = ControlMode::TORQUE;
             }
-            motor.cmd.kp  = 0.0f;
-            motor.cmd.kd  = 0.0f;
-            motor.cmd.dq  = 0.0f;
+            motor.cmd.kp  = 0.0f;               // still no position tracking -- see torque_kd_gain's comment
+            motor.cmd.kd  = torque_kd_gain_rotor();  // velocity damping brake, kp=0 keeps this true torque control
+            motor.cmd.dq  = 0.0f;               // damping target is zero velocity, not a moving setpoint
             motor.cmd.tau = clamped_nm / gear_ratio_;  // output N*m -> rotor N*m
             motor.last_torque_cmd_time = now;
         }
@@ -550,6 +643,11 @@ private:
                 // torque command would otherwise keep being blindly resent
                 // by sendRecv() below forever, unlike position mode where
                 // a stale target is at least a bounded, PD-tracked pose.
+                // Only cmd.tau gets zeroed here -- cmd.kd (set in
+                // handle_set_motor_torque, torque_kd_gain's damping) is
+                // deliberately left alone, so a timed-out motor becomes a
+                // pure velocity damper (resists motion, settles to rest)
+                // rather than a fully passive/free-spinning joint.
                 float age_s = std::chrono::duration<float>(
                     std::chrono::steady_clock::now() - motor.last_torque_cmd_time).count();
                 if (age_s > torque_timeout_s()) {

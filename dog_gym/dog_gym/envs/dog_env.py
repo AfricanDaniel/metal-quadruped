@@ -312,6 +312,22 @@ NUM_MOTORS = 8
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
 MAX_SLEW_DEG_PER_S = 100.0
 
+# TORQUE mode only (2026-08-04, user request): velocity damping, applied
+# in step() as ctrl = action - TORQUE_KD_GAIN*qvel -- MUST equal
+# actuator's own torque_kd_gain parameter (basic_control.cpp) exactly, in
+# the same output-shaft N*m/(rad/s) units, or sim training and real
+# deployment disagree about how much free braking exists underneath the
+# policy. kp stays absent entirely (no target angle anywhere in this
+# branch) -- this is still genuine torque control, just with a physical
+# brake proportional to velocity added on top, motivated by a real
+# breakaway event (PPO_5000000_stand_policy_torque_v8_5.csv: a thigh sat
+# motionless under climbing torque -- static friction -- until ~2.6-2.8
+# N*m, broke free, and with nothing resisting velocity (kd=0 at the
+# time) ran away to 1682 deg/s before slamming its mechanical stop). See
+# actuator's torque_kd_gain declare_parameter comment for the full
+# reasoning and why 0.2 is an untuned placeholder.
+TORQUE_KD_GAIN = 0.2
+
 # Real-hardware-realistic SENSOR noise (motor position/velocity + IMU),
 # opt-in via domain_randomization -- see _get_obs()'s comment for why
 # this was added (2026-07-27) and PLACEHOLDER STATUS (typical magnetic-
@@ -776,7 +792,15 @@ class DogEnv(gym.Env):
             # converting a target ANGLE between thigh-relative and
             # absolute frames -- torque applied straight to the calf's
             # modeled hinge DOF needs no such conversion).
-            self.data.ctrl[:] = action
+            #
+            # Velocity damping ADDED 2026-08-04 (see TORQUE_KD_GAIN's
+            # comment) -- matches actuator's real set_motor_torque
+            # service, which now applies the same brake via the
+            # firmware's cmd.kd, transparently to the policy. Applied
+            # here (not left for the policy to learn on its own) so
+            # training experiences the SAME closed-loop dynamics real
+            # deployment will actually have.
+            self.data.ctrl[:] = action - TORQUE_KD_GAIN * self.data.qvel[self.motor_dof_adr]
         else:
             if self.task == 'walk':
                 # RESIDUAL -> ABSOLUTE conversion (see
@@ -1475,6 +1499,30 @@ class DogEnv(gym.Env):
         action_rate_penalty = self._action_rate_penalty(action, action_rate_weight)
         angular_vel_penalty = self._angular_vel_penalty(STAND_ANGULAR_VEL_PENALTY_WEIGHT)
 
+        # NEW 2026-08-04 (user request, real-hardware motivated): direct
+        # penalty on JOINT velocity (qvel), distinct from angular_vel_
+        # penalty above (that's the TORSO's angular velocity from the
+        # IMU/gyro, torso wobble -- this is the 8 motors' own velocity).
+        # Nothing previously penalized this at all -- the observation
+        # already includes motor_qvel every tick, so the policy has
+        # always had the information needed to notice "I'm spinning fast
+        # right now" and react, it just had no reason to. Motivated by a
+        # real breakaway event (see TORQUE_KD_GAIN's comment): static
+        # friction held a thigh motionless under climbing commanded
+        # torque, then it broke free and ran away to 1682 deg/s with
+        # nothing (reward-wise) telling the policy that was bad.
+        # Quadratic, so ordinary controlled motion (~20deg/s = ~0.35rad/s
+        # per motor) costs very little (~0.01 weighted) while a runaway
+        # spike (~1000+deg/s = ~17.5rad/s) costs enormously (~24+
+        # weighted) -- deliberately asymmetric, doesn't fight normal
+        # movement but dominates everything else the instant velocity
+        # spikes. Applies regardless of control_mode (fast real joint
+        # motion is a hazard either way) -- weight 0.01 is an untuned
+        # placeholder, calibrated only by this back-of-envelope scaling,
+        # not a formal sweep.
+        motor_qvel = self.data.qvel[self.motor_dof_adr]
+        joint_velocity_penalty = -float(np.dot(motor_qvel, motor_qvel))
+
         # action_rate_penalty/common_penalties ZEROED (2026-08-04, user
         # request, matching _compute_reward_walk()'s simple_rewards
         # treatment) -- NOT deleted, same convention as that branch (flip
@@ -1502,6 +1550,7 @@ class DogEnv(gym.Env):
             + drift_penalty
             + 0.0 * action_rate_penalty
             + angular_vel_penalty
+            + 0.01 * joint_velocity_penalty
             + 0.0 * self._common_penalties(action)
         )
 
@@ -1533,6 +1582,24 @@ class DogEnv(gym.Env):
         # several other movement-triggered penalties at once. This
         # closes that specific escape hatch directly.
         forward_progress = np.clip(forward_velocity_reward / WALK_FORWARD_PROGRESS_TARGET_M_S, 0.0, 1.0)
+        # CAPPED 2026-08-04 (user: "I want the robot to move slowly...
+        # the robot is not moving smoothly") -- was uncapped raw qvel[1],
+        # the ONLY term in this whole function with no ceiling at
+        # WALK_FORWARD_PROGRESS_TARGET_M_S: every other term that
+        # references that target (upright_reward above, trot_symmetry_
+        # reward, feet_air_time_reward) maxes out there and stops giving
+        # more credit, but forward_velocity_reward kept rewarding MORE
+        # speed unboundedly. Measured directly on walk_policy_torque_v7
+        # @9M: mean forward velocity 0.65 m/s -- over 4x the 0.15 m/s
+        # every other term already treated as "done" -- with 2+ legs
+        # airborne simultaneously 96.5% of the time. Capping removes the
+        # "gallop for more reward" incentive: once actually at target
+        # speed, going faster earns nothing further. Computed AFTER
+        # forward_progress above (not before) -- doesn't change that
+        # value either way (clip(x/T,0,1) == clip(min(x,T)/T,0,1) for
+        # any x), just keeps forward_progress's own calc reading from the
+        # obviously-uncapped raw velocity.
+        forward_velocity_reward = min(forward_velocity_reward, WALK_FORWARD_PROGRESS_TARGET_M_S)
         upright_reward = self._torso_up_z() * forward_progress
         # See _trot_symmetry_reward()'s docstring -- gated by the SAME
         # forward_progress as upright_reward, for the same reason (this
@@ -1710,6 +1777,22 @@ class DogEnv(gym.Env):
         # -- its formula only rewards MORE elevation up to a 0.03m
         # ceiling, doesn't penalize the actual problem (over-jumping to
         # 0.2m), so it wasn't a useful lever here.
+        #
+        # action_rate_penalty RESTORED 0.0 -> 1.0 (2026-08-04, user:
+        # "the robot is not moving smoothly... legs jumping around") --
+        # measured on walk_policy_torque_v7 @9M that even with the above
+        # restored, 2+ legs were airborne simultaneously 96.5% of the
+        # time and mean forward velocity was 0.65 m/s, 4x the "target"
+        # speed (see forward_velocity_reward's cap above, added the same
+        # day for the same finding). action_rate_penalty directly
+        # penalizes jerky tick-to-tick torque changes -- the literal
+        # mechanism behind "jumping around" -- and unlike when this was
+        # zeroed for STAND (TODO: see that return statement's comment),
+        # WALK's own action_rate_weight (ACTION_RATE_PENALTY_WEIGHT_
+        # RISING, flat, not height-progress-gated) was already correctly
+        # rescaled for torque mode by the 2026-08-04 _action_rate_penalty
+        # fix, so this shouldn't reproduce STAND's "won't move at all"
+        # regression.
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
@@ -1720,7 +1803,7 @@ class DogEnv(gym.Env):
             + 1.0 * foot_slip_penalty
             + 1.0 * touchdown_velocity_penalty
             + 0.5 * feet_air_time_reward
-            + 0.0 * action_rate_penalty
+            + 1.0 * action_rate_penalty
             + 0.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward

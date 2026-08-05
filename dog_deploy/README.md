@@ -51,7 +51,7 @@ previous one finished (`self.busy` guards that).
 | `control_rate_hz`          | double | `20.0`  | Policy inference / command rate. |
 | `control_mode`              | string | `'position'` | `'position'` (default, unchanged) sends `set_motor_targets`; `'torque'` sends the new `set_motor_torque` instead — see [Torque-mode deployment](#torque-mode-deployment-2026-08-04). **Must match whatever `control_mode` the loaded `policy_path` was actually trained with** (`dog_gym.train`'s `--control-mode`) — nothing here can detect a mismatch (the exported `.pt` has no action-space metadata), it'll just silently send nonsense-scaled commands. |
 | `max_delta_deg_per_step`   | double | `5.0`   | `control_mode='position'` only. Safety clamp: max per-motor target movement per control tick. Since 2026-07-27 this slews the target relative to the **previous commanded target** (matching sim's slew limiter), not the measured position — measurement-anchoring fed motor overshoot back into the reference and caused severe stand-up chatter (see daniel_cl_context.md). Note 5°@20Hz = 100°/s = exactly sim's training slew rate. |
-| `max_torque_nm`            | double | `3.0`   | `control_mode='torque'` only. Client-side torque magnitude clamp — deliberately redundant with `actuator`'s own server-side `max_torque_nm` (neither should be the only thing standing between a bad policy output and full motor torque). Conservative default, well below `dog_gym` sim training's `±20 N·m` — this is the first-ever real torque deployment on this robot. |
+| `max_torque_nm`            | double[8] | `[1.0]*8` | `control_mode='torque'` only. **Per-motor** (motor 1..8 order) client-side torque magnitude clamp — deliberately redundant with `actuator`'s own per-motor server-side `max_torque_nm` (neither should be the only thing standing between a bad policy output and full motor torque). Was a single shared double — changed 2026-08-04 after real data (uniform `1.0`) showed the 4 thigh motors pinned at the ceiling 99.7% of a run (genuinely underpowered) while the 4 calf motors swung 150-200+ degrees at that SAME limit (a slipping foot). `dog_gym` sim training itself used `±20 N·m`. Example: `-p max_torque_nm:="[2.0, 1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0]"` (thighs 2.0, calves 1.0). |
 | `max_delta_torque_nm_per_step` | double | `2.0` | `control_mode='torque'` only. Per-tick torque rate clamp, anchored to the previous commanded torque (same reasoning as `max_delta_deg_per_step`). NOT something `dog_gym`'s sim training itself enforces (`control_mode='torque'` has no slew clamp in `DogEnv.step()`) — an extra conservative safety net specific to real hardware, not a sim-fidelity requirement. |
 | `max_target_lead_deg`      | double | `10.0`  | Windup guard for the prev-target-anchored clamp above: max degrees the commanded target may lead the measured position. Keeps a jammed motor from winding up a large error and violently catching up on release. |
 | `imu_timeout_sec`          | double | `0.5`   | Skip a control step if the latest IMU reading is older than this. |
@@ -120,13 +120,18 @@ position-mode one, especially the first time:
    position mode holds a current pose). Confirms the read → observe →
    command loop and the `set_motor_torque` service call path work before
    any real force is ever applied.
-2. **Start with `max_torque_nm` low** — the default (`3.0` client-side,
-   `3.0` server-side in `actuator`) is well below what `dog_gym` sim
-   training actually used (`±20 N·m`) on purpose. Confirm the robot
-   behaves as expected (legs move in the right direction, nothing grinds
-   against a mechanical stop) before raising it — both are live
-   parameters (`ros2 param set`), no restart needed, so you can raise (or
-   instantly lower) mid-session.
+2. **Start with `max_torque_nm` low, and per-motor** — the default
+   (`[1.0]*8` client-side and server-side in `actuator`) is well below
+   what `dog_gym` sim training actually used (`±20 N·m`) on purpose. It's
+   a per-motor array (motor 1..8 order), not one shared number — real
+   data has already shown the 4 thighs need MORE than the 4 calves can
+   safely take (thighs pinned at a uniform `1.0` 99.7% of a run,
+   genuinely underpowered; calves swung 150-200+ degrees at that same
+   limit, a slipping foot). Confirm the robot behaves as expected (legs
+   move in the right direction, velocities in the logged CSV stay
+   reasonable, nothing grinds against a mechanical stop) before raising
+   any entry — both parameters are live (`ros2 param set`), no restart
+   needed, so you can raise (or instantly lower) mid-session.
 3. **Physically spot the robot** — for at least the first several runs at
    any new `max_torque_nm` level, have a hand ready to catch/support it.
    Unlike position mode's bounded target, a torque policy that's still
@@ -152,9 +157,14 @@ python3 -m dog_deploy.policy_node --ros-args \
   -p control_mode:=torque \
   -p dry_run_hold_pose:=false \
   -p policy_path:=/path/to/torque_policy.pt \
-  -p max_torque_nm:=3.0 \
+  -p max_torque_nm:="[2.0, 1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0]" \
   -p max_delta_torque_nm_per_step:=2.0
 ```
+
+(`max_torque_nm` above: thighs — motors 1,4,5,8 — at `2.0`, calves — motors
+2,3,6,7 — at `1.0`, matching `motor_mapping.yaml`'s order. `actuator`'s own
+`max_torque_nm` must be raised to match, or its lower per-motor default
+will silently clamp these requests down further.)
 
 ## Open calibration TODOs (do not skip)
 
