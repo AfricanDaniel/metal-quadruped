@@ -373,14 +373,20 @@ def main():
                               '(WALK_HEIGHT_FRACTION in dog_env.py), now a CLI flag. A crouched '
                               'target (< 1.0) keeps the CoM lower and legs bent -- standard '
                               'practice for quadruped locomotion RL. No effect on Dog-Stand-v0.')
-    parser.add_argument('--control-mode', default='position', choices=['position', 'torque'],
+    parser.add_argument('--control-mode', default='position',
+                         choices=['position', 'torque', 'torque_belt'],
                          help="'position' (default, unchanged): <position> PD actuators, action "
                               '= target joint angle -- the only mode that matches real hardware '
                               "(actuator package exposes position/velocity services, no torque "
                               "command yet). 'torque' (2026-08-03, sim-only comparison run): "
                               '<motor> actuators (dog_torque.mjcf.xml), action = raw joint '
-                              'torque directly -- NOT deployable to real hardware as-is. Same '
-                              '--fname/checkpoints as any other run; keep torque-mode runs under '
+                              "torque directly -- NOT deployable to real hardware as-is. 'torque_belt' "
+                              '(2026-08-05, sim-only): same as torque, but calf motors additionally '
+                              'get an automatic belt-compensation servo (dog_torque_belt.mjcf.xml, '
+                              '<fixed> tendons) so the policy\'s calf output represents only genuine '
+                              'flexion effort, not the "carried along by the thigh" motion the real '
+                              'belt cancels for free -- see daniel_cl_context.md TODO 4\'s refinement. '
+                              'Same --fname/checkpoints as any other run; keep torque-mode runs under '
                               'a clearly separate --fname so they never get mixed up with a '
                               'position-mode lineage (the action spaces are incompatible, same '
                               'as WALK_ACTION_RESIDUAL_RANGE_RAD\'s old-checkpoint break).')

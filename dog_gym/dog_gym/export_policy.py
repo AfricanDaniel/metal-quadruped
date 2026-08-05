@@ -81,7 +81,8 @@ def main():
     parser.add_argument('model_path', help='Path to the SB3 .zip checkpoint')
     parser.add_argument('output_path', help='Where to write the TorchScript .pt file')
     parser.add_argument('--env-id', default='Dog-Stand-v0', choices=['Dog-Stand-v0', 'Dog-Walk-v0'])
-    parser.add_argument('--control-mode', default='position', choices=['position', 'torque'],
+    parser.add_argument('--control-mode', default='position',
+                         choices=['position', 'torque', 'torque_belt'],
                          help='Must match whatever control_mode the checkpoint was actually '
                               'trained with (dog_gym.train\'s --control-mode) -- a mismatch fails '
                               'with an action-space error from SB3\'s PPO.load(), same as --test.')

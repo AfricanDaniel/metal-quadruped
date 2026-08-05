@@ -255,13 +255,22 @@ def parse_args():
                     help='<position> actuator kp, all 8 motors (see actuator_lines\' comment)')
     p.add_argument('--kv', type=float, default=4.0,
                     help='<position> actuator kv, all 8 motors')
-    p.add_argument('--actuator-type', choices=['position', 'torque'], default='position',
+    p.add_argument('--actuator-type', choices=['position', 'torque', 'torque_belt'], default='position',
                     help="'position' (default) emits <position> PD actuators, matching real "
                          'hardware\'s position-mode control (actuator package only exposes '
                          "position/velocity services). 'torque' emits <motor> actuators "
                          'instead, for a sim-only comparison of training behavior under direct '
                          'torque control (2026-08-03, user request) -- NOT deployable to real '
-                         'hardware as-is, since actuator has no torque-command service yet.')
+                         "hardware as-is, since actuator has no torque-command service yet. "
+                         "'torque_belt' (2026-08-05, user request, see daniel_cl_context.md's "
+                         "TODO 4 refinement): same as 'torque' for the 4 thigh motors, but each "
+                         'calf motor actuates a <fixed> tendon expressing its ABSOLUTE '
+                         '(belt-decoupled) angle -- raw_calf_qpos - calf_belt_sign*thigh_qpos -- '
+                         'instead of its raw joint directly, so torque is applied in the same '
+                         'frame the real belt-driven motor experiences natively, with no '
+                         'competing-force/saturation problem (MuJoCo\'s constraint solver handles '
+                         'it exactly, unlike a control-layer velocity-servo approximation tried '
+                         'first and found to saturate/oscillate). See generate_belt_tendon_xml().')
     p.add_argument('--torque-limit', type=float, default=20.0,
                     help='--actuator-type torque only: symmetric +-ctrlrange (N*m, output shaft) '
                          'per motor. RAISED 5.0 -> 20.0 (2026-08-04): 5.0 was an unverified '
@@ -597,6 +606,14 @@ def main():
     # ============ Legs ============
     leg_xml = {}
     lowest_z = []
+    # --actuator-type torque_belt only -- populated per leg below, used
+    # by generate_belt_tendon_xml() after this loop. Computed the exact
+    # same way dog_env.py's DogEnv.__init__ derives calf_belt_sign at
+    # runtime (knee axis expressed in the thigh's frame via the calf
+    # body's own quat, dotted against the hip axis) -- using mujoco's
+    # own mju_rotVecQuat rather than a hand-rolled equivalent so this
+    # can never silently drift out of sync with the runtime computation.
+    calf_belt_sign_by_leg = {}
     for leg in legs:
         hip_pos, hip_rot = leg['hip_pos'], leg['hip_rot']
         knee_pos, knee_rot = leg['knee_pos'], leg['knee_rot']
@@ -619,6 +636,20 @@ def main():
         # sim direction would otherwise disagree with the real motor's.
         hip_axis = leg['hip']['axis'] * (-1 if f"{leg['name']}_thigh" in AXIS_FLIP else 1)
         knee_axis = leg['knee']['axis'] * (-1 if f"{leg['name']}_calf" in AXIS_FLIP else 1)
+
+        # calf_belt_sign (--actuator-type torque_belt only) -- see
+        # dog_env.py's __init__ for the identical computation at runtime
+        # and its own long comment for the full derivation/history (the
+        # "flip the sign" saga). knee_axis_in_thigh_frame: the knee's
+        # rotation axis (already computed above, in the calf's own local
+        # frame) expressed in the THIGH's frame via the calf body's own
+        # quat (calf_rel_quat, computed above -- both derived from the
+        # same underlying leg geometry, so this stays correct as CAD
+        # changes without needing manual re-derivation).
+        knee_axis_in_thigh_frame = np.zeros(3)
+        mujoco.mju_rotVecQuat(knee_axis_in_thigh_frame, knee_axis, calf_rel_quat)
+        same_direction = np.dot(knee_axis_in_thigh_frame, hip_axis) > 0
+        calf_belt_sign_by_leg[leg['name']] = -1.0 if same_direction else 1.0
 
         foot_links = [l for l in leg['calf_links'] if l.startswith('ball_for_feet')]
         if not foot_links:
@@ -681,8 +712,47 @@ def main():
     # target being tracked at all. See --actuator-type's help for why
     # this exists (sim-only training-behavior comparison, not a
     # deployable control mode yet).
+    tendon_block = ''
     if args.actuator_type == 'torque':
         actuator_lines = '\n'.join(
+            f'    <motor joint="{j}" name="{n}" ctrlrange="{-args.torque_limit:.6g} {args.torque_limit:.6g}"/>'
+            for j, n in ACTUATOR_ORDER
+        )
+    elif args.actuator_type == 'torque_belt':
+        # <fixed> tendon per leg: L = raw_calf_qpos - calf_belt_sign*thigh_qpos
+        # = calf's ABSOLUTE (belt-decoupled) angle -- see calf_belt_sign_by_leg's
+        # comment above and --actuator-type's help. coef for the thigh joint
+        # is -calf_belt_sign (matches dog_env.py's ABSOLUTE = RAW -
+        # calf_belt_sign*thigh convention exactly). The calf <motor> targets
+        # this tendon instead of its raw joint -- MuJoCo applies whatever
+        # ctrl this actuator gets as a generalized force along the tendon,
+        # distributed back to the underlying joints via the tendon's
+        # (constant, since it's linear/fixed) Jacobian -- exact by
+        # construction, no PD/servo approximation, no saturation-under-load
+        # failure mode the way a control-layer velocity-servo has.
+        #
+        # OPEN ASSUMPTION, not empirically verified: this necessarily also
+        # applies a reaction force to the thigh joint (coefficient
+        # -calf_belt_sign) -- physically correct IF the real calf motor's
+        # own reaction torque acts through the thigh, but the belt
+        # documentation only ever established the ANGLE relationship
+        # (rotating the thigh alone doesn't change the calf's real
+        # orientation), not where the real motor's housing is mounted /
+        # reacts against. If the real motor reacts against the torso
+        # directly (plausible for a hip-clustered quasi-direct-drive
+        # layout) rather than the thigh, this reaction-force term would be
+        # a simplification, not something confirmed against hardware.
+        tendon_block = '\n  <tendon>\n' + '\n'.join(
+            f'    <fixed name="{leg}_calf_absolute">\n'
+            f'      <joint joint="{leg}_calf" coef="1"/>\n'
+            f'      <joint joint="{leg}_thigh" coef="{-calf_belt_sign_by_leg[leg]:.6g}"/>\n'
+            f'    </fixed>'
+            for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
+        ) + '\n  </tendon>\n'
+        actuator_lines = '\n'.join(
+            (f'    <motor tendon="{j[:-len("_calf")]}_calf_absolute" name="{n}" '
+             f'ctrlrange="{-args.torque_limit:.6g} {args.torque_limit:.6g}"/>')
+            if j.endswith('_calf') else
             f'    <motor joint="{j}" name="{n}" ctrlrange="{-args.torque_limit:.6g} {args.torque_limit:.6g}"/>'
             for j, n in ACTUATOR_ORDER
         )
@@ -845,7 +915,7 @@ def main():
     <accelerometer name="accelerometer" site="imu_site"/>
     <gyro name="gyro" site="imu_site"/>
   </sensor>
-
+{tendon_block}
   <actuator>
 {actuator_lines}
   </actuator>
