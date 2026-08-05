@@ -4,3 +4,11 @@ int32[] motor_id
 int32[] motor_id
 float32[] position_deg
 float32[] velocity_deg_s
+# Real MEASURED torque (output-shaft N*m), read back from the motor's own
+# feedback (added 2026-08-05 for real-hardware torque_belt/torque
+# comparison against sim -- see dog_deploy/policy_node.py's real_torque_nm
+# CSV column). Distinct from any COMMANDED torque a caller might have
+# sent via set_motor_torque -- this is what the motor actually reports,
+# in position/velocity mode too (any motor reports some nonzero torque
+# under load, holding a position against gravity included).
+float32[] torque_nm

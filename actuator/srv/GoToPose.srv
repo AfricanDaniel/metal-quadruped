@@ -1,5 +1,15 @@
 string pose_name
 float32 speed_deg_s
+# If true, log this move's motors (position/velocity/torque, plus temp and
+# error code) to a CSV file for the duration of the move. Defaults to
+# false -- omit the field entirely in `ros2 service call` and nothing gets
+# saved anywhere. Example:
+#   ros2 service call /go_to_pose actuator/srv/GoToPose "{pose_name: stand, log_csv: true}"
+bool log_csv
+# Optional destination path for the CSV. Empty (default) auto-generates a
+# timestamped path under <actuator pkg>/data/csv_logs/. Ignored if log_csv
+# is false.
+string log_csv_path
 ---
 bool success
 string message

@@ -258,6 +258,8 @@ it doesn't jump back to the old target first.
 ```
 string pose_name
 float32 speed_deg_s
+bool log_csv
+string log_csv_path
 ---
 bool success
 string message
@@ -267,6 +269,21 @@ string message
   `pose_speed_deg_s` parameter; a positive value overrides it for this call
   only, per motor (all motors in the pose move at the same deg/s, so ones
   with farther to travel take longer to arrive).
+- `log_csv` is optional and **defaults to false** — omit it and nothing gets
+  saved anywhere. Set it to log this move's motors (position, velocity,
+  torque, temperature, and error code) to a CSV file, one row per motor per
+  control-loop tick, for the duration of the move:
+  ```
+  ros2 service call /go_to_pose actuator/srv/GoToPose "{pose_name: standing, log_csv: true}"
+  ```
+  Logging starts when the move starts and stops itself automatically ~0.2s
+  after the slowest motor's ramp finishes — there's no separate "stop"
+  call. `log_csv_path` is optional too: leave it empty and a timestamped
+  path under `data/csv_logs/` is generated for you (printed in the
+  service's `message` response), or set it to write somewhere specific.
+  Only one log runs at a time — starting a second `log_csv` call before the
+  first move finishes closes that file early rather than mixing both moves'
+  rows together.
 - Looks up `pose_name` under `poses:` in `config/preset_pose.yaml`, e.g.:
   ```yaml
   poses:

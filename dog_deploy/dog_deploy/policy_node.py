@@ -208,12 +208,16 @@ class PolicyNode(Node):
         # shared file itself, which dog_gym and everything else depends on.
         self.declare_parameter('motor_mapping_path', str(DEFAULT_MOTOR_MAPPING_PATH))
         # '' (default) disables logging. When set, writes one CSV row per
-        # motor per control tick -- real position/velocity actually read,
-        # the sim-convention qpos that became part of the observation, the
-        # policy's raw (pre-clamp) action, the clamped action, and the
-        # real degrees actually sent -- so a real-hardware run's exact
-        # per-motor behavior can be inspected after the fact instead of
-        # only watched live. See _open_log()/_log_row().
+        # motor per control tick -- real position/velocity/torque actually
+        # read (real_torque_nm added 2026-08-05 -- the motor's own
+        # MEASURED torque, from actuator's read_motor_positions, present
+        # in every control_mode, not just torque; distinct from
+        # command_torque_nm, which is what control_mode='torque' actually
+        # COMMANDED), the sim-convention qpos that became part of the
+        # observation, the policy's raw (pre-clamp) action, the clamped
+        # action, and the real degrees actually sent -- so a real-hardware
+        # run's exact per-motor behavior can be inspected after the fact
+        # instead of only watched live. See _open_log()/_log_row().
         self.declare_parameter('log_csv', '')
         # 8 floats, or empty (default) to auto-capture from the current
         # reading at startup instead -- see __init__'s home-capture block
@@ -367,7 +371,7 @@ class PolicyNode(Node):
         last_col = 'command_torque_nm' if self.control_mode == 'torque' else 'target_deg'
         self.csv_writer.writerow([
             'tick', 'motor_id', 'joint', 'sign',
-            'real_position_deg', 'real_velocity_deg_s',
+            'real_position_deg', 'real_velocity_deg_s', 'real_torque_nm',
             'sim_qpos_rad', 'raw_action', 'clamped_action', last_col, 'frozen',
         ])
         self.get_logger().info(f'Logging per-motor control data to {path}')
@@ -376,7 +380,7 @@ class PolicyNode(Node):
         for i in range(NUM_MOTORS):
             self.csv_writer.writerow([
                 self.tick, i + 1, self.motor_joint_names[i], self.motor_sign[i],
-                response.position_deg[i], response.velocity_deg_s[i],
+                response.position_deg[i], response.velocity_deg_s[i], response.torque_nm[i],
                 motor_qpos_rad[i], raw_action[i], clamped_action[i], command_value[i],
                 self._frozen,
             ])

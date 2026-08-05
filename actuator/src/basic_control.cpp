@@ -24,10 +24,8 @@
 #include "actuator/srv/set_motor_torque.hpp"
 
 namespace {
-// const std::string kDataDir         = std::string(ACTUATOR_PACKAGE_DIR) + "/data";
-// const std::string kVelocityLogDir  = kDataDir + "/velocity";
-// const std::string kPositionLogDir  = kDataDir + "/position";
 const std::string kPresetPoseFile  = std::string(ACTUATOR_PACKAGE_DIR) + "/config/preset_pose.yaml";
+const std::string kLogCsvDir       = std::string(ACTUATOR_PACKAGE_DIR) + "/data/csv_logs";
 
 // Loads a named pose (motor_id -> target angle in degrees) from
 // preset_pose.yaml. Re-reads the file every call, so poses added/edited
@@ -58,25 +56,21 @@ std::optional<std::map<int32_t, float>> load_pose(const std::string& pose_name,
     return result;
 }
 
-// Opens a new timestamped CSV log file for a motor under the given directory.
-// Motor data no longer needs to be saved to disk -- commented out rather
-// than deleted in case per-motor CSV logging is wanted again later.
-// std::ofstream open_motor_log(const std::string& dir, int32_t motor_id) {
-//     std::filesystem::create_directories(dir);
-//
-//     auto now        = std::chrono::system_clock::now();
-//     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-//     std::tm tm_buf{};
-//     localtime_r(&now_c, &tm_buf);
-//
-//     std::ostringstream path;
-//     path << dir << "/motor_" << motor_id << "_"
-//          << std::put_time(&tm_buf, "%Y%m%d_%H%M%S") << ".csv";
-//
-//     std::ofstream file(path.str());
-//     file << "timestamp,motor_id,position,velocity,torque\n";
-//     return file;
-// }
+// Auto-generated destination for go_to_pose's log_csv, used when the caller
+// leaves log_csv_path empty -- see GoToPose.srv and handle_go_to_pose().
+std::string timestamped_log_path(const std::string& pose_name) {
+    std::filesystem::create_directories(kLogCsvDir);
+
+    auto now        = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::tm tm_buf{};
+    localtime_r(&now_c, &tm_buf);
+
+    std::ostringstream path;
+    path << kLogCsvDir << "/go_to_pose_" << pose_name << "_"
+         << std::put_time(&tm_buf, "%Y%m%d_%H%M%S") << ".csv";
+    return path.str();
+}
 }  // namespace
 
 enum class ControlMode { NONE, VELOCITY, POSITION, TORQUE };
@@ -88,7 +82,6 @@ struct MotorState {
     MotorData    data{};
     ControlMode  mode = ControlMode::NONE;
     float        target_position_rad = 0.0f; // final destination of the current move
-    std::ofstream log_file;
 
     // Linear position ramp: control_loop interpolates cmd.q from
     // ramp_start_rad toward target_position_rad over ramp_duration_s,
@@ -322,10 +315,7 @@ private:
         std::shared_ptr<actuator::srv::SetMotorVelocity::Response> response) {
         MotorState &motor = get_or_create_motor(request->motor_id);
 
-        if (motor.mode != ControlMode::VELOCITY) {
-            // motor.log_file = open_motor_log(kVelocityLogDir, request->motor_id);
-            motor.mode = ControlMode::VELOCITY;
-        }
+        motor.mode = ControlMode::VELOCITY;
 
         motor.cmd.q   = 0.0f;       // Position target is ignored when kp is 0
         motor.cmd.dq  = request->velocity * gear_ratio_; // output rad/s -> rotor rad/s
@@ -394,10 +384,7 @@ private:
     // handle_adjust_position (relative moves) and handle_go_to_pose
     // (absolute preset poses).
     void command_absolute_position(MotorState &motor, int32_t motor_id, float target_deg, float speed_deg_s) {
-        if (motor.mode != ControlMode::POSITION) {
-            motor.mode = ControlMode::POSITION;
-            // motor.log_file = open_motor_log(kPositionLogDir, motor_id);
-        }
+        motor.mode = ControlMode::POSITION;
 
         // Ramp from wherever the motor actually is right now (not the old
         // target), so calling this again mid-ramp retargets smoothly instead
@@ -437,6 +424,44 @@ private:
                     request->motor_id, request->degrees, response->resulting_position_deg);
     }
 
+    // Starts (or restarts) the node's single active CSV log, covering the
+    // given motors for the next `duration_s` seconds of control_loop ticks
+    // -- see GoToPose.srv's log_csv field and control_loop()'s write-out.
+    // Only one log runs at a time; a call that arrives mid-log (a second
+    // go_to_pose with log_csv before the first one's move finished) closes
+    // the in-progress file first rather than interleaving both moves' rows
+    // into it.
+    void start_csv_log(const std::vector<int32_t>& motor_ids, const std::string& path, float duration_s) {
+        if (logging_active_ && log_stream_.is_open()) {
+            RCLCPP_WARN(get_logger(),
+                "log_csv: closing in-progress log %s early -- a new go_to_pose(log_csv=true) call started.",
+                log_stream_path_.c_str());
+            log_stream_.close();
+        }
+
+        log_stream_.open(path);
+        if (!log_stream_.is_open()) {
+            RCLCPP_ERROR(get_logger(), "log_csv: failed to open %s -- nothing will be logged.", path.c_str());
+            logging_active_ = false;
+            return;
+        }
+        log_stream_ << "tick,elapsed_s,motor_id,position_deg,velocity_deg_s,torque_nm,temp_c,error_code\n";
+
+        log_motor_ids_   = motor_ids;
+        log_stream_path_ = path;
+        log_tick_        = 0;
+        log_start_time_  = std::chrono::steady_clock::now();
+        // A little cushion past the move's own ramp duration so the final,
+        // settled reading gets captured too, not just the last in-flight one.
+        log_deadline_ = log_start_time_ +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<float>(duration_s + 0.2f));
+        logging_active_ = true;
+
+        RCLCPP_INFO(get_logger(), "log_csv: logging %zu motor(s) to %s for %.2fs",
+                    motor_ids.size(), path.c_str(), duration_s);
+    }
+
     void handle_go_to_pose(
         const std::shared_ptr<actuator::srv::GoToPose::Request> request,
         std::shared_ptr<actuator::srv::GoToPose::Response> response) {
@@ -469,10 +494,14 @@ private:
             ? request->speed_deg_s
             : default_pose_speed_deg_s();
 
+        std::vector<int32_t> pose_motor_ids;
+        float max_ramp_duration_s = 0.0f;
         for (const auto& [motor_id, offset_deg] : *pose) {
             float target_deg = home_deg_.at(motor_id) + offset_deg;
             MotorState &motor = get_or_create_motor(motor_id);
             command_absolute_position(motor, motor_id, target_deg, speed_deg_s);
+            pose_motor_ids.push_back(motor_id);
+            max_ramp_duration_s = std::max(max_ramp_duration_s, motor.ramp_duration_s);
             RCLCPP_INFO(get_logger(),
                 "Motor %d: moving to '%s' (home %.2f + offset %.2f = %.2f deg) at %.1f deg/s",
                 motor_id, request->pose_name.c_str(), home_deg_.at(motor_id), offset_deg,
@@ -483,6 +512,14 @@ private:
         response->message = "Moving " + std::to_string(pose->size()) +
                              " motor(s) to pose '" + request->pose_name + "' at " +
                              std::to_string(speed_deg_s) + " deg/s.";
+
+        if (request->log_csv) {
+            std::string path = request->log_csv_path.empty()
+                ? timestamped_log_path(request->pose_name)
+                : request->log_csv_path;
+            start_csv_log(pose_motor_ids, path, max_ramp_duration_s);
+            response->message += " Logging to " + path + ".";
+        }
     }
 
     void handle_set_home(
@@ -527,11 +564,23 @@ private:
 
             float position_deg    = (motor.data.q  / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
             float velocity_deg_s  = (motor.data.dq / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+            // motor.data.tau is ROTOR-side, same convention as data.q/
+            // data.dq (see their own comments) -- but torque converts
+            // the OPPOSITE direction: a reduction gearbox MULTIPLIES
+            // torque going rotor -> output (it DIVIDES q/dq), matching
+            // the inverse of handle_set_motor_torque's output->rotor
+            // conversion (cmd.tau = requested_nm / gear_ratio_) elsewhere
+            // in this file. Real, MEASURED torque -- reported by the
+            // motor's own feedback in every control mode, not just
+            // torque mode (e.g. a position-mode motor holding a pose
+            // against gravity genuinely reports nonzero torque here).
+            float torque_nm = motor.data.tau * gear_ratio_;
             response->motor_id.push_back(motor_id);
             response->position_deg.push_back(position_deg);
             response->velocity_deg_s.push_back(velocity_deg_s);
+            response->torque_nm.push_back(torque_nm);
 
-            RCLCPP_INFO(get_logger(), "  Motor %d: %.2f deg", motor_id, position_deg);
+            RCLCPP_INFO(get_logger(), "  Motor %d: %.2f deg, %.2f N*m", motor_id, position_deg, torque_nm);
         }
     }
 
@@ -667,21 +716,40 @@ private:
             const float output_q  = motor.data.q / gear_ratio_;
             const float output_dq = motor.data.dq / gear_ratio_;
 
-            // Motor data no longer needs to be saved to disk.
-            // if (motor.mode != ControlMode::NONE && motor.log_file.is_open()) {
-            //     auto now         = std::chrono::system_clock::now().time_since_epoch();
-            //     double timestamp = std::chrono::duration<double>(now).count();
-            //     motor.log_file << std::fixed << std::setprecision(6)
-            //                     << timestamp << ',' << motor_id << ','
-            //                     << output_q << ',' << output_dq << ','
-            //                     << motor.data.tau << '\n';
-            // }
-
             // Log the state (Useful for checking if it's hitting the target velocity/position).
             // DEBUG level so it doesn't spam the terminal at 100 Hz by default.
             RCLCPP_DEBUG(get_logger(),
                 "ID:%d  q:%.3f rad  dq:%.3f rad/s  tau:%.3f Nm  temp:%d°C  err:%d",
                 motor_id, output_q, output_dq, motor.data.tau, motor.data.temp, motor.data.merror);
+        }
+
+        // go_to_pose's log_csv (see start_csv_log()): write one row per
+        // logged motor for this tick, using the sendRecv feedback the loop
+        // above just refreshed. Runs until log_deadline_, then closes itself
+        // -- no explicit "stop logging" call needed from the caller.
+        if (logging_active_) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= log_deadline_) {
+                log_stream_.close();
+                logging_active_ = false;
+                RCLCPP_INFO(get_logger(), "log_csv: done, wrote %s", log_stream_path_.c_str());
+            } else {
+                float elapsed_s = std::chrono::duration<float>(now - log_start_time_).count();
+                for (int32_t motor_id : log_motor_ids_) {
+                    auto it = motors_.find(motor_id);
+                    if (it == motors_.end()) {
+                        continue;
+                    }
+                    MotorState &motor = it->second;
+                    float position_deg   = (motor.data.q  / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+                    float velocity_deg_s = (motor.data.dq / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+                    float torque_nm      = motor.data.tau * gear_ratio_;
+                    log_stream_ << log_tick_ << ',' << std::fixed << std::setprecision(4) << elapsed_s << ','
+                                << motor_id << ',' << position_deg << ',' << velocity_deg_s << ','
+                                << torque_nm << ',' << motor.data.temp << ',' << motor.data.merror << '\n';
+                }
+                ++log_tick_;
+            }
         }
     }
 
@@ -701,6 +769,19 @@ private:
     // Empty until set_home is called; not persisted across node restarts —
     // see README "Homing / reference position".
     std::unordered_map<int32_t, float> home_deg_;
+
+    // go_to_pose's log_csv state -- see start_csv_log() and control_loop()'s
+    // write-out. One log active at a time, node-wide (not per-motor): a
+    // go_to_pose call typically drives several motors together, and a
+    // single file with all of them interleaved by tick is what's useful for
+    // comparing them, not one file per motor.
+    std::ofstream                         log_stream_;
+    std::string                           log_stream_path_;
+    bool                                  logging_active_ = false;
+    std::vector<int32_t>                  log_motor_ids_;
+    int64_t                               log_tick_ = 0;
+    std::chrono::steady_clock::time_point log_start_time_{};
+    std::chrono::steady_clock::time_point log_deadline_{};
 
     double position_kp_ = 0.0;
     double position_kd_ = 0.0;

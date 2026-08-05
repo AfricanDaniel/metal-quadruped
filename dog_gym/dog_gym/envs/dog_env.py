@@ -380,6 +380,34 @@ TORQUE_KD_GAIN = 0.2
 BELT_SERVO_KP = 30.0
 BELT_SERVO_KD = 2.0
 
+# TORQUE_BELT mode only (2026-08-05, user request): per-tick adaptation
+# rate for self._belt_target_abs_calf -- see step()'s belt-servo block.
+# FIXES a real problem found on stand_policy_torque_belt: a target fixed
+# at reset (the sitting/home pose) is a fine reference for a SMALL,
+# walking-scale deviation (verified: held within ~10deg against a
+# sustained 15 N*m thigh torque), but STAND needs the calf to move
+# ~90-105deg away from that reference (STANDING_QPOS_DEG) and hold it
+# there for the whole episode -- at BELT_SERVO_KP=30, holding ~1.75rad
+# of error requires ~52 N*m just fighting the servo's own spring, which
+# alone exceeds the +-20 N*m ctrlrange, leaving little/no budget for
+# genuine flexion.
+#
+# Each tick, BEFORE computing the servo's own P/D terms: target +=
+# BELT_TARGET_ADAPT_RATE*(current_abs_calf - target) -- a leaky
+# integrator / exponential moving average, NOT an instant snap (rate=1.0
+# would mean target always equals current, i.e. zero restoring force
+# ever, defeating the purpose). At 100Hz (0.01s/tick), this rate implies
+# a ~dt/rate = ~0.5s time constant -- resists FAST/transient deviations
+# (like a real breakaway) on a sub-second timescale, same as before, but
+# a SUSTAINED, deliberate pose change (a ~1-2s stand-up) has the
+# reference largely catch up within the same episode, instead of the
+# servo fighting the full excursion for the ENTIRE remaining episode.
+# Untuned placeholder, not a formal sweep -- re-measure actual torque
+# needed once this is in place (see also the new real_torque_nm CSV
+# column, dog_deploy/policy_node.py, for cross-checking against
+# real-hardware position-mode data).
+BELT_TARGET_ADAPT_RATE = 0.02
+
 # Real-hardware-realistic SENSOR noise (motor position/velocity + IMU),
 # opt-in via domain_randomization -- see _get_obs()'s comment for why
 # this was added (2026-07-27) and PLACEHOLDER STATUS (typical magnetic-
@@ -870,15 +898,18 @@ class DogEnv(gym.Env):
 
         mujoco.mj_forward(self.model, self.data)
 
-        # control_mode='torque_belt' only: capture this episode's
-        # reference absolute calf angle (per leg) for step()'s belt-servo
-        # PD term -- see BELT_SERVO_KP's comment for why this is the
-        # STARTING pose, not a hardcoded constant (matches how the walk
-        # task's own residual action space is a deviation from a sensible
-        # default, not an arbitrary reference). Read AFTER mj_forward
-        # above so self.data.ten_length reflects the qpos this reset()
-        # call actually just set, not stale data from the previous
-        # episode.
+        # control_mode='torque_belt' only: seed this episode's belt-servo
+        # reference (per leg) at the starting pose -- see BELT_SERVO_KP's
+        # comment for why the starting pose and not a hardcoded constant.
+        # ADAPTIVE since 2026-08-05 (BELT_TARGET_ADAPT_RATE) -- this is
+        # only the INITIAL value now, step() leaky-integrates it toward
+        # wherever the calf actually is every tick after this, so it
+        # stops fighting a sustained, deliberate pose change (like
+        # standing up) partway through the episode instead of holding
+        # this reset-time value fixed for the whole thing. Read AFTER
+        # mj_forward above so self.data.ten_length reflects the qpos
+        # this reset() call actually just set, not stale data from the
+        # previous episode.
         if self.control_mode == 'torque_belt':
             self._belt_target_abs_calf = self.data.ten_length[self.calf_tendon_ids].copy()
 
@@ -948,9 +979,37 @@ class DogEnv(gym.Env):
             ctrl = action - TORQUE_KD_GAIN * self.data.qvel[self.motor_dof_adr]
             abs_calf = self.data.ten_length[self.calf_tendon_ids]
             abs_calf_vel = self.data.ten_velocity[self.calf_tendon_ids]
+            # ADAPTIVE target (2026-08-05, see BELT_TARGET_ADAPT_RATE's
+            # comment) -- leaky-integrates toward the CURRENT absolute
+            # calf angle every tick, BEFORE this tick's P term is
+            # computed, so a sustained pose change (standing up) isn't
+            # fought for the whole episode, only during the fast part of
+            # the transition.
+            self._belt_target_abs_calf += BELT_TARGET_ADAPT_RATE * (abs_calf - self._belt_target_abs_calf)
             belt_pd = (BELT_SERVO_KP * (self._belt_target_abs_calf - abs_calf)
                        + BELT_SERVO_KD * (0.0 - abs_calf_vel))
             ctrl[self.calf_idx] += belt_pd
+            # REACTION CANCELLATION (2026-08-05, found on walk_home_torque_belt
+            # @16M): the <fixed> tendon combines BOTH the calf and thigh
+            # joints (coef=[1, -calf_belt_sign], see generate_dog_mjcf.py),
+            # so MuJoCo distributes belt_pd back to the THIGH too, not just
+            # the calf -- an unintended, policy-uncontrolled torque
+            # leaking onto the thigh every tick. Measured directly: on the
+            # two legs with the smallest thigh swing (10-16deg range), this
+            # leaked reaction (2.6-2.8 N*m mean) was actually LARGER than
+            # the policy's own deliberate thigh torque (1.7-2.5 N*m) --
+            # the thigh was spending more effort fighting the calf servo's
+            # disturbance than doing anything the policy intended, which
+            # is exactly why those thighs weren't swinging: it directly
+            # broke the "thighs are completely unaffected" design goal
+            # every other control_mode branch maintains. Cancelled by
+            # adding the exact opposite of the tendon's own thigh
+            # coefficient (-calf_belt_sign) to that thigh's OWN separate
+            # (non-tendon) actuator -- net effect on the thigh DOF is now
+            # back to just ctrl[thigh] (from the base torque+damping line
+            # above), same as plain 'torque' mode; only the calf still
+            # feels belt_pd.
+            ctrl[self.calf_thigh_idx] += self.calf_belt_sign * belt_pd
             self.data.ctrl[:] = ctrl
         else:
             if self.task == 'walk':
