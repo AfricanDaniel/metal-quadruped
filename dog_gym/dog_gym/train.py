@@ -106,7 +106,7 @@ class DecayScheduleCallback(BaseCallback):
 
 
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
-             model_path=None):
+             model_path=None, position_kp=None, position_kd=None):
     kwargs = dict(domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose,
                   walk_height_fraction=walk_height_fraction,
@@ -120,6 +120,16 @@ def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction
     # all (SB3's check_for_correct_spaces).
     if model_path is not None:
         kwargs['model_path'] = model_path
+    # --position-kp/--position-kd (2026-08-05): see DogEnv.__init__'s
+    # position_kp/position_kd comment -- runtime override of the MJCF's
+    # baked-in <position> actuator gains, for comparing training under
+    # softer gains against the real-hardware-matching default (60/4).
+    # control_mode='position' only; harmless to pass otherwise since
+    # DogEnv itself gates on control_mode too.
+    if position_kp is not None:
+        kwargs['position_kp'] = position_kp
+    if position_kd is not None:
+        kwargs['position_kd'] = position_kd
     return lambda: gym.make(env_id, **kwargs)
 
 
@@ -127,13 +137,13 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
           learning_rate, ent_coef, ent_coef_end, learning_rate_end, decay_steps,
           init_from=None, walk_start_pose='standing', walk_height_fraction=0.90,
-          control_mode='position', model_path=None):
+          control_mode='position', model_path=None, position_kp=None, position_kd=None):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
           f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction}, '
-          f'control_mode={control_mode})')
+          f'control_mode={control_mode}, position_kp={position_kp}, position_kd={position_kd})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
-                         control_mode, model_path)
+                         control_mode, model_path, position_kp, position_kd)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -266,12 +276,16 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
          walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position',
-         model_path=None):
+         model_path=None, position_kp=None, position_kd=None):
     kwargs = dict(render_mode='human', domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
                   control_mode=control_mode)
     if model_path is not None:
         kwargs['model_path'] = model_path
+    if position_kp is not None:
+        kwargs['position_kp'] = position_kp
+    if position_kd is not None:
+        kwargs['position_kd'] = position_kd
     env = gym.make(env_id, **kwargs)
 
     if algo not in ALGOS:
@@ -399,6 +413,19 @@ def main():
                               'different values (e.g. --torque-limit) after a checkpoint was '
                               'trained, that older checkpoint needs this pointed at a copy of the '
                               'file with its original values, or it fails to load.')
+    parser.add_argument('--position-kp', type=float, default=None,
+                         help='control_mode=position only (2026-08-05): runtime override of the '
+                              "MJCF's baked-in <position> actuator kp (default 60, matches real "
+                              'hardware). Position-mode WALK has never learned successfully from '
+                              'scratch even at 27-35M steps -- the hypothesis is that kp=60 turns '
+                              'exploration noise into violent, near-instantaneous snapping instead '
+                              'of graceful degradation, unlike torque mode. Must be passed together '
+                              'with --position-kd (both or neither) -- see DogEnv.__init__\'s '
+                              'position_kp/position_kd comment. Does not touch the MJCF file itself, '
+                              'so real-hardware-matching runs that omit this flag are unaffected.')
+    parser.add_argument('--position-kd', type=float, default=None,
+                         help='control_mode=position only: runtime override of the MJCF\'s baked-in '
+                              '<position> actuator kv/damping (default 4). See --position-kp.')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -457,16 +484,20 @@ def main():
     ent_coef_end = args.ent_coef_end if args.ent_coef_end is not None else args.ent_coef
     learning_rate_end = args.learning_rate_end if args.learning_rate_end is not None else args.learning_rate
 
+    if (args.position_kp is None) != (args.position_kd is None):
+        raise ValueError('--position-kp and --position-kd must be passed together (both or neither)')
+
     if args.train:
         train(args.env_id, args.algo, args.fname, args.env_type, args.num_envs,
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
               args.learning_rate, args.ent_coef, ent_coef_end, learning_rate_end,
               args.decay_steps, args.init_from, args.walk_start_pose, args.walk_height_fraction,
-              args.control_mode, args.model_path)
+              args.control_mode, args.model_path, args.position_kp, args.position_kd)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
-             args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path)
+             args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
+             args.position_kp, args.position_kd)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 

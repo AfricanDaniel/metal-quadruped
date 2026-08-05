@@ -393,20 +393,37 @@ BELT_SERVO_KD = 2.0
 # genuine flexion.
 #
 # Each tick, BEFORE computing the servo's own P/D terms: target +=
-# BELT_TARGET_ADAPT_RATE*(current_abs_calf - target) -- a leaky
-# integrator / exponential moving average, NOT an instant snap (rate=1.0
-# would mean target always equals current, i.e. zero restoring force
-# ever, defeating the purpose). At 100Hz (0.01s/tick), this rate implies
-# a ~dt/rate = ~0.5s time constant -- resists FAST/transient deviations
-# (like a real breakaway) on a sub-second timescale, same as before, but
-# a SUSTAINED, deliberate pose change (a ~1-2s stand-up) has the
-# reference largely catch up within the same episode, instead of the
-# servo fighting the full excursion for the ENTIRE remaining episode.
-# Untuned placeholder, not a formal sweep -- re-measure actual torque
-# needed once this is in place (see also the new real_torque_nm CSV
-# column, dog_deploy/policy_node.py, for cross-checking against
-# real-hardware position-mode data).
-BELT_TARGET_ADAPT_RATE = 0.02
+# rate*(current_abs_calf - target) -- a leaky integrator / exponential
+# moving average, NOT an instant snap (rate=1.0 would mean target always
+# equals current, i.e. zero restoring force ever, defeating the purpose).
+# At 100Hz (0.01s/tick), a rate implies a ~dt/rate time constant.
+#
+# TASK-DEPENDENT since 2026-08-05 (was one shared constant): STAND and
+# WALK need very different timescales here, not just different target
+# VALUES.
+#   - STAND (BELT_TARGET_ADAPT_RATE_STAND=0.02, ~0.5s time constant):
+#     resists FAST/transient deviations (like a real breakaway) on a
+#     sub-second timescale, but a SUSTAINED, deliberate pose change (a
+#     ~1-2s stand-up) has the reference largely catch up within the same
+#     episode, instead of the servo fighting the full excursion for the
+#     ENTIRE remaining episode. Unchanged from the original value.
+#   - WALK (BELT_TARGET_ADAPT_RATE_WALK=0.15, ~0.067s time constant):
+#     added after directly measuring the calf not counter-rotating on
+#     walk_home_torque_belt v2 -- a real trotting gait cycle measured at
+#     ~0.86s/cycle (PPO_9000000_walk_policy_torque_v8, thigh qpos
+#     zero-crossings), and belt_pd (the automatic, non-learned servo
+#     term) was found to average 1.3-2x LARGER than the policy's own
+#     learned action[calf] on every leg -- the ~0.5s STAND time constant
+#     is close enough to the gait's own half-cycle (~0.43s) that the
+#     servo was actively resisting normal swing-phase motion instead of
+#     getting out of its way, drowning out whatever the policy tried to
+#     do. 0.15 gives a time constant roughly 1/6 of the gait period --
+#     fast enough that the target tracks a normal stride instead of
+#     fighting it, while still providing real restoring authority against
+#     anything faster than a stride (a slip, a stumble). Untuned
+#     placeholder like the STAND value, not a formal sweep.
+BELT_TARGET_ADAPT_RATE_STAND = 0.02
+BELT_TARGET_ADAPT_RATE_WALK = 0.15
 
 # Real-hardware-realistic SENSOR noise (motor position/velocity + IMU),
 # opt-in via domain_randomization -- see _get_obs()'s comment for why
@@ -507,7 +524,7 @@ class DogEnv(gym.Env):
                  motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH,
                  render_mode=None, domain_randomization=False, task='stand',
                  walk_start_pose='standing', walk_height_fraction=WALK_HEIGHT_FRACTION,
-                 control_mode='position'):
+                 control_mode='position', position_kp=None, position_kd=None):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
@@ -572,12 +589,49 @@ class DogEnv(gym.Env):
             raise ValueError(f"walk_start_pose must be 'standing' or 'home', got {walk_start_pose!r}")
         self.walk_start_pose = walk_start_pose
         self.task = task
+        # torque_belt only -- see BELT_TARGET_ADAPT_RATE_STAND/_WALK's
+        # comment for why these need different timescales. Harmless to set
+        # even outside control_mode='torque_belt' (step()'s belt branch is
+        # the only reader).
+        self._belt_target_adapt_rate = (
+            BELT_TARGET_ADAPT_RATE_WALK if task == 'walk' else BELT_TARGET_ADAPT_RATE_STAND)
         self.model_path = model_path
         self.render_mode = render_mode
         self.domain_randomization = domain_randomization
 
         self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
+
+        # position_kp/position_kd (2026-08-05, user request): runtime
+        # override of the MJCF's baked-in <position> actuator gains
+        # (generate_dog_mjcf.py --kp/--kv, default 60/4 -- deliberately
+        # matched to actuator's real position_kp/position_kd so sim
+        # training and real deployment agree on stiffness). Every
+        # attempt at training position-mode WALK from scratch has failed
+        # even at 27-35M steps (see daniel_cl_context.md) -- the
+        # hypothesis is that gain's own stiffness is part of the
+        # problem: PPO's exploration noise on a target angle gets turned
+        # into a large, near-instantaneous corrective force at kp=60,
+        # producing violent snapping/falling rather than the graceful
+        # degradation torque-mode actions get from the leg's own inertia
+        # -- a harsh reward landscape for exploration to climb out of.
+        # NOT baked into a separate MJCF file (unlike torque_belt's
+        # DEFAULT_TORQUE_BELT_MODEL_PATH) since these are meant to be
+        # swept/compared across training runs, not fixed once -- setting
+        # actuator_gainprm/biasprm directly post-load is equivalent to
+        # regenerating the XML with different --kp/--kv (same MuJoCo
+        # <position> shortcut expansion: gainprm[0]=kp,
+        # biasprm=[0,-kp,-kv]) without maintaining N near-duplicate MJCF
+        # files. None (default) leaves the MJCF's own baked-in values
+        # untouched -- existing calls/tests/real-hardware-matching runs
+        # are unaffected.
+        if control_mode == 'position' and position_kp is not None and position_kd is not None:
+            self.model.actuator_gainprm[:, 0] = position_kp
+            self.model.actuator_biasprm[:, 1] = -position_kp
+            self.model.actuator_biasprm[:, 2] = -position_kd
+        self.position_kp = position_kp
+        self.position_kd = position_kd
+
         self.renderer = None
         self._paused = False
 
@@ -979,13 +1033,15 @@ class DogEnv(gym.Env):
             ctrl = action - TORQUE_KD_GAIN * self.data.qvel[self.motor_dof_adr]
             abs_calf = self.data.ten_length[self.calf_tendon_ids]
             abs_calf_vel = self.data.ten_velocity[self.calf_tendon_ids]
-            # ADAPTIVE target (2026-08-05, see BELT_TARGET_ADAPT_RATE's
-            # comment) -- leaky-integrates toward the CURRENT absolute
-            # calf angle every tick, BEFORE this tick's P term is
-            # computed, so a sustained pose change (standing up) isn't
-            # fought for the whole episode, only during the fast part of
-            # the transition.
-            self._belt_target_abs_calf += BELT_TARGET_ADAPT_RATE * (abs_calf - self._belt_target_abs_calf)
+            # ADAPTIVE target (2026-08-05, see BELT_TARGET_ADAPT_RATE_STAND/
+            # _WALK's comment) -- leaky-integrates toward the CURRENT
+            # absolute calf angle every tick, BEFORE this tick's P term is
+            # computed, so a sustained pose change (standing up) or a
+            # normal gait swing (walking) isn't fought for the whole
+            # episode/stride, only during genuinely fast transients.
+            # self._belt_target_adapt_rate is task-dependent, set in
+            # __init__.
+            self._belt_target_abs_calf += self._belt_target_adapt_rate * (abs_calf - self._belt_target_abs_calf)
             belt_pd = (BELT_SERVO_KP * (self._belt_target_abs_calf - abs_calf)
                        + BELT_SERVO_KD * (0.0 - abs_calf_vel))
             ctrl[self.calf_idx] += belt_pd
