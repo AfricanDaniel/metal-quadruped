@@ -996,9 +996,12 @@ class DogEnv(gym.Env):
         self._episode_start_y = 0.0
 
         # motor qpos (8) + motor qvel (8) + IMU sensordata + prev_action (8)
-        obs_dim = NUM_MOTORS + NUM_MOTORS + self.model.nsensordata + NUM_MOTORS
+        self.single_obs_dim = NUM_MOTORS + NUM_MOTORS + self.model.nsensordata + NUM_MOTORS
+        self.obs_history_len = 3
+        obs_dim = self.single_obs_dim * self.obs_history_len
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+        self._obs_history = np.zeros(obs_dim, dtype=np.float32)
 
         self._step_count = 0
 
@@ -1162,7 +1165,12 @@ class DogEnv(gym.Env):
         # _belt_target_abs_calf's own comment.
         self._episode_start_y = self.data.xpos[self.torso_body_id][1]
 
-        return self._get_obs(), {}
+        # Populate initial history (copy the first obs to all history slots)
+        initial_obs = self._get_obs()
+        for i in range(self.obs_history_len):
+            self._obs_history[i * self.single_obs_dim : (i + 1) * self.single_obs_dim] = initial_obs
+
+        return self._obs_history.copy(), {}
 
     def _randomize_ground(self):
         friction = self.np_random.uniform(0.3, 0.8)
@@ -1342,7 +1350,11 @@ class DogEnv(gym.Env):
         self._update_leg_phase_time()
         self._update_high_pitch_time()
 
-        obs = self._get_obs()
+        current_obs = self._get_obs()
+        self._obs_history[:-self.single_obs_dim] = self._obs_history[self.single_obs_dim:]
+        self._obs_history[-self.single_obs_dim:] = current_obs
+        obs = self._obs_history.copy()
+        
         reward = self._compute_reward(action)
         # MUST update before checking _knee_walking_too_long() -- see that
         # method's docstring.
