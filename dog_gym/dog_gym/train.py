@@ -89,19 +89,81 @@ class DecayScheduleCallback(BaseCallback):
     returns to the optimizer, so this correctly forces the real applied
     LR without needing to fight SB3's own progress-tracking internals."""
 
-    def __init__(self, ent_coef_start, ent_coef_end, lr_start, lr_end, decay_steps, verbose=0):
+    def __init__(self, ent_coef_start, ent_coef_end, lr_start, lr_end, decay_steps,
+                 adjust_lr=True, verbose=0):
         super().__init__(verbose)
         self.ent_coef_start = ent_coef_start
         self.ent_coef_end = ent_coef_end
         self.lr_start = lr_start
         self.lr_end = lr_end
         self.decay_steps = decay_steps
+        # --lr-schedule adaptive (2026-08-06): AdaptiveKLLearningRateCallback
+        # owns model.lr_schedule instead in that mode -- both callbacks
+        # writing to it every step would just fight each other, last-
+        # write-wins each _on_step() in an undefined order. ent_coef decay
+        # is independent and still applies either way.
+        self.adjust_lr = adjust_lr
 
     def _on_step(self):
         progress = min(1.0, self.model.num_timesteps / self.decay_steps) if self.decay_steps > 0 else 1.0
         self.model.ent_coef = self.ent_coef_start + (self.ent_coef_end - self.ent_coef_start) * progress
-        current_lr = self.lr_start + (self.lr_end - self.lr_start) * progress
-        self.model.lr_schedule = lambda progress_remaining, _lr=current_lr: _lr
+        if self.adjust_lr:
+            current_lr = self.lr_start + (self.lr_end - self.lr_start) * progress
+            self.model.lr_schedule = lambda progress_remaining, _lr=current_lr: _lr
+        return True
+
+
+class AdaptiveKLLearningRateCallback(BaseCallback):
+    """Mirrors rsl_rl's PPO "adaptive" learning-rate schedule (the same
+    mechanism .../go2-sim2real-locomotion-rl/examples/locomotion/final/
+    go2_train_walk.py uses -- desired_kl=0.01, learning_rate=0.001,
+    schedule="adaptive"; rsl_rl is the standard PPO implementation from
+    ETH Zurich's legged-robot RL work, e.g. ANYmal/Isaac Lab). After
+    each rollout's train() call, reads the ACTUAL KL divergence that
+    update produced (SB3 already computes and logs this as
+    'train/approx_kl') and adjusts the learning rate:
+      - shrinks it (/1.5) if the update moved the policy MORE than 2x
+        desired_kl -- too aggressive, risks destabilizing an
+        already-decent policy (this project has direct prior evidence
+        of exactly that: a fixed 3e-4 --init-from fine-tune made an
+        already-good stand policy WORSE over 19M further steps, see
+        that flag's own comment).
+      - grows it (*1.5) if the update moved the policy LESS than 0.5x
+        desired_kl -- barely changing anything, e.g. stuck reinforcing
+        whatever local optimum it already found (the "tumbling" walk
+        pattern) with no pressure to actually escape it.
+      - otherwise leaves it alone.
+    Clamped to rsl_rl's own [1e-5, 1e-2] bounds.
+
+    Uses _on_rollout_start() (fires exactly once per rollout, right
+    after the PREVIOUS train() call finished and before the NEXT one
+    starts) rather than _on_step() (fires once per env step -- thousands
+    of times per rollout, all reading the SAME stale approx_kl from the
+    last train() call, which would misapply the same adjustment that
+    many times before a fresh KL reading ever exists)."""
+
+    def __init__(self, desired_kl=0.01, initial_lr=1e-3, min_lr=1e-5, max_lr=1e-2, verbose=0):
+        super().__init__(verbose)
+        self.desired_kl = desired_kl
+        self.current_lr = initial_lr
+        self.min_lr = min_lr
+        self.max_lr = max_lr
+
+    def _on_rollout_start(self):
+        approx_kl = self.model.logger.name_to_value.get('train/approx_kl')
+        # None on the very first rollout -- no train() call has happened
+        # yet, so there's nothing to react to; keep the initial LR.
+        if approx_kl is not None:
+            if approx_kl > self.desired_kl * 2.0:
+                self.current_lr = max(self.min_lr, self.current_lr / 1.5)
+            elif approx_kl < self.desired_kl / 2.0:
+                self.current_lr = min(self.max_lr, self.current_lr * 1.5)
+            if self.verbose:
+                print(f'AdaptiveKLLearningRateCallback: approx_kl={approx_kl:.5f} '
+                      f'(target={self.desired_kl}) -> lr={self.current_lr:.2e}')
+        self.model.lr_schedule = lambda progress_remaining, _lr=self.current_lr: _lr
+
+    def _on_step(self):
         return True
 
 
@@ -198,7 +260,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           control_mode='position', model_path=None, position_kp=None, position_kd=None,
           position_kp_range_start=None, position_kp_range_end=None,
           position_kd_range_start=None, position_kd_range_end=None,
-          gain_curriculum_steps=None):
+          gain_curriculum_steps=None, lr_schedule='linear', desired_kl=0.01):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
           f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction}, '
           f'control_mode={control_mode}, position_kp={position_kp}, position_kd={position_kd}, '
@@ -315,11 +377,19 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     # DecayScheduleCallback's docstring. Inert (no-op) by default: both
     # end values default to their start values in main(), so a run that
     # doesn't explicitly configure decay behaves exactly as before.
+    # --lr-schedule adaptive (2026-08-06): AdaptiveKLLearningRateCallback
+    # takes over model.lr_schedule instead of DecayScheduleCallback's own
+    # linear decay -- adjust_lr=False keeps DecayScheduleCallback around
+    # ONLY for ent_coef decay in that mode, so the two don't fight over
+    # the same attribute. Default ('linear') behaves exactly as before.
     schedule_callback = DecayScheduleCallback(
         ent_coef_start=ent_coef, ent_coef_end=ent_coef_end,
         lr_start=learning_rate, lr_end=learning_rate_end,
-        decay_steps=decay_steps)
+        decay_steps=decay_steps, adjust_lr=(lr_schedule != 'adaptive'))
     callbacks = [schedule_callback]
+    if lr_schedule == 'adaptive':
+        callbacks.append(AdaptiveKLLearningRateCallback(
+            desired_kl=desired_kl, initial_lr=learning_rate))
     # Opt-in: only constructed if all 4 range endpoints were given (see
     # main()'s validation) -- a run that doesn't pass any of the
     # --position-kp-range-* flags behaves exactly as before, no curriculum.
@@ -531,6 +601,21 @@ def main():
                               'range-* linearly widen from start to end, then hold at end. Defaults '
                               'to --decay-steps if not set (same "how long is the ramp" knob as '
                               'ent_coef/learning_rate decay, but independently overridable here).')
+    parser.add_argument('--lr-schedule', default='linear', choices=['linear', 'adaptive'],
+                         help='PPO only, --train only (2026-08-06): "linear" (default, unchanged) '
+                              'uses --learning-rate/--learning-rate-end/--decay-steps\' linear decay '
+                              '(DecayScheduleCallback). "adaptive" instead mirrors rsl_rl\'s PPO '
+                              '"adaptive" schedule (the same mechanism go2-sim2real-locomotion-rl\'s '
+                              'go2_train_walk.py uses) -- after every rollout\'s train() call, reads '
+                              'the ACTUAL KL divergence that update produced and shrinks the learning '
+                              'rate if it moved the policy more than 2x --desired-kl (too aggressive), '
+                              'grows it if less than 0.5x (barely changing -- e.g. stuck reinforcing a '
+                              'local optimum with no pressure to escape it). Starts at --learning-rate, '
+                              'clamped to [1e-5, 1e-2] (rsl_rl\'s own bounds). ent_coef decay (if '
+                              'configured via --ent-coef-end) still applies independently either way.')
+    parser.add_argument('--desired-kl', type=float, default=0.01,
+                         help='--lr-schedule adaptive only: target KL divergence per update. Default '
+                              'matches rsl_rl\'s own default (and go2_train_walk.py\'s).')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -610,7 +695,7 @@ def main():
               args.control_mode, args.model_path, args.position_kp, args.position_kd,
               args.position_kp_range_start, args.position_kp_range_end,
               args.position_kd_range_start, args.position_kd_range_end,
-              args.gain_curriculum_steps)
+              args.gain_curriculum_steps, args.lr_schedule, args.desired_kl)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
