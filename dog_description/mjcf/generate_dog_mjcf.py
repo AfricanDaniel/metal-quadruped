@@ -249,6 +249,8 @@ def parse_args():
                     help='placeholder +-range (deg) for every leg joint not listed in '
                          'JOINT_RANGE_OVERRIDES_DEG -- not real hardware hard-stops')
     p.add_argument('--mass-torso', type=float, default=4.72603)
+    p.add_argument('--mass-battery', type=float, default=1.723)
+    p.add_argument('--mass-motor', type=float, default=0.5662)
     p.add_argument('--mass-thigh', type=float, default=0.22746)
     p.add_argument('--mass-calf', type=float, default=0.18357)
     p.add_argument('--kp', type=float, default=60.0,
@@ -603,6 +605,25 @@ def main():
     torso_center, torso_size = combined_aabb(torso_geoms)
     torso_diag = box_diaginertia(args.mass_torso, torso_size)
 
+    dummy_bodies = []
+    motor_count = 1
+    for mesh_name, pos, quat in torso_geoms:
+        if mesh_name == 'battery':
+            dummy_bodies.append(
+                f'      <body name="battery_mass" pos="{fmt(pos, 5)}" quat="{fmt(quat, 5)}">\n'
+                f'        <inertial pos="0 0 0" mass="{args.mass_battery}" diaginertia="0.001 0.001 0.001"/>\n'
+                f'      </body>'
+            )
+        elif mesh_name == 'motor':
+            dummy_bodies.append(
+                f'      <body name="motor_mass_{motor_count}" pos="{fmt(pos, 5)}" quat="{fmt(quat, 5)}">\n'
+                f'        <inertial pos="0 0 0" mass="{args.mass_motor}" diaginertia="0.001 0.001 0.001"/>\n'
+                f'      </body>'
+            )
+            motor_count += 1
+            
+    dummy_bodies_str = "\n".join(dummy_bodies)
+
     # ============ Legs ============
     leg_xml = {}
     lowest_z = []
@@ -900,6 +921,7 @@ def main():
            position/orientation not yet given, placed at torso origin. -->
       <site name="imu_site" pos="0 0 0" rgba="1 0 0 1" size="0.02 0.02 0.02" type="box"/>
 
+{dummy_bodies_str}
 {geom_lines(torso_geoms, 6)}
 
 {leg_xml['leg_a']}
