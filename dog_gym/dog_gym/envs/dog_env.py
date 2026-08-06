@@ -1074,10 +1074,29 @@ class DogEnv(gym.Env):
                 # Starting at the real settled standing height directly
                 # avoids that transient.
                 self.data.qpos[2] = STAND_HEIGHT_M
-            # else ('home'): qpos_rad is already the model's own qpos=0
-            # configuration, so the default spawn height (0.287m) is
-            # already the physically correct one for it -- same reasoning
-            # as STAND's task, nothing to override.
+            else:
+                # 'home' -- FIXED 2026-08-06 (user report: a walk policy's
+                # very first ~16 ticks were pure free-fall, all 4 feet
+                # 'air', height dropping smoothly 0.287->~0.15m with ZERO
+                # ground contact the whole time, before the policy had any
+                # physical grounding to act from -- "unravels its legs to
+                # try and catch itself before it even hits the floor").
+                # The comment this replaced claimed the qpos=0 default
+                # spawn height (0.287m) was "already the physically
+                # correct one" for this pose -- that was simply wrong,
+                # contradicted directly by the measured free-fall above.
+                # qpos_rad here is the IDENTICAL zero-motor-angle
+                # configuration STAND's own branch below uses (mj_resetData's
+                # default), so the SAME empirically-measured settled height
+                # applies -- SIT_HEIGHT_M was measured (see STAND branch's
+                # own comment) by letting the robot settle under zero torque
+                # from this exact pose and reading back where it landed
+                # (0.1403m, all 4 feet in clean tip contact), not derived
+                # from anything STAND-specific. Reusing it here removes the
+                # free-fall entirely instead of requiring the policy to
+                # survive falling through it while already being scored/
+                # trained on its actions.
+                self.data.qpos[2] = SIT_HEIGHT_M
         elif self.task == 'stand':
             # FIXED 2026-08-04 (user question: "this is a policy to stand
             # up from a sitting position ON THE GROUND, will this still
