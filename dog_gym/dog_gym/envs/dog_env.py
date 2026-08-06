@@ -90,7 +90,7 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 # CLI flag, so it no longer requires editing this file to change. See
 # __init__'s self._walk_target_height_m and _compute_reward_walk()'s
 # height_reward, the only place that reads it.
-WALK_HEIGHT_FRACTION = 0.90
+WALK_HEIGHT_FRACTION = 0.50
 
 # action_rate_penalty's weight for the STAND task, linearly interpolated
 # by height_progress (0 = sitting, 1 = at standing height -- see
@@ -188,7 +188,7 @@ WALK_TROT_SYMMETRY_WEIGHT = 0.5
 # from center. 75deg gives real headroom above that while still being
 # ~3-4x smaller than the full absolute per-motor range (~220-370deg) --
 # preserving the intended exploration-efficiency benefit.
-WALK_ACTION_RESIDUAL_RANGE_RAD = np.radians(75)
+WALK_ACTION_RESIDUAL_RANGE_RAD = np.radians(150)
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -318,7 +318,7 @@ NUM_MOTORS = 8
 # Per-motor max target slew rate, applied every step() -- see the long
 # comment where it's used. Matches dog_deploy/policy_node.py's real
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
-MAX_SLEW_DEG_PER_S = 100.0
+MAX_SLEW_DEG_PER_S = 1000.0
 
 # TORQUE mode only (2026-08-04, user request): velocity damping, applied
 # in step() as ctrl = action - TORQUE_KD_GAIN*qvel -- MUST equal
@@ -502,6 +502,102 @@ FEET_AIR_TIME_MAX_S = 3.0 * FEET_AIR_TIME_TARGET_S
 # still clearly catch that), but real room for a natural cadence instead
 # of forcing premature, poorly-timed corrections.
 FEET_STANCE_TIME_MAX_S = 3.0
+
+# _trot_symmetry_reward()'s stuck-phase gate (2026-08-05): a leg that's
+# held the SAME contact state (grounded or swinging, via
+# self._leg_phase_time) longer than this returns the worst possible score
+# regardless of the instantaneous 4-leg pattern -- see
+# _update_leg_phase_time()'s comment for the "tumbling" exploit this
+# closes (a non-reciprocating single sweep scoring a sustained perfect
+# trot_symmetry_reward for 100+ ticks). Deliberately much tighter than
+# FEET_STANCE_TIME_MAX_S/FEET_AIR_TIME_MAX_S above (3.0s/9.0s) -- those
+# exist to eventually penalize an extreme, near-permanent stance/swing,
+# but the exploit measured here only lasted 1.35-2.78s (135-278 ticks)
+# before its own fatal knee-touch, well under either threshold, so
+# neither ever engaged. 0.5s is roughly the swing-OR-stance half of the
+# real measured gait period (~0.86s/cycle, PPO_9000000_walk_policy_
+# torque_v8, thigh qpos zero-crossings) -- a genuinely trotting leg
+# should flip phase close to that often; anything stuck well past it
+# isn't participating in a real trot no matter what the other 3 legs are
+# doing this instant.
+MAX_LEG_PHASE_S = 0.5
+
+# _calf_swing_motion_reward()'s ceiling (2026-08-05): that reward is mean
+# squared calf angular velocity (rad/s)^2 across swinging legs, with NO
+# upper bound before this -- found (alongside MAX_LEG_PHASE_S's exploit)
+# on walk_position_scratch_v1/walk_position_imitation_v1, climbing
+# unboundedly from 0 to 1.14+ over a single ~1.3-2.8s non-reciprocating
+# sweep, since nothing capped how much a continuously-ACCELERATING
+# one-direction rotation could collect -- a real, bounded, cyclic swing
+# doesn't need or benefit from unbounded velocity growth, so nothing was
+# lost by capping. 4.0 corresponds to a calf angular velocity magnitude
+# of 2.0 rad/s (~115 deg/s) -- a brisk, still-plausible controlled swing
+# speed, comfortably above what a genuine trot at the measured ~0.86s
+# gait period needs, but nowhere near an unbounded runaway.
+CALF_SWING_REWARD_CAP = 4.0
+
+# Three additional WALK-only early-termination conditions (2026-08-05,
+# user request: training was wasting clock time letting clearly-doomed
+# "leaning forward and dragging" episodes run for another 100+ ticks
+# before the existing _is_fallen()/_knee_walking_too_long() eventually
+# caught them). All three no-op (return False) for STAND, and are
+# additive to the existing termination checks, not replacements.
+
+# _leg_stuck_too_long()'s threshold: reuses self._leg_phase_time (already
+# tracked for _trot_symmetry_reward()'s MAX_LEG_PHASE_S gate above) as a
+# hard termination too. Deliberately larger than MAX_LEG_PHASE_S (0.5s)
+# -- the policy sees a reward penalty first via the gate, and only gets
+# cut off outright if it doesn't recover from that within another 0.5s,
+# same "penalize, then terminate if still unresolved" pattern
+# NONTIP_TERMINATION_S/_knee_walking_too_long() already uses.
+#
+# RAISED 1.0 -> 3.0s (2026-08-05, found on walk_position_scratch_v3 @1M):
+# at 1.0s, EVERY episode across 5 different seeds terminated at the exact
+# same tick (t=116, leg_phase=[0.85, 0.85, 1.0, 1.0]) -- all 4 legs
+# planted and motionless right after standing up, every single time,
+# deterministically. At this early a training stage the policy hasn't
+# learned lifting a leg is worth the risk yet; a termination that fires
+# this reliably this early means NO episode is ever allowed to run long
+# enough for random exploration to even ONCE stumble into a leg-lift
+# attempt, let alone learn from one -- the policy can't discover walking
+# if it's never once permitted to experience what happens past ~1s. 3.0s
+# gives real exploration room while still meaningfully shortening the
+# original failure case this was added for (a "leaning and dragging"
+# episode previously ran 150-200+ ticks before _is_fallen()/
+# _knee_walking_too_long() eventually caught it).
+LEG_PHASE_TERMINATION_S = 3.0
+
+# _pitch_diverging_too_long()'s thresholds: catches a torso that's
+# leaning and NOT recovering well before it reaches the much larger
+# absolute WALK_MAX_TILT_RAD (~20deg) _is_fallen() threshold -- measured
+# directly on walk_position_scratch_v2 @3M: pitch was still only ~6.4deg
+# and climbing by tick 195 (1.95s in), nowhere near 20deg yet, but
+# already unmistakably diverging rather than oscillating around level.
+# 10deg is a much more sensitive trigger threshold than the ~20deg fall
+# line; DURATION_S requires it to be SUSTAINED (same reset-on-recovery
+# pattern as _non_tip_contact_time/_leg_phase_time) so a real gait's
+# normal, brief, self-correcting pitch excursions during push-off don't
+# falsely trip this.
+PITCH_TERMINATION_THRESHOLD_RAD = np.radians(10)
+PITCH_TERMINATION_DURATION_S = 0.5
+
+# _no_forward_progress()'s thresholds: a general backstop distinct from
+# the two failure-mode-specific checks above -- catches "nothing
+# productive is happening" regardless of why. MIN_DISTANCE_M is a low bar
+# (5cm) meant only to confirm real motion started at all, not to enforce
+# a minimum pace.
+#
+# GRACE_S RAISED 2.0 -> 4.5s (2026-08-05, alongside LEG_PHASE_
+# TERMINATION_S's own fix -- see its comment for the full walk_position_
+# scratch_v3 @1M finding): 2.0s was tight enough that this check would
+# very likely have fired right after leg_stuck_too_long did anyway,
+# compounding the same problem -- an early-training policy that hasn't
+# learned walking yet genuinely won't move 5cm within 2s, and killing the
+# episode for that removes the exploration runway needed to ever learn
+# otherwise. 4.5s matches the more generous LEG_PHASE_TERMINATION_S
+# budget above.
+NO_PROGRESS_GRACE_S = 4.5
+NO_PROGRESS_MIN_DISTANCE_M = 0.05
 
 
 def load_motor_joint_names(motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH):
@@ -840,6 +936,20 @@ class DogEnv(gym.Env):
         # Per-leg seconds spent in CONTINUOUS non-tip (knee/shin) contact
         # -- see NONTIP_TERMINATION_S's comment / _knee_walking_too_long().
         self._non_tip_contact_time = np.zeros(4)
+        # Per-leg seconds since that leg's contact state (grounded vs
+        # swinging) last CHANGED, either direction -- see MAX_LEG_PHASE_S's
+        # comment / _trot_symmetry_reward()'s stuck-phase gate.
+        self._leg_phase_time = np.zeros(4)
+        self._prev_leg_contact = np.zeros(4, dtype=bool)
+        # Seconds torso pitch magnitude has stayed continuously above
+        # PITCH_TERMINATION_THRESHOLD_RAD -- see that constant's comment
+        # / _pitch_diverging_too_long().
+        self._high_pitch_time = 0.0
+        # World +y torso position at episode start -- see
+        # NO_PROGRESS_GRACE_S's comment / _no_forward_progress(). Real
+        # value set at the end of reset() below, once this episode's
+        # starting pose is finalized; 0.0 here is just a placeholder.
+        self._episode_start_y = 0.0
 
         # motor qpos (8) + motor qvel (8) + IMU sensordata + prev_action (8)
         obs_dim = NUM_MOTORS + NUM_MOTORS + self.model.nsensordata + NUM_MOTORS
@@ -856,6 +966,9 @@ class DogEnv(gym.Env):
         self._feet_air_time = np.zeros(4)
         self._feet_stance_time = np.zeros(4)
         self._non_tip_contact_time = np.zeros(4)
+        self._leg_phase_time = np.zeros(4)
+        self._prev_leg_contact = np.zeros(4, dtype=bool)
+        self._high_pitch_time = 0.0
         self._step_count = 0
 
         if self.task == 'walk':
@@ -966,6 +1079,11 @@ class DogEnv(gym.Env):
         # previous episode.
         if self.control_mode == 'torque_belt':
             self._belt_target_abs_calf = self.data.ten_length[self.calf_tendon_ids].copy()
+
+        # See NO_PROGRESS_GRACE_S's comment / _no_forward_progress() --
+        # read AFTER mj_forward above, same reasoning as
+        # _belt_target_abs_calf's own comment.
+        self._episode_start_y = self.data.xpos[self.torso_body_id][1]
 
         return self._get_obs(), {}
 
@@ -1113,13 +1231,25 @@ class DogEnv(gym.Env):
 
         mujoco.mj_step(self.model, self.data)
         self._step_count += 1
+        # MUST update before _compute_reward() -- _trot_symmetry_reward()
+        # reads self._leg_phase_time and needs this tick's transition
+        # already reflected. See _update_leg_phase_time()'s docstring.
+        self._update_leg_phase_time()
+        self._update_high_pitch_time()
 
         obs = self._get_obs()
         reward = self._compute_reward(action)
         # MUST update before checking _knee_walking_too_long() -- see that
         # method's docstring.
         self._update_nontip_contact_time()
-        terminated = self._is_fallen() or self._knee_walking_too_long()
+        # The three checks after _knee_walking_too_long() are additional
+        # WALK-only early terminations (2026-08-05, user request) --
+        # see LEG_PHASE_TERMINATION_S/PITCH_TERMINATION_THRESHOLD_RAD/
+        # NO_PROGRESS_GRACE_S's comments. All three no-op (False) for
+        # STAND.
+        terminated = (self._is_fallen() or self._knee_walking_too_long()
+                      or self._leg_stuck_too_long() or self._pitch_diverging_too_long()
+                      or self._no_forward_progress())
         truncated = self._step_count >= MAX_EPISODE_STEPS
 
         self.prev_action = action.astype(np.float32)
@@ -1252,7 +1382,20 @@ class DogEnv(gym.Env):
 
         Returns a value in [-1, 1]: 1.0 = perfect trot contact pattern
         this tick, -1.0 = the worst possible (both pairs desynced AND
-        the two pairs in phase instead of offset)."""
+        the two pairs in phase instead of offset).
+
+        STUCK-PHASE GATE (2026-08-05, see MAX_LEG_PHASE_S's comment): if
+        any leg has held its CURRENT contact state (grounded or
+        swinging) for longer than MAX_LEG_PHASE_S, returns -1.0
+        unconditionally instead of scoring the instantaneous pattern.
+        Closes a real exploit found on walk_position_scratch_v1/
+        walk_position_imitation_v1 -- this check used to be purely
+        instantaneous (which 4 legs are up/down THIS tick), so a single
+        non-reciprocating thigh sweep (one diagonal pair lifts once and
+        never plants again) scored a sustained PERFECT 1.0 for 100+
+        ticks, since nothing required the pattern to ever alternate."""
+        if np.any(self._leg_phase_time > MAX_LEG_PHASE_S):
+            return -1.0
         a, b, c, d = self._foot_contact_per_leg()
         pair_ad_synced = 1.0 if a == d else -1.0
         pair_bc_synced = 1.0 if b == c else -1.0
@@ -1336,14 +1479,21 @@ class DogEnv(gym.Env):
         oscillating calf collects this reward regardless of whether the
         robot goes anywhere, so ungated it would be exactly the kind of
         "free reward, no forward progress required" exploit this
-        project has repeatedly had to close elsewhere."""
+        project has repeatedly had to close elsewhere.
+
+        CAPPED at CALF_SWING_REWARD_CAP (2026-08-05, see its own
+        comment) -- unbounded, this rewarded a continuously-accelerating,
+        never-reversing calf rotation MORE than a genuine bounded, cyclic
+        swing, which is backwards: real reciprocating motion doesn't need
+        or benefit from ever-growing velocity, so capping it costs a real
+        gait nothing while closing the runaway-rotation exploit."""
         contacted = self._foot_contact_per_leg()
         swinging = [not c for c in contacted]
         if not any(swinging):
             return 0.0
         calf_qvel = self.data.qvel[self.motor_dof_adr[self.calf_idx]]
         total = sum(calf_qvel[i] ** 2 for i in range(4) if swinging[i])
-        return total / sum(swinging)
+        return min(total / sum(swinging), CALF_SWING_REWARD_CAP)
 
     def _foot_horizontal_speed_sq(self, leg_idx):
         """Squared horizontal (world x/y) speed of a leg's foot site right
@@ -1594,6 +1744,86 @@ class DogEnv(gym.Env):
                 self._non_tip_contact_time[i] += dt
             else:
                 self._non_tip_contact_time[i] = 0.0
+
+    def _update_leg_phase_time(self):
+        """Advances self._leg_phase_time per leg -- seconds since that
+        leg's contact state (grounded vs swinging, from
+        _foot_contact_per_leg()) last changed, either direction. Resets
+        to 0 the tick a leg's phase flips, otherwise accumulates. MUST be
+        called once per step, after mj_step and BEFORE _compute_reward()
+        (unlike _update_nontip_contact_time(), which is only consumed by
+        the post-reward termination check) -- _trot_symmetry_reward()
+        reads this value and needs it current for the tick just taken.
+
+        Added 2026-08-05 after measuring walk_position_scratch_v1/
+        walk_position_imitation_v1 both converge to a "tumbling" local
+        optimum: a single non-reciprocating thigh sweep (one diagonal
+        pair lifts once and never plants again) scored a sustained
+        PERFECT trot_symmetry_reward for 100+ ticks, because that reward
+        was purely instantaneous -- it checked which 4 legs were up/down
+        THIS tick, never whether the pattern had ever alternated. This
+        timer is what lets _trot_symmetry_reward() tell "genuinely
+        trotting" apart from "one leg has been stuck mid-swing for over
+        a second."""
+        contacted = np.array(self._foot_contact_per_leg())
+        dt = self.model.opt.timestep
+        changed = contacted != self._prev_leg_contact
+        self._leg_phase_time[changed] = 0.0
+        self._leg_phase_time[~changed] += dt
+        self._prev_leg_contact = contacted
+
+    def _update_high_pitch_time(self):
+        """Advances self._high_pitch_time -- seconds torso pitch
+        magnitude has stayed CONTINUOUSLY above
+        PITCH_TERMINATION_THRESHOLD_RAD, resetting to 0 the instant it
+        dips back below (same reset-on-recovery pattern as
+        _update_nontip_contact_time()/_update_leg_phase_time()). MUST be
+        called once per step, after mj_step -- see
+        _pitch_diverging_too_long()."""
+        dt = self.model.opt.timestep
+        if abs(self._torso_pitch_rad()) > PITCH_TERMINATION_THRESHOLD_RAD:
+            self._high_pitch_time += dt
+        else:
+            self._high_pitch_time = 0.0
+
+    def _leg_stuck_too_long(self):
+        """WALK only: True if any leg has held the SAME contact phase
+        (grounded or swinging, self._leg_phase_time) for longer than
+        LEG_PHASE_TERMINATION_S -- see that constant's comment. Reuses
+        the exact state _trot_symmetry_reward()'s MAX_LEG_PHASE_S gate
+        already tracks; this just also ends the episode instead of only
+        scoring it worse, once a leg's clearly not participating in a
+        real gait."""
+        if self.task != 'walk':
+            return False
+        return bool(np.any(self._leg_phase_time > LEG_PHASE_TERMINATION_S))
+
+    def _pitch_diverging_too_long(self):
+        """WALK only: True if torso pitch has stayed above
+        PITCH_TERMINATION_THRESHOLD_RAD continuously for longer than
+        PITCH_TERMINATION_DURATION_S -- see that constant's comment. A
+        much more sensitive, earlier-triggering signal than
+        _is_fallen()'s ~20deg WALK_MAX_TILT_RAD threshold, specifically
+        for a torso that's leaning and NOT recovering."""
+        if self.task != 'walk':
+            return False
+        return self._high_pitch_time > PITCH_TERMINATION_DURATION_S
+
+    def _no_forward_progress(self):
+        """WALK only: True if, past an initial NO_PROGRESS_GRACE_S grace
+        period, this episode still hasn't moved NO_PROGRESS_MIN_
+        DISTANCE_M net forward (world +y, same axis forward_velocity_
+        reward uses) from self._episode_start_y -- see that constant's
+        comment. A general backstop for "nothing productive is
+        happening," distinct from the two failure-mode-specific checks
+        above."""
+        if self.task != 'walk':
+            return False
+        elapsed_s = self._step_count * self.model.opt.timestep
+        if elapsed_s < NO_PROGRESS_GRACE_S:
+            return False
+        forward_displacement = self.data.xpos[self.torso_body_id][1] - self._episode_start_y
+        return forward_displacement < NO_PROGRESS_MIN_DISTANCE_M
 
     def _knee_walking_too_long(self):
         """True if any leg has been in continuous non-tip (knee/thigh/shin)
@@ -2112,12 +2342,23 @@ class DogEnv(gym.Env):
         # rescaled for torque mode by the 2026-08-04 _action_rate_penalty
         # fix, so this shouldn't reproduce STAND's "won't move at all"
         # regression.
+        #
+        # non_tip_penalty RESTORED 0.0 -> 1.0 (2026-08-05, alongside
+        # MAX_LEG_PHASE_S/CALF_SWING_REWARD_CAP above): the "tumbling"
+        # exploit's fatal knee-touch was previously free right up until
+        # the instant it triggered NONTIP_TERMINATION_S's hard
+        # termination -- no in-episode cost at all beforehand. This adds
+        # a direct, immediate per-tick cost for non-tip (knee/shin/thigh)
+        # contact, on top of (not instead of) the hard termination and
+        # the two gates above -- ungated (see _foot_placement_terms()'s
+        # own comment), it discourages knee contact unconditionally,
+        # standing-still included.
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 2.5 * height_reward
             + 0.0 * tip_reward
-            + 0.0 * non_tip_penalty
+            + 1.0 * non_tip_penalty
             + 0.0 * foot_clearance_reward
             + 1.0 * foot_slip_penalty
             + 1.0 * touchdown_velocity_penalty
