@@ -620,7 +620,8 @@ class DogEnv(gym.Env):
                  motor_mapping_path=DEFAULT_MOTOR_MAPPING_PATH,
                  render_mode=None, domain_randomization=False, task='stand',
                  walk_start_pose='standing', walk_height_fraction=WALK_HEIGHT_FRACTION,
-                 control_mode='position', position_kp=None, position_kd=None):
+                 control_mode='position', position_kp=None, position_kd=None,
+                 position_kp_range=None, position_kd_range=None):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
@@ -653,6 +654,15 @@ class DogEnv(gym.Env):
             raise ValueError(
                 f"control_mode must be 'position', 'torque', or 'torque_belt', got {control_mode!r}")
         self.control_mode = control_mode
+        # A fixed gain and a randomized range are mutually exclusive --
+        # see position_kp_range/position_kd_range's own comment below for
+        # why they're a separate mechanism from position_kp/position_kd,
+        # not a generalization of it.
+        if (position_kp is not None or position_kd is not None) and \
+                (position_kp_range is not None or position_kd_range is not None):
+            raise ValueError(
+                'Pass either position_kp/position_kd (fixed) or position_kp_range/'
+                'position_kd_range (randomized per episode), not both.')
         if model_path is None:
             # torque_belt gets its OWN model file (DEFAULT_TORQUE_BELT_
             # MODEL_PATH, generate_dog_mjcf.py --actuator-type
@@ -722,11 +732,45 @@ class DogEnv(gym.Env):
         # untouched -- existing calls/tests/real-hardware-matching runs
         # are unaffected.
         if control_mode == 'position' and position_kp is not None and position_kd is not None:
-            self.model.actuator_gainprm[:, 0] = position_kp
-            self.model.actuator_biasprm[:, 1] = -position_kp
-            self.model.actuator_biasprm[:, 2] = -position_kd
+            self._apply_position_gains(position_kp, position_kd)
         self.position_kp = position_kp
         self.position_kd = position_kd
+
+        # position_kp_range/position_kd_range (2026-08-06, user request --
+        # domain randomization + curriculum over position_kp/position_kd,
+        # not just a single fixed override): each tuple is (low, high);
+        # when set, reset() below samples a FRESH kp/kd uniformly from the
+        # CURRENT range every episode (not once at construction), so the
+        # same training run sees a spread of servo stiffnesses instead of
+        # committing to one value for its whole lifetime -- the point is
+        # robustness to whatever gain the real robot turns out to need,
+        # not just picking a better single number.
+        #
+        # The range itself is mutable post-construction via
+        # set_position_gain_range() -- NOT resampled/reapplied
+        # immediately when called, only on the NEXT reset() -- so a
+        # training callback can WIDEN the range over the course of
+        # training (e.g. start at (10,30), end at (40,80)) via
+        # VecEnv.env_method(), implementing a curriculum ON TOP of the
+        # randomization: early rollouts (while the policy is close to
+        # random and least able to survive a stiff, unfamiliar gain) only
+        # ever see the gentle end of the range; the risky, real-hardware-
+        # matching stiff end only gets sampled once the policy has some
+        # baseline competence. Motivated directly by measuring that
+        # kp=60/kd=8 trained from scratch (no curriculum) produced a
+        # policy whose raw actions genuinely varied/reversed (the
+        # ctrlrange fix held) but still cost ~27% of standing height in
+        # 0.14s early in a rollout (PPO_6000000_walk_position_scratch_v8)
+        # -- PPO's exploration noise is a roughly fixed size in action-
+        # space units, but the PHYSICAL force that noise produces scales
+        # with the gain, so the same noise is far more destabilizing
+        # under a near-random policy at a stiff gain than at a soft one.
+        #
+        # None (default, for both) leaves position_kp/position_kd (fixed
+        # or MJCF-default) in sole control, matching existing behavior
+        # exactly -- this is fully opt-in.
+        self._position_kp_range = position_kp_range
+        self._position_kd_range = position_kd_range
 
         self.renderer = None
         self._paused = False
@@ -1063,6 +1107,20 @@ class DogEnv(gym.Env):
         else:
             self.model.geom_friction[self.floor_geom_id] = self.default_floor_friction
 
+        # position_kp_range/position_kd_range (see __init__'s comment):
+        # fresh sample every episode from whatever the CURRENT range
+        # bounds are (may have been widened since the last episode by a
+        # training callback via set_position_gain_range()). Independent
+        # of self.domain_randomization -- that flag only ever gated
+        # ground friction; gain randomization is opt-in purely by
+        # whether a range was passed at all.
+        if self._position_kp_range is not None:
+            kp = self.np_random.uniform(*self._position_kp_range)
+            kd = self.np_random.uniform(*self._position_kd_range)
+            self._apply_position_gains(kp, kd)
+            self.position_kp = kp
+            self.position_kd = kd
+
         mujoco.mj_forward(self.model, self.data)
 
         # control_mode='torque_belt' only: seed this episode's belt-servo
@@ -1090,6 +1148,34 @@ class DogEnv(gym.Env):
     def _randomize_ground(self):
         friction = self.np_random.uniform(0.3, 0.8)
         self.model.geom_friction[self.floor_geom_id] = [friction, friction * 0.1, friction * 0.1]
+
+    def _apply_position_gains(self, kp, kd):
+        """Writes kp/kd directly into the loaded model's <position>
+        actuator gain/bias params -- same MuJoCo <position> shortcut
+        expansion generate_dog_mjcf.py's --kp/--kv produce at compile
+        time (gainprm[0]=kp, biasprm=[0,-kp,-kv]), just applied at
+        runtime so kp/kd can be swept/randomized/curriculum-scheduled
+        across training without maintaining separate MJCF files per
+        value. Shared by __init__'s one-time fixed override and reset()'s
+        per-episode randomized sample -- see position_kp_range's comment
+        in __init__ for why there are two separate mechanisms."""
+        self.model.actuator_gainprm[:, 0] = kp
+        self.model.actuator_biasprm[:, 1] = -kp
+        self.model.actuator_biasprm[:, 2] = -kd
+
+    def set_position_gain_range(self, kp_range, kd_range):
+        """Updates the (low, high) bounds reset() samples position_kp/
+        position_kd from on the NEXT episode -- does NOT resample or
+        reapply gains to the CURRENT episode immediately (changing
+        actuator stiffness mid-episode would be a discontinuity the
+        policy never trained for). Meant to be called externally via
+        VecEnv.env_method() from a training callback implementing a
+        curriculum over the randomization range -- see
+        position_kp_range's comment in __init__ for the full reasoning
+        and train.py's GainRangeCurriculumCallback for the schedule
+        itself."""
+        self._position_kp_range = kp_range
+        self._position_kd_range = kd_range
 
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)

@@ -39,7 +39,7 @@ import gymnasium as gym
 import numpy as np
 import torch.nn as nn
 from stable_baselines3 import A2C, PPO, SAC
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
 
 ALGOS = {'PPO': PPO, 'SAC': SAC, 'A2C': A2C}
@@ -105,8 +105,57 @@ class DecayScheduleCallback(BaseCallback):
         return True
 
 
+class GainRangeCurriculumCallback(BaseCallback):
+    """Widens the (low, high) range DogEnv.reset() samples position_kp/
+    position_kd from every episode, linearly, from a gentle starting
+    range to a wider (real-hardware-matching) ending range, over
+    `decay_steps` cumulative timesteps -- see DogEnv.__init__'s
+    position_kp_range/position_kd_range comment for the full motivation
+    (domain randomization over servo stiffness for sim-to-real
+    robustness, PLUS a curriculum so early, near-random rollouts only
+    ever see the gentle end of the range instead of risking a violent
+    crash on a stiff-gain episode before the policy has any competence).
+
+    Pushes the updated bounds into every parallel sub-environment via
+    VecEnv.env_method('set_position_gain_range', ...) -- works for both
+    DummyVecEnv (same process) and SubprocVecEnv (dispatches to each
+    worker). Only takes effect on each env's NEXT reset(), not the
+    episode already in progress -- see set_position_gain_range()'s own
+    docstring for why that's deliberate.
+
+    Throttled to update_interval_steps (default 2000) rather than every
+    single _on_step() call -- env_method() round-trips to every
+    subprocess worker, and the range only needs to move smoothly over
+    MILLIONS of steps, so updating every step would be pure overhead for
+    no meaningful precision gain."""
+
+    def __init__(self, kp_range_start, kp_range_end, kd_range_start, kd_range_end,
+                 decay_steps, update_interval_steps=2000, verbose=0):
+        super().__init__(verbose)
+        self.kp_range_start = kp_range_start
+        self.kp_range_end = kp_range_end
+        self.kd_range_start = kd_range_start
+        self.kd_range_end = kd_range_end
+        self.decay_steps = decay_steps
+        self.update_interval_steps = update_interval_steps
+        self._last_update_step = -update_interval_steps  # forces an update on the very first call
+
+    def _on_step(self):
+        if self.num_timesteps - self._last_update_step < self.update_interval_steps:
+            return True
+        self._last_update_step = self.num_timesteps
+        progress = min(1.0, self.num_timesteps / self.decay_steps) if self.decay_steps > 0 else 1.0
+        kp_range = tuple(
+            s + (e - s) * progress for s, e in zip(self.kp_range_start, self.kp_range_end))
+        kd_range = tuple(
+            s + (e - s) * progress for s, e in zip(self.kd_range_start, self.kd_range_end))
+        self.training_env.env_method('set_position_gain_range', kp_range, kd_range)
+        return True
+
+
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
-             model_path=None, position_kp=None, position_kd=None):
+             model_path=None, position_kp=None, position_kd=None,
+             position_kp_range=None, position_kd_range=None):
     kwargs = dict(domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose,
                   walk_height_fraction=walk_height_fraction,
@@ -130,6 +179,15 @@ def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction
         kwargs['position_kp'] = position_kp
     if position_kd is not None:
         kwargs['position_kd'] = position_kd
+    # --position-kp-range-start/--position-kp-range-end (2026-08-06): the
+    # env is constructed with the STARTING range -- GainRangeCurriculumCallback
+    # widens it over training via set_position_gain_range(), this is just
+    # the initial value so the range is well-defined before the callback's
+    # first update. See DogEnv.__init__'s position_kp_range comment.
+    if position_kp_range is not None:
+        kwargs['position_kp_range'] = position_kp_range
+    if position_kd_range is not None:
+        kwargs['position_kd_range'] = position_kd_range
     return lambda: gym.make(env_id, **kwargs)
 
 
@@ -137,13 +195,19 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           log_dir, model_dir, domain_randomization, n_steps, batch_size, n_epochs,
           learning_rate, ent_coef, ent_coef_end, learning_rate_end, decay_steps,
           init_from=None, walk_start_pose='standing', walk_height_fraction=0.90,
-          control_mode='position', model_path=None, position_kp=None, position_kd=None):
+          control_mode='position', model_path=None, position_kp=None, position_kd=None,
+          position_kp_range_start=None, position_kp_range_end=None,
+          position_kd_range_start=None, position_kd_range_end=None,
+          gain_curriculum_steps=None):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
           f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction}, '
-          f'control_mode={control_mode}, position_kp={position_kp}, position_kd={position_kd})')
+          f'control_mode={control_mode}, position_kp={position_kp}, position_kd={position_kd}, '
+          f'position_kp_range_start={position_kp_range_start}, position_kp_range_end={position_kp_range_end}, '
+          f'position_kd_range_start={position_kd_range_start}, position_kd_range_end={position_kd_range_end})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
-                         control_mode, model_path, position_kp, position_kd)
+                         control_mode, model_path, position_kp, position_kd,
+                         position_kp_range_start, position_kd_range_start)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -255,6 +319,16 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         ent_coef_start=ent_coef, ent_coef_end=ent_coef_end,
         lr_start=learning_rate, lr_end=learning_rate_end,
         decay_steps=decay_steps)
+    callbacks = [schedule_callback]
+    # Opt-in: only constructed if all 4 range endpoints were given (see
+    # main()'s validation) -- a run that doesn't pass any of the
+    # --position-kp-range-* flags behaves exactly as before, no curriculum.
+    if position_kp_range_start is not None:
+        callbacks.append(GainRangeCurriculumCallback(
+            kp_range_start=position_kp_range_start, kp_range_end=position_kp_range_end,
+            kd_range_start=position_kd_range_start, kd_range_end=position_kd_range_end,
+            decay_steps=gain_curriculum_steps if gain_curriculum_steps is not None else decay_steps))
+    callback = CallbackList(callbacks)
 
     iteration = 0
     while True:
@@ -267,7 +341,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         reset_num_timesteps = bool(init_from) and iteration == 1
         model.learn(total_timesteps=total_timesteps_per_iter,
                     reset_num_timesteps=reset_num_timesteps,
-                    callback=schedule_callback)
+                    callback=callback)
         save_path = os.path.join(
             model_dir, f'{algo}_{total_timesteps_per_iter * iteration}_{fname}')
         model.save(save_path)
@@ -426,6 +500,37 @@ def main():
     parser.add_argument('--position-kd', type=float, default=None,
                          help='control_mode=position only: runtime override of the MJCF\'s baked-in '
                               '<position> actuator kv/damping (default 4). See --position-kp.')
+    parser.add_argument('--position-kp-range-start', type=float, nargs=2, default=None,
+                         metavar=('LOW', 'HIGH'),
+                         help='control_mode=position only, --train only (2026-08-06): domain-'
+                              'randomizes position_kp per EPISODE from this (low, high) range at '
+                              'the start of training, linearly widening to --position-kp-range-end '
+                              'over --gain-curriculum-steps. Mutually exclusive with --position-kp/'
+                              '--position-kd (fixed). All four of --position-kp-range-start/-end and '
+                              '--position-kd-range-start/-end must be given together. Motivated by '
+                              'real-hardware deployment of a kp=20-trained policy showing insufficient '
+                              'torque to lift the back legs at kp=20, but training AT the real kp=60/'
+                              'kd=8 from scratch producing a policy that lost ~27%% of standing height '
+                              'in 0.14s early in a rollout (PPO_6000000_walk_position_scratch_v8) -- '
+                              'PPO\'s exploration noise is roughly fixed-size in action-space units, '
+                              'but the physical force it produces scales with the gain, so a near-'
+                              'random early policy is far more likely to crash at a stiff gain than a '
+                              'soft one. Starting the randomization range narrow and gentle (e.g. '
+                              '10 30) and widening it toward the real value (e.g. 40 80) over training '
+                              'gives both robustness (randomization) and a safe on-ramp (curriculum). '
+                              'Example: --position-kp-range-start 10 30 --position-kp-range-end 40 80 '
+                              '--position-kd-range-start 1 3 --position-kd-range-end 4 10.')
+    parser.add_argument('--position-kp-range-end', type=float, nargs=2, default=None,
+                         metavar=('LOW', 'HIGH'), help='See --position-kp-range-start.')
+    parser.add_argument('--position-kd-range-start', type=float, nargs=2, default=None,
+                         metavar=('LOW', 'HIGH'), help='See --position-kp-range-start.')
+    parser.add_argument('--position-kd-range-end', type=float, nargs=2, default=None,
+                         metavar=('LOW', 'HIGH'), help='See --position-kp-range-start.')
+    parser.add_argument('--gain-curriculum-steps', type=int, default=None,
+                         help='Cumulative timesteps over which --position-kp-range-*/--position-kd-'
+                              'range-* linearly widen from start to end, then hold at end. Defaults '
+                              'to --decay-steps if not set (same "how long is the ramp" knob as '
+                              'ent_coef/learning_rate decay, but independently overridable here).')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -487,13 +592,25 @@ def main():
     if (args.position_kp is None) != (args.position_kd is None):
         raise ValueError('--position-kp and --position-kd must be passed together (both or neither)')
 
+    gain_range_flags = (args.position_kp_range_start, args.position_kp_range_end,
+                         args.position_kd_range_start, args.position_kd_range_end)
+    if any(f is not None for f in gain_range_flags) and not all(f is not None for f in gain_range_flags):
+        raise ValueError('--position-kp-range-start/-end and --position-kd-range-start/-end must '
+                          'all be given together (all four, or none)')
+    if gain_range_flags[0] is not None and args.position_kp is not None:
+        raise ValueError('Pass either --position-kp/--position-kd (fixed) or the --position-kp-range-*/'
+                          '--position-kd-range-* flags (randomized + curriculum), not both')
+
     if args.train:
         train(args.env_id, args.algo, args.fname, args.env_type, args.num_envs,
               args.timesteps_per_iter, args.log_dir, args.model_dir,
               args.domain_randomization, args.n_steps, args.batch_size, args.n_epochs,
               args.learning_rate, args.ent_coef, ent_coef_end, learning_rate_end,
               args.decay_steps, args.init_from, args.walk_start_pose, args.walk_height_fraction,
-              args.control_mode, args.model_path, args.position_kp, args.position_kd)
+              args.control_mode, args.model_path, args.position_kp, args.position_kd,
+              args.position_kp_range_start, args.position_kp_range_end,
+              args.position_kd_range_start, args.position_kd_range_end,
+              args.gain_curriculum_steps)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
