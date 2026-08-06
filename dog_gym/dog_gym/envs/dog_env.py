@@ -1350,12 +1350,15 @@ class DogEnv(gym.Env):
         self._update_leg_phase_time()
         self._update_high_pitch_time()
 
+        reward = self._compute_reward(action)
+
+        self.prev_action = action.astype(np.float32)
+
         current_obs = self._get_obs()
         self._obs_history[:-self.single_obs_dim] = self._obs_history[self.single_obs_dim:]
         self._obs_history[-self.single_obs_dim:] = current_obs
         obs = self._obs_history.copy()
         
-        reward = self._compute_reward(action)
         # MUST update before checking _knee_walking_too_long() -- see that
         # method's docstring.
         self._update_nontip_contact_time()
@@ -1368,8 +1371,6 @@ class DogEnv(gym.Env):
                       or self._leg_stuck_too_long() or self._pitch_diverging_too_long()
                       or self._no_forward_progress())
         truncated = self._step_count >= MAX_EPISODE_STEPS
-
-        self.prev_action = action.astype(np.float32)
 
         if self.render_mode == 'human':
             self.render()

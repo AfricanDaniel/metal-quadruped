@@ -162,6 +162,33 @@
            position/orientation not yet given, placed at torso origin. -->
       <site name="imu_site" pos="0 0 0" rgba="1 0 0 1" size="0.02 0.02 0.02" type="box"/>
 
+      <body name="battery_mass" pos="0.03775 -2.8298e-17 -0.03075" quat="0.70711 -2.417e-17 -0.70711 -2.417e-17">
+        <inertial pos="0 0 0" mass="1.723" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_1" pos="-0.075 0.19487 -0.09414" quat="0.5 0.5 -0.5 0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_2" pos="-0.19015 0.19487 -0.094141" quat="-0.5 -0.5 -0.5 0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_3" pos="0.19015 0.19487 -0.09414" quat="0.5 0.5 -0.5 0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_4" pos="0.075 0.19487 -0.094141" quat="-0.5 -0.5 -0.5 0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_5" pos="-0.075 -0.19387 -0.094141" quat="0.5 -0.5 0.5 0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_6" pos="-0.19015 -0.19387 -0.09414" quat="0.5 -0.5 -0.5 -0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_7" pos="0.19015 -0.19387 -0.094141" quat="0.5 -0.5 0.5 0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
+      <body name="motor_mass_8" pos="0.075 -0.19387 -0.09414" quat="-0.5 0.5 0.5 0.5">
+        <inertial pos="0 0 0" mass="0.5662" diaginertia="0.001 0.001 0.001"/>
+      </body>
       <geom class="visual" pos="0 0 0" quat="1 0 0 0" mesh="torso" material="torso_material"/>
       <geom class="visual" pos="-4.33681e-19 0.1945 -0.0065" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
       <geom class="visual" pos="-4.33681e-19 -0.1935 -0.0065" quat="1 0 0 0" mesh="shoulder" material="shoulder_material"/>
