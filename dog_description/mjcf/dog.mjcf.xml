@@ -296,13 +296,13 @@
   </sensor>
 
   <actuator>
-    <position joint="leg_a_thigh" name="motor_1" kp="60" kv="4" ctrlrange="-0.202458 4.02473"/>
-    <position joint="leg_a_calf" name="motor_2" kp="60" kv="4" ctrlrange="0 3.59712"/>
-    <position joint="leg_b_calf" name="motor_3" kp="60" kv="4" ctrlrange="-3.72279 0"/>
-    <position joint="leg_b_thigh" name="motor_4" kp="60" kv="4" ctrlrange="-4.04567 0.191986"/>
-    <position joint="leg_c_thigh" name="motor_5" kp="60" kv="4" ctrlrange="-0.132645 4.112"/>
-    <position joint="leg_c_calf" name="motor_6" kp="60" kv="4" ctrlrange="0 3.76642"/>
-    <position joint="leg_d_calf" name="motor_7" kp="60" kv="4" ctrlrange="-3.72977 0"/>
-    <position joint="leg_d_thigh" name="motor_8" kp="60" kv="4" ctrlrange="-4.08407 0.118682"/>
+    <position joint="leg_a_thigh" name="motor_1" kp="60" kv="4" ctrlrange="-0.202458 4.02473" forcerange="-20 20"/>
+    <position joint="leg_a_calf" name="motor_2" kp="60" kv="4" ctrlrange="0 3.59712" forcerange="-20 20"/>
+    <position joint="leg_b_calf" name="motor_3" kp="60" kv="4" ctrlrange="-3.72279 0" forcerange="-20 20"/>
+    <position joint="leg_b_thigh" name="motor_4" kp="60" kv="4" ctrlrange="-4.04567 0.191986" forcerange="-20 20"/>
+    <position joint="leg_c_thigh" name="motor_5" kp="60" kv="4" ctrlrange="-0.132645 4.112" forcerange="-20 20"/>
+    <position joint="leg_c_calf" name="motor_6" kp="60" kv="4" ctrlrange="0 3.76642" forcerange="-20 20"/>
+    <position joint="leg_d_calf" name="motor_7" kp="60" kv="4" ctrlrange="-3.72977 0" forcerange="-20 20"/>
+    <position joint="leg_d_thigh" name="motor_8" kp="60" kv="4" ctrlrange="-4.08407 0.118682" forcerange="-20 20"/>
   </actuator>
 </mujoco>

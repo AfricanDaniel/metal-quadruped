@@ -759,7 +759,8 @@ def main():
     else:
         actuator_lines = '\n'.join(
             f'    <position joint="{j}" name="{n}" kp="{args.kp:.6g}" kv="{args.kv:.6g}" '
-            f'ctrlrange="{np.radians(lo):.6g} {np.radians(hi):.6g}"/>'
+            f'ctrlrange="{np.radians(lo):.6g} {np.radians(hi):.6g}" '
+            f'forcerange="{-args.torque_limit:.6g} {args.torque_limit:.6g}"/>'
             for j, n in ACTUATOR_ORDER
             for lo, hi in [joint_range_deg(j, args.joint_range)]
         )
