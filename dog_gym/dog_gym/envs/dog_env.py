@@ -318,7 +318,7 @@ NUM_MOTORS = 8
 # Per-motor max target slew rate, applied every step() -- see the long
 # comment where it's used. Matches dog_deploy/policy_node.py's real
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
-MAX_SLEW_DEG_PER_S = 1000.0
+MAX_SLEW_DEG_PER_S = 100.0
 
 # TORQUE mode only (2026-08-04, user request): velocity damping, applied
 # in step() as ctrl = action - TORQUE_KD_GAIN*qvel -- MUST equal
