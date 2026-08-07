@@ -90,7 +90,7 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 # CLI flag, so it no longer requires editing this file to change. See
 # __init__'s self._walk_target_height_m and _compute_reward_walk()'s
 # height_reward, the only place that reads it.
-WALK_HEIGHT_FRACTION = 0.50
+WALK_HEIGHT_FRACTION = 0.95
 
 # action_rate_penalty's weight for the STAND task, linearly interpolated
 # by height_progress (0 = sitting, 1 = at standing height -- see
@@ -318,7 +318,7 @@ NUM_MOTORS = 8
 # Per-motor max target slew rate, applied every step() -- see the long
 # comment where it's used. Matches dog_deploy/policy_node.py's real
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
-MAX_SLEW_DEG_PER_S = 100.0
+MAX_SLEW_DEG_PER_S = 1000.0
 
 # TORQUE mode only (2026-08-04, user request): velocity damping, applied
 # in step() as ctrl = action - TORQUE_KD_GAIN*qvel -- MUST equal
@@ -580,6 +580,20 @@ LEG_PHASE_TERMINATION_S = 3.0
 # falsely trip this.
 PITCH_TERMINATION_THRESHOLD_RAD = np.radians(10)
 PITCH_TERMINATION_DURATION_S = 0.5
+
+# WALK only -- fixed lump-sum penalty applied to the terminal step's
+# reward on any genuine fall/instability termination (2026-08-06,
+# multi-agent review w/ Antigravity, chatbot.md "v10 leans and tumbles,
+# still gains reward" investigation). Termination previously cost almost
+# nothing on its own: measured directly on PPO_1000000_walk_position_
+# obshistory_v10, the terminal step's reward was -0.815 against 289
+# already banked that episode -- barely denting a fast dive-then-fall's
+# return. This makes falling itself costly regardless of how much reward
+# was already earned beforehand, on top of (not instead of) the
+# forward_velocity_reward reformulation above. NOT applied on
+# _no_forward_progress() -- that's "gave up without moving," a different
+# failure mode from an actual fall, see step()'s use of this.
+WALK_FALL_TERMINAL_PENALTY = -10.0
 
 # _no_forward_progress()'s thresholds: a general backstop distinct from
 # the two failure-mode-specific checks above -- catches "nothing
@@ -1367,10 +1381,20 @@ class DogEnv(gym.Env):
         # see LEG_PHASE_TERMINATION_S/PITCH_TERMINATION_THRESHOLD_RAD/
         # NO_PROGRESS_GRACE_S's comments. All three no-op (False) for
         # STAND.
-        terminated = (self._is_fallen() or self._knee_walking_too_long()
-                      or self._leg_stuck_too_long() or self._pitch_diverging_too_long()
-                      or self._no_forward_progress())
+        #
+        # Split out as fell_over vs. terminated (2026-08-06) so
+        # WALK_FALL_TERMINAL_PENALTY below can target real falls/
+        # instability specifically -- _no_forward_progress() is "gave up
+        # without moving," a different failure mode from an actual fall,
+        # and deliberately excluded from the penalty (see that
+        # constant's comment).
+        fell_over = (self._is_fallen() or self._knee_walking_too_long()
+                     or self._leg_stuck_too_long() or self._pitch_diverging_too_long())
+        terminated = fell_over or self._no_forward_progress()
         truncated = self._step_count >= MAX_EPISODE_STEPS
+
+        if self.task == 'walk' and fell_over:
+            reward += WALK_FALL_TERMINAL_PENALTY
 
         if self.render_mode == 'human':
             self.render()
@@ -1552,16 +1576,35 @@ class DogEnv(gym.Env):
         step rollout, yet this method scored 0.9957 mean / 1.0 max --
         near-perfect reward for never lifting a single leg). Changed to
         0.0 (neutral) -- no leg swinging is no longer secretly the best
-        possible outcome."""
+        possible outcome.
+
+        REFORMULATED 2026-08-06 (multi-agent review with Gemini's
+        Antigravity CLI, see chatbot.md): the OLD per-leg formula was a
+        linear ramp from 0 at foot_z=0 up to 1.0 at FOOT_CLEARANCE_
+        TARGET_M, then CAPPED at 1.0 for anything higher -- a foot lifted
+        0.2m scored identically to one at the 0.03m target, so it never
+        penalized over-jumping. That's exactly why this term was weighted
+        0.0 in the WALK return statement rather than fixed outright (see
+        that return statement's own history comment) -- when the actual
+        observed problem was excessive height (~0.2m), this formula had
+        no lever to push back with. But leaving it at 0.0 also meant
+        legs that never lift AT ALL get no dense per-tick signal telling
+        them lifting is good, which is a separate, worse problem once a
+        policy isn't lifting its legs at all. Now a Gaussian centered
+        AT the target (sigma=FOOT_CLEARANCE_TARGET_M) penalizes
+        deviation in EITHER direction -- both dragging (foot_z=0) and
+        over-jumping (foot_z=0.2, ~5.7 sigma away) score low, only
+        genuine near-target-height swings score close to 1.0."""
         contacted = self._foot_contact_per_leg()
         swinging = [not c for c in contacted]
         if not any(swinging):
             return 0.0  # no leg is swinging right now -- neutral, NOT rewarded (see bug note above)
         total = 0.0
+        sigma = FOOT_CLEARANCE_TARGET_M
         for i, site_id in enumerate(self.foot_site_ids):
             if swinging[i]:
-                foot_z = self.data.site_xpos[site_id][2]
-                total += min(max(foot_z, 0.0) / FOOT_CLEARANCE_TARGET_M, 1.0)
+                foot_z = max(self.data.site_xpos[site_id][2], 0.0)
+                total += float(np.exp(-((foot_z - FOOT_CLEARANCE_TARGET_M) ** 2) / (2 * sigma ** 2)))
         return total / sum(swinging)
 
     def _calf_swing_motion_reward(self):
@@ -2248,20 +2291,82 @@ class DogEnv(gym.Env):
         # speed unboundedly. Measured directly on walk_policy_torque_v7
         # @9M: mean forward velocity 0.65 m/s -- over 4x the 0.15 m/s
         # every other term already treated as "done" -- with 2+ legs
-        # airborne simultaneously 96.5% of the time. Capping removes the
-        # "gallop for more reward" incentive: once actually at target
-        # speed, going faster earns nothing further. Computed AFTER
-        # forward_progress above (not before) -- doesn't change that
-        # value either way (clip(x/T,0,1) == clip(min(x,T)/T,0,1) for
-        # any x), just keeps forward_progress's own calc reading from the
-        # obviously-uncapped raw velocity.
-        forward_velocity_reward = min(forward_velocity_reward, WALK_FORWARD_PROGRESS_TARGET_M_S)
+        # airborne simultaneously 96.5% of the time.
+        #
+        # REFORMULATED 2026-08-06 (multi-agent review w/ Antigravity,
+        # chatbot.md "v10 leans and tumbles, still gains reward"
+        # investigation): the plain min()-cap above removed the "gallop
+        # for more reward" incentive but only in one direction -- it
+        # stopped giving MORE credit past target, it never made
+        # overshoot actually cost anything. Measured directly on
+        # PPO_1000000_walk_position_obshistory_v10: during a forward
+        # dive, weighted reward stayed pinned at its 0.750 ceiling while
+        # raw velocity climbed to 0.346 m/s (2.3x target) -- zero
+        # downside for a lunge wildly exceeding the intended walking
+        # pace. Below target, behavior is UNCHANGED (still the same
+        # linear ramp 0->target, same incentive to accelerate up to a
+        # real walking pace, still equal to min(raw, target) there).
+        # Above target: one-sided Gaussian falloff from the peak value
+        # (sigma = target itself, same convention as
+        # _foot_clearance_reward()'s own Gaussian reformulation) --
+        # overshoot now actively costs instead of being free.
+        if forward_velocity_reward > WALK_FORWARD_PROGRESS_TARGET_M_S:
+            overshoot = forward_velocity_reward - WALK_FORWARD_PROGRESS_TARGET_M_S
+            sigma = WALK_FORWARD_PROGRESS_TARGET_M_S
+            forward_velocity_reward = WALK_FORWARD_PROGRESS_TARGET_M_S * np.exp(
+                -(overshoot ** 2) / (2 * sigma ** 2))
+
+        # PITCH-GATED 2026-08-06 (same investigation as above): the
+        # additive pitch_penalty further below was measured too weak to
+        # counteract this term during an actual forward dive (only
+        # -0.164 weighted at 13.4deg pitch vs +0.750 here, on the same
+        # v10 checkpoint). Rather than leave it as a tug-of-war between
+        # two additive terms of very different magnitude, gate the
+        # reward itself by pitch so speed and tipping can't be traded
+        # off -- moving fast while tipping over becomes structurally
+        # incapable of scoring highly. sigma = PITCH_TERMINATION_
+        # THRESHOLD_RAD (10deg): barely touches a normal walking gait's
+        # small pitch oscillation (~5deg -> ~88% credit retained) but
+        # sharply discounts a real dive (13.4deg -> ~41%, all the way to
+        # ~14% at WALK_MAX_TILT_RAD's 20deg hard-fall boundary). Only
+        # applied when forward_velocity_reward is positive -- this is
+        # meant to stop REWARDING fast-while-tipping, not to shrink the
+        # existing penalty for backward drift when pitch also happens to
+        # be off (that's still fully penalized regardless of pitch).
+        if forward_velocity_reward > 0:
+            pitch_gate = np.exp(
+                -(self._torso_pitch_rad() ** 2) / (2 * PITCH_TERMINATION_THRESHOLD_RAD ** 2))
+            forward_velocity_reward = forward_velocity_reward * pitch_gate
         upright_reward = self._torso_up_z() * forward_progress
         # See _trot_symmetry_reward()'s docstring -- gated by the SAME
         # forward_progress as upright_reward, for the same reason (this
         # term is partially satisfiable by standing still, so it needs
         # the same "must actually be walking" gate).
-        trot_symmetry_reward = self._trot_symmetry_reward() * forward_progress
+        #
+        # STUCK-PHASE BRANCH LEFT UNGATED (2026-08-07, multi-agent review
+        # w/ Antigravity, chatbot.md "v11 does a split, stops walking
+        # forward" investigation): _trot_symmetry_reward() already
+        # returns a hard -1.0 the instant any leg holds its phase past
+        # MAX_LEG_PHASE_S -- that part was firing correctly, but
+        # multiplying it by forward_progress silently erased it exactly
+        # when it mattered most, since a stuck leg naturally also drives
+        # forward velocity (and therefore forward_progress) toward zero.
+        # Measured directly on PPO_2000000_walk_position_obshistory_v11:
+        # two legs stayed continuously planted for the ENTIRE 302-step
+        # episode (leg_phase_time climbing unbroken from 0 straight to
+        # the 3.0s LEG_PHASE_TERMINATION_S hard cutoff) while this -1.0
+        # penalty sat multiplied down to ~0 the whole time -- the only
+        # thing left punishing the freeze was the lump-sum termination
+        # 3 full seconds later. The normal instantaneous-pattern branch
+        # below is still gated exactly as before (a perfectly-timed trot
+        # pattern while standing still still shouldn't score high) --
+        # only the stuck-phase branch is now unconditional, since a
+        # frozen leg is worse, not better-excused, when the robot has
+        # also stopped moving.
+        leg_stuck = bool(np.any(self._leg_phase_time > MAX_LEG_PHASE_S))
+        trot_symmetry_reward = (
+            self._trot_symmetry_reward() if leg_stuck
+            else self._trot_symmetry_reward() * forward_progress)
         # Targets self._walk_target_height_m (walk_height_fraction * full
         # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
@@ -2471,21 +2576,46 @@ class DogEnv(gym.Env):
         # the two gates above -- ungated (see _foot_placement_terms()'s
         # own comment), it discourages knee contact unconditionally,
         # standing-still included.
+        #
+        # foot_clearance_reward RESTORED 0.0 -> 1.0 (2026-08-06, alongside
+        # its Gaussian reformulation above -- see that method's own
+        # comment): was zeroed because its old ramp-then-cap formula
+        # couldn't penalize over-jumping, not because the underlying idea
+        # (dense per-tick reward for lifting a swinging leg) was wrong --
+        # now that the formula itself penalizes deviation in both
+        # directions, restoring the weight gives the "never lifts a leg
+        # at all" failure mode a real gradient pushing against it, which
+        # nothing else in this reward currently provides as densely
+        # (tip_reward/non_tip_penalty only judge contact AFTER it
+        # happens, not the swing trajectory leading up to it).
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 2.5 * height_reward
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
-            + 0.0 * foot_clearance_reward
+            + 1.0 * foot_clearance_reward
             + 1.0 * foot_slip_penalty
             + 1.0 * touchdown_velocity_penalty
             + 0.5 * feet_air_time_reward
             + 1.0 * action_rate_penalty
-            + 0.0 * angular_vel_penalty
+            # angular_vel_penalty RESTORED 0.0 -> 1.0 (2026-08-06, multi-
+            # agent review with Gemini's Antigravity CLI, see chatbot.md):
+            # found zeroed here with no dated justification anywhere
+            # nearby, unlike every other weight in this return statement
+            # -- its own dedicated weight constant (WALK_ANGULAR_VEL_
+            # PENALTY_WEIGHT=-0.2) was still being computed inside
+            # _angular_vel_penalty() the whole time, just discarded by
+            # this outer 0.0. No evidence found that this was a
+            # deliberate choice (contrast foot_clearance_reward above,
+            # which had a specific, dated reason) -- restoring it gives a
+            # direct per-tick cost for rapid pitching/tumbling that
+            # nothing else in this reward currently provides that densely.
+            + 1.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + 0.02 * calf_swing_motion_reward
+            + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
         )
 
