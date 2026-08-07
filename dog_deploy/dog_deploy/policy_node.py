@@ -89,6 +89,17 @@ NUM_MOTORS = 8
 DEFAULT_MOTOR_MAPPING_PATH = os.path.join(
     get_package_share_directory('dog_description'), 'config', 'motor_mapping.yaml')
 
+# 3-tick observation-history stacking (2026-08-07) -- MUST match
+# dog_gym/envs/dog_env.py's single_obs_dim/obs_history_len exactly (30 =
+# 8 qpos + 8 qvel + 6 IMU + 8 prev_action, 3 ticks stacked = 90 total).
+# Policies exported after dog_gym's history-stacking feature was added
+# expect this 90-dim input; feeding the old single-tick 30-dim vector
+# fails at the network's first layer (RuntimeError: mat1 and mat2 shapes
+# cannot be multiplied, (1x30 and 90x512)) -- confirmed directly against
+# a real PPO_9000000_walk_position_obshistory_v14 deployment attempt.
+SINGLE_OBS_DIM = NUM_MOTORS + NUM_MOTORS + 6 + NUM_MOTORS
+OBS_HISTORY_LEN = 3
+
 DEG_TO_RAD = 0.017453292519943295
 RAD_TO_DEG = 57.29577951308232
 
@@ -301,6 +312,7 @@ class PolicyNode(Node):
                 'policy_path once this dry run looks safe.')
 
         self.prev_action = None  # seeded from the first measured pose, see _on_positions_read
+        self._obs_history = None  # seeded on the first control tick, see _on_positions_read
         self.latest_imu = None
         self.busy = False
 
@@ -463,6 +475,18 @@ class PolicyNode(Node):
             + self.prev_action
         )
 
+        # 3-tick observation-history stacking -- see SINGLE_OBS_DIM's
+        # comment. First control tick: no history yet, fill all
+        # OBS_HISTORY_LEN slots with this SAME single-tick obs, matching
+        # DogEnv.reset()'s identical behavior. Every tick after: drop the
+        # oldest 30-dim block, append this tick's obs at the end -- same
+        # shift-and-append DogEnv.step() does, most-recent-last.
+        if self._obs_history is None:
+            self._obs_history = list(obs) * OBS_HISTORY_LEN
+        else:
+            self._obs_history = self._obs_history[SINGLE_OBS_DIM:] + list(obs)
+        stacked_obs = self._obs_history
+
         if self.dry_run_hold_pose:
             # 'position': hold the current pose (matches this parameter's
             # name literally). 'torque': there's no meaningful "current
@@ -474,7 +498,7 @@ class PolicyNode(Node):
             action_rad = [0.0] * NUM_MOTORS if self.control_mode == 'torque' else list(motor_qpos_rad)
         else:
             with torch.no_grad():
-                obs_tensor = torch.tensor([obs], dtype=torch.float32)
+                obs_tensor = torch.tensor([stacked_obs], dtype=torch.float32)
                 action_rad = self.policy(obs_tensor)[0].tolist()
 
         if self.control_mode == 'torque':
