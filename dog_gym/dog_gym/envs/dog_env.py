@@ -1389,7 +1389,8 @@ class DogEnv(gym.Env):
         # and deliberately excluded from the penalty (see that
         # constant's comment).
         fell_over = (self._is_fallen() or self._knee_walking_too_long()
-                     or self._leg_stuck_too_long() or self._pitch_diverging_too_long())
+                     or self._leg_stuck_too_long() or self._pitch_diverging_too_long()
+                     or self._not_all_feet_grounded())
         terminated = fell_over or self._no_forward_progress()
         truncated = self._step_count >= MAX_EPISODE_STEPS
 
@@ -1998,6 +1999,19 @@ class DogEnv(gym.Env):
         if not NONTIP_TERMINATION_ENABLED:
             return False
         return bool(np.any(self._non_tip_contact_time > NONTIP_TERMINATION_S))
+
+    def _not_all_feet_grounded(self):
+        """STAND only: True the instant any leg is fully airborne (no
+        floor contact at all -- tip, knee, or thigh), i.e. the robot
+        isn't resting on all 4 legs. Immediate, no grace period or
+        duration threshold -- unlike _knee_walking_too_long() (which
+        catches the WRONG kind of contact, sustained), this catches NO
+        contact at all, even briefly. Added 2026-08-07 (user request:
+        PPO_1000000_stand_position_obshistory_v1 was observed learning
+        to balance on 3 legs instead of genuinely standing on all 4)."""
+        if self.task != 'stand':
+            return False
+        return not all(self._foot_contact_per_leg())
 
     def _common_penalties(self, action):
         """Terms both tasks share: IMU-based shock penalty + effort + a
