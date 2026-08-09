@@ -312,6 +312,18 @@ NONTIP_TERMINATION_ENABLED = True
 # first) -- 0.5s catches contact durations in that range instead of
 # only much longer, fully-settled knee-walking.
 NONTIP_TERMINATION_S = 0.0
+
+# STAND only -- grace period for _not_all_feet_grounded() (2026-08-07,
+# user request: measured directly that the instant/zero-grace version
+# terminates ~20 ticks in on average under PPO's normal STOCHASTIC
+# exploration noise, EVERY episode, 20/20 -- starving training of any
+# real experience even though the SAME checkpoint under a deterministic
+# policy never triggers it at all across a full 1000-tick episode. Same
+# duration-based-not-instant reasoning as NONTIP_TERMINATION_S -- a
+# momentary noise-driven foot-lift shouldn't instantly end the episode,
+# only a leg that stays fully airborne this long continuously should.
+STAND_AIRBORNE_TERMINATION_S = 3.0
+
 MAX_EPISODE_STEPS = 1000
 NUM_MOTORS = 8
 
@@ -994,6 +1006,10 @@ class DogEnv(gym.Env):
         # Per-leg seconds spent in CONTINUOUS non-tip (knee/shin) contact
         # -- see NONTIP_TERMINATION_S's comment / _knee_walking_too_long().
         self._non_tip_contact_time = np.zeros(4)
+        # Per-leg seconds spent in CONTINUOUS full airborne (no contact at
+        # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
+        # _not_all_feet_grounded().
+        self._airborne_time = np.zeros(4)
         # Per-leg seconds since that leg's contact state (grounded vs
         # swinging) last CHANGED, either direction -- see MAX_LEG_PHASE_S's
         # comment / _trot_symmetry_reward()'s stuck-phase gate.
@@ -1027,6 +1043,7 @@ class DogEnv(gym.Env):
         self._feet_air_time = np.zeros(4)
         self._feet_stance_time = np.zeros(4)
         self._non_tip_contact_time = np.zeros(4)
+        self._airborne_time = np.zeros(4)
         self._leg_phase_time = np.zeros(4)
         self._prev_leg_contact = np.zeros(4, dtype=bool)
         self._high_pitch_time = 0.0
@@ -1376,6 +1393,9 @@ class DogEnv(gym.Env):
         # MUST update before checking _knee_walking_too_long() -- see that
         # method's docstring.
         self._update_nontip_contact_time()
+        # MUST update before checking _not_all_feet_grounded() -- same
+        # reasoning, see _update_airborne_time()'s docstring.
+        self._update_airborne_time()
         # The three checks after _knee_walking_too_long() are additional
         # WALK-only early terminations (2026-08-05, user request) --
         # see LEG_PHASE_TERMINATION_S/PITCH_TERMINATION_THRESHOLD_RAD/
@@ -1907,6 +1927,21 @@ class DogEnv(gym.Env):
             else:
                 self._non_tip_contact_time[i] = 0.0
 
+    def _update_airborne_time(self):
+        """Advances self._airborne_time per leg -- MUST be called once
+        per step, after mj_step. Grows while a leg stays in CONTINUOUS
+        full airborne (no contact at all -- tip, knee, or thigh), resets
+        to 0 the instant that leg touches down again. Same soft
+        (duration-based) reasoning as _update_nontip_contact_time() --
+        see STAND_AIRBORNE_TERMINATION_S's comment."""
+        contacted = self._foot_contact_per_leg()
+        dt = self.model.opt.timestep
+        for i in range(4):
+            if not contacted[i]:
+                self._airborne_time[i] += dt
+            else:
+                self._airborne_time[i] = 0.0
+
     def _update_leg_phase_time(self):
         """Advances self._leg_phase_time per leg -- seconds since that
         leg's contact state (grounded vs swinging, from
@@ -2001,17 +2036,27 @@ class DogEnv(gym.Env):
         return bool(np.any(self._non_tip_contact_time > NONTIP_TERMINATION_S))
 
     def _not_all_feet_grounded(self):
-        """STAND only: True the instant any leg is fully airborne (no
-        floor contact at all -- tip, knee, or thigh), i.e. the robot
-        isn't resting on all 4 legs. Immediate, no grace period or
-        duration threshold -- unlike _knee_walking_too_long() (which
-        catches the WRONG kind of contact, sustained), this catches NO
-        contact at all, even briefly. Added 2026-08-07 (user request:
+        """STAND only: True if any leg has been fully airborne (no floor
+        contact at all -- tip, knee, or thigh) for longer than
+        STAND_AIRBORNE_TERMINATION_S continuously, i.e. the robot has
+        genuinely stopped resting on all 4 legs, not just a momentary
+        noise-driven twitch. Added 2026-08-07 (user request:
         PPO_1000000_stand_position_obshistory_v1 was observed learning
-        to balance on 3 legs instead of genuinely standing on all 4)."""
+        to balance on 3 legs instead of genuinely standing on all 4).
+
+        SOFTENED to a duration threshold same day, same user's own
+        request, after measuring the original instant/zero-grace version
+        directly: under PPO's normal STOCHASTIC exploration noise (what
+        training actually rolls out, not the deterministic eval policy),
+        it terminated ~20 ticks in on average, EVERY episode (20/20
+        tested) -- even though the SAME checkpoint's deterministic
+        policy never triggered it at all across a full 1000-tick
+        episode. The instant version was catching ordinary exploration
+        jitter, not genuine bad standing, and was starving training of
+        real experience. See STAND_AIRBORNE_TERMINATION_S's comment."""
         if self.task != 'stand':
             return False
-        return not all(self._foot_contact_per_leg())
+        return bool(np.any(self._airborne_time > STAND_AIRBORNE_TERMINATION_S))
 
     def _common_penalties(self, action):
         """Terms both tasks share: IMU-based shock penalty + effort + a
@@ -2197,7 +2242,25 @@ class DogEnv(gym.Env):
         # (and can brush the knee/shin) while still climbing from the
         # sitting pose -- only penalize/reward this once close to standing.
         tip_reward, non_tip_penalty = self._foot_placement_terms()
-        grounded_reward = (tip_reward + non_tip_penalty) * height_progress
+        # AIRBORNE PENALTY ADDED 2026-08-07 (multi-agent review w/
+        # Antigravity, chatbot.md "3-legged standing came back" -- user
+        # request "add termination for not on all 4 legs" led to adding
+        # STAND_AIRBORNE_TERMINATION_S's grace period first, but that
+        # alone only controls WHEN the episode ends, not whether standing
+        # on 3 legs costs anything in the meantime. Measured directly on
+        # PPO_1000000_stand_position_obshistory_v7: a leg lifted once at
+        # step ~15 and simply stayed up for the entire 3s grace window,
+        # since a fully airborne leg previously counted as neither 'tip'
+        # nor 'non_tip' in _foot_placement_terms() -- tip_reward only
+        # dropped 1.0->0.75, a max ~0.375 per-tick cost at this term's
+        # 1.5 weight, dwarfed by upright_reward's ~2.0/tick (which
+        # doesn't care how many feet are grounded at all). Subtracting
+        # num_airborne_legs directly in this term's own formula flips a
+        # single airborne leg from a NET GAIN (+1.5) to a NET LOSS
+        # (-0.375) at this weight -- a ~1.9 swing, now comparable to
+        # upright_reward's own weight instead of a token dilution.
+        num_airborne_legs = 4 - sum(self._foot_contact_per_leg())
+        grounded_reward = (tip_reward + non_tip_penalty - num_airborne_legs) * height_progress
 
         # Gated by height_progress, same pattern as upright_reward/
         # grounded_reward above -- see ACTION_RATE_PENALTY_WEIGHT_RISING/
