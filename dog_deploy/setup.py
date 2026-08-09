@@ -22,6 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'policy_node = dog_deploy.policy_node:main',
+            'leg_isolation_test = dog_deploy.leg_isolation_test:main',
         ],
     },
 )

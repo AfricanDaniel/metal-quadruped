@@ -80,6 +80,22 @@ DEFAULT_MOTOR_MAPPING_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'config', 'moto
 STAND_HEIGHT_M = 0.313
 STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 
+# STAND only, opt-in via domain_randomization -- periodic random external
+# push force on the torso (2026-08-09, multi-agent review w/ Antigravity,
+# chatbot.md "single-leg-lift isolation test" finding). Real hardware +
+# an open-loop sim test both confirmed the PHYSICS to tip/fall when
+# unbalanced already exists in sim -- what's missing is any reason for
+# training to ever practice recovering from it, especially now that
+# grounded_reward's num_airborne_legs penalty makes "never lift, never
+# need to balance" STAND's easiest strategy. Random pushes force the
+# policy into off-balance states it must recover FROM without ever
+# having to choose to unbalance itself (which the reward now actively
+# discourages) -- standard legged-robot RL domain randomization
+# technique, not specific to this project.
+STAND_PUSH_PROB_PER_STEP = 0.01  # ~1 push/second on average at dt=0.01s
+STAND_PUSH_FORCE_RANGE_N = (5.0, 20.0)  # magnitude range, horizontal only
+STAND_PUSH_DURATION_S = 0.15  # roughly a real shove, not a sustained force
+
 # Walk task's target torso height, as a fraction of STAND_HEIGHT_M.
 # RAISED 0.75 -> 0.90 (2026-08-02, user request). A crouched
 # target -- legs more bent than full standing extension -- is standard
@@ -1010,6 +1026,12 @@ class DogEnv(gym.Env):
         # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
         # _not_all_feet_grounded().
         self._airborne_time = np.zeros(4)
+        # STAND push perturbation state -- see STAND_PUSH_PROB_PER_STEP's
+        # comment. _push_remaining_s counts down while a push is active;
+        # _push_force is the fixed force vector applied for that
+        # duration once triggered.
+        self._push_remaining_s = 0.0
+        self._push_force = np.zeros(3)
         # Per-leg seconds since that leg's contact state (grounded vs
         # swinging) last CHANGED, either direction -- see MAX_LEG_PHASE_S's
         # comment / _trot_symmetry_reward()'s stuck-phase gate.
@@ -1044,6 +1066,12 @@ class DogEnv(gym.Env):
         self._feet_stance_time = np.zeros(4)
         self._non_tip_contact_time = np.zeros(4)
         self._airborne_time = np.zeros(4)
+        # STAND push perturbation state -- see STAND_PUSH_PROB_PER_STEP's
+        # comment. _push_remaining_s counts down while a push is active;
+        # _push_force is the fixed force vector applied for that
+        # duration once triggered.
+        self._push_remaining_s = 0.0
+        self._push_force = np.zeros(3)
         self._leg_phase_time = np.zeros(4)
         self._prev_leg_contact = np.zeros(4, dtype=bool)
         self._high_pitch_time = 0.0
@@ -1363,6 +1391,31 @@ class DogEnv(gym.Env):
             ctrl = action.copy()
             ctrl[self.calf_idx] = action[self.calf_idx] + self.calf_belt_sign * self.data.qpos[self.calf_thigh_qpos_adr]
             self.data.ctrl[:] = ctrl
+
+        # STAND push perturbation (see STAND_PUSH_PROB_PER_STEP's
+        # comment) -- applied every tick right before mj_step, same
+        # pattern as ctrl above, so this tick's physics integration
+        # actually feels it. A push in progress keeps the SAME force
+        # vector applied for STAND_PUSH_DURATION_S; once it lapses, a
+        # fresh coin flip may start a new one in a new random direction.
+        if self.task == 'stand' and self.domain_randomization:
+            dt = self.model.opt.timestep
+            if self._push_remaining_s <= 0.0 and self.np_random.uniform() < STAND_PUSH_PROB_PER_STEP:
+                angle = self.np_random.uniform(0.0, 2 * np.pi)
+                magnitude = self.np_random.uniform(*STAND_PUSH_FORCE_RANGE_N)
+                self._push_force = np.array(
+                    [magnitude * np.cos(angle), magnitude * np.sin(angle), 0.0])
+                self._push_remaining_s = STAND_PUSH_DURATION_S
+            if self._push_remaining_s > 0.0:
+                self.data.xfrc_applied[self.torso_body_id, 0:3] = self._push_force
+                self._push_remaining_s -= dt
+            else:
+                self.data.xfrc_applied[self.torso_body_id, 0:3] = 0.0
+        elif self.data.xfrc_applied[self.torso_body_id].any():
+            # Task/mode switched or domain_randomization turned off
+            # mid-episode (shouldn't normally happen, but don't leave a
+            # stale push force applied forever if it does).
+            self.data.xfrc_applied[self.torso_body_id, :] = 0.0
 
         if self.render_mode == 'human':
             self._ensure_viewer()
