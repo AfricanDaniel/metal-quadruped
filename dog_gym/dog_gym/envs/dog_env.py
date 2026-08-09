@@ -96,6 +96,41 @@ STAND_PUSH_PROB_PER_STEP = 0.01  # ~1 push/second on average at dt=0.01s
 STAND_PUSH_FORCE_RANGE_N = (5.0, 20.0)  # magnitude range, horizontal only
 STAND_PUSH_DURATION_S = 0.15  # roughly a real shove, not a sustained force
 
+# Back-leg attachment position domain randomization (2026-08-09, user
+# report + multi-agent review w/ Antigravity, chatbot.md "user has the
+# real answer: known machining error, back legs mounted closer to
+# center"). The MJCF models leg_c_thigh/leg_d_thigh (back-right/
+# back-left) as perfectly symmetric with the front legs along the
+# torso's Y (front-back) axis -- real hardware isn't: user measured with
+# calipers that the back-right leg sits ~12mm closer to the torso's
+# center than the front-right leg, a machining/drilling tolerance error,
+# not a design choice. This directly explains the isolation test's
+# finding that lifting a back leg produces dramatically worse tipping
+# than lifting a front leg (worse moment arm on the remaining support
+# triangle than the symmetric CAD model assumes).
+#
+# HYBRID approach per multi-agent review, not pure randomization: the
+# user has a real measurement for leg_c (12mm), so that's hard-coded as
+# the MEAN offset, not just a randomization bound -- pure randomization
+# over a wide range would waste policy capacity generalizing across
+# values that don't actually vary. leg_d has no specific measurement
+# (user didn't caliper that one), but described the tilting as a
+# "back legs" (plural) issue and leg_d measured WORSE in the isolation
+# test than leg_c -- used the user's own stated 10mm default for it,
+# same direction as leg_c's measured offset. Both get a small +-1mm
+# spread on top of their mean, to hedge against measurement/estimation
+# uncertainty (not to explore a wide range of hypothetical values).
+# Front legs (leg_a/leg_b) LEFT UNCHANGED -- user's specific, confirmed
+# report is about the back legs; Antigravity separately suggested a
+# small hedge on all 4 legs too (manual machining errors rarely occur in
+# perfect isolation), not yet implemented -- easy follow-up if wanted.
+#
+# Sign convention: model's native frame has +y=front (see dog.mjcf.xml's
+# own header comment) -- back legs sit at NEGATIVE y, so moving "closer
+# to center" (toward y=0) means ADDING a positive offset.
+BACK_LEG_Y_OFFSET_MEAN_M = {'leg_c': 0.012, 'leg_d': 0.012}  # measured / user-provided default
+BACK_LEG_Y_OFFSET_SPREAD_M = 0.001  # +-1mm, measurement-uncertainty hedge only
+
 # Walk task's target torso height, as a fraction of STAND_HEIGHT_M.
 # RAISED 0.75 -> 0.90 (2026-08-02, user request). A crouched
 # target -- legs more bent than full standing extension -- is standard
@@ -823,6 +858,19 @@ class DogEnv(gym.Env):
             self.model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
         self.default_floor_friction = self.model.geom_friction[self.floor_geom_id].copy()
 
+        # Back-leg attachment offset domain randomization (2026-08-09,
+        # see BACK_LEG_Y_OFFSET_M's comment) -- body IDs + the ORIGINAL
+        # (symmetric, CAD-intended) body_pos, so reset() can always
+        # compute the new position as an offset from a known baseline
+        # rather than compounding onto whatever the previous episode left
+        # it at.
+        self.leg_c_thigh_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, 'leg_c_thigh')
+        self.leg_d_thigh_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, 'leg_d_thigh')
+        self.default_leg_c_thigh_pos = self.model.body_pos[self.leg_c_thigh_body_id].copy()
+        self.default_leg_d_thigh_pos = self.model.body_pos[self.leg_d_thigh_body_id].copy()
+
         # Each leg's collision capsule is named "<leg>_calf" (same name as
         # the calf joint, different MuJoCo namespace) and runs knee->foot
         # as ONE capsule (no separate foot geom) -- so a contact anywhere
@@ -1187,6 +1235,27 @@ class DogEnv(gym.Env):
             self._randomize_ground()
         else:
             self.model.geom_friction[self.floor_geom_id] = self.default_floor_friction
+
+        # Back-leg attachment offset -- see BACK_LEG_Y_OFFSET_MEAN_M's
+        # comment. The MEAN correction applies UNCONDITIONALLY (every
+        # reset, regardless of domain_randomization) since it's a known,
+        # permanent fact about this specific robot's actual geometry, not
+        # a hypothetical to train robustness against -- sim should just
+        # reflect known reality by default. Only the small +-1mm spread
+        # (hedging real measurement/estimation uncertainty, not exploring
+        # a wide range of possibilities) is gated behind
+        # domain_randomization, same convention as ground friction above.
+        for leg, body_id, default_pos in (
+            ('leg_c', self.leg_c_thigh_body_id, self.default_leg_c_thigh_pos),
+            ('leg_d', self.leg_d_thigh_body_id, self.default_leg_d_thigh_pos),
+        ):
+            offset = BACK_LEG_Y_OFFSET_MEAN_M[leg]
+            if self.domain_randomization:
+                offset += self.np_random.uniform(
+                    -BACK_LEG_Y_OFFSET_SPREAD_M, BACK_LEG_Y_OFFSET_SPREAD_M)
+            new_pos = default_pos.copy()
+            new_pos[1] += offset  # y = model's front-back axis
+            self.model.body_pos[body_id] = new_pos
 
         # position_kp_range/position_kd_range (see __init__'s comment):
         # fresh sample every episode from whatever the CURRENT range
