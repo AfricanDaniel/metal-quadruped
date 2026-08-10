@@ -80,6 +80,25 @@ DEFAULT_MOTOR_MAPPING_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'config', 'moto
 STAND_HEIGHT_M = 0.313
 STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 
+# STAND + WALK, opt-in via domain_randomization -- floor sliding friction
+# range for _randomize_ground() (torsional/rolling friction scaled to
+# 10% of the sampled value). WIDENED 2026-08-10 (was 0.3-0.8, multi-agent
+# review w/ Antigravity, chatbot.md "real hardware: ground is more
+# slippery than anticipated"): user's real-hardware run showed feet
+# slipping during the backward-drag propulsion phase -- there's no real
+# friction measurement for this robot's actual surface to calibrate
+# against (never measured), so the old range was always an uncalibrated
+# placeholder. Lowered the floor significantly (0.3 -> 0.05) to cover a
+# genuinely slippery surface; upper bound (0.8) left unchanged since
+# nothing suggested it was too LOW. Applies to BOTH tasks (STAND + WALK,
+# all walk_start_pose values) whenever domain_randomization=True -- this
+# is pre-existing, already-shared infrastructure, not a new stand+walk-
+# specific mechanism, so it's intentionally NOT scoped behind
+# is_stand_and_walk the way the newer hold/climb-gate mechanisms are --
+# more slip-robustness genuinely helps every domain-randomized training
+# run, not just stand+walk ones.
+FLOOR_FRICTION_RANGE = (0.05, 0.8)
+
 # STAND + WALK, opt-in via domain_randomization -- periodic random
 # external push force on the torso (2026-08-09, multi-agent review w/
 # Antigravity, chatbot.md "single-leg-lift isolation test" finding).
@@ -107,7 +126,32 @@ STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 # WALK-specific tuned in yet since there's no data suggesting it needs
 # a different force range than STAND does.
 PUSH_PROB_PER_STEP = 0.01  # ~1 push/second on average at dt=0.01s
-PUSH_FORCE_RANGE_N = (5.0, 20.0)  # magnitude range, horizontal only
+# WIDENED 2026-08-10 (was 5.0-20.0N, multi-agent review w/ Antigravity,
+# chatbot.md "real hardware: robot tilts way more than sim anticipates"):
+# user deployed PPO_5000000_walk_position_obshistory_home_and_stand_v2 on
+# real hardware and reported tilting far beyond what sim's push
+# perturbation had trained recovery for. Back-of-envelope check on the
+# OLD range: 20N for PUSH_DURATION_S=0.15s against this robot's ~12.6kg
+# mass is an impulse of 3N*s, only ~0.24 m/s of delta-v -- a fairly
+# gentle nudge, plausibly too weak. Widened floor too (not just ceiling)
+# so weak pushes are still sampled sometimes -- this is a real recovery
+# curriculum, not just "always shove as hard as possible".
+PUSH_FORCE_RANGE_N = (10.0, 40.0)  # magnitude range, horizontal only
+# NEW 2026-08-10, same review: the OLD mechanism applied force only at
+# the torso's CoM (data.xfrc_applied[...,0:3], no torque component) --
+# any tilting it produced came ENTIRELY from the stance/support
+# geometry's leverage, not a direct rotational push, which Antigravity
+# flagged as an inherently weak tilt-inducer compared to a real shove or
+# an asymmetric loading event (like the back-leg-offset issue this whole
+# session has been chasing). Added a genuine direct torque component
+# (xfrc_applied[...,3:6], roll (x) and pitch (y) axes only -- NOT yaw
+# (z), that's a separate, already-handled concern via WALK_YAW_RATE_
+# PENALTY_WEIGHT/lateral_velocity_penalty, not something push-
+# perturbation should be teaching) so a "push" now directly injects
+# tilting rotation, not just a translational nudge the stance has to
+# convert into tilt indirectly. Applied alongside the force (same
+# PUSH_DURATION_S window, same trigger/decay), not instead of it.
+PUSH_TORQUE_RANGE_NM = (2.0, 10.0)  # magnitude range, roll/pitch only
 PUSH_DURATION_S = 0.15  # roughly a real shove, not a sustained force
 
 # Back-leg attachment position domain randomization (2026-08-09, user
@@ -273,6 +317,94 @@ WALK_PITCH_PENALTY_WEIGHT = 3.0
 # actual yaw-rate/heading-drift numbers closely.
 WALK_LATERAL_VEL_PENALTY_WEIGHT = 5.0
 WALK_YAW_RATE_PENALTY_WEIGHT = 2.0
+
+# STAND+WALK ONLY (walk_start_pose='random') -- see _compute_reward_walk()'s
+# "STAND+WALK ONLY SECTION" comment for the full derivation. Fraction of
+# climb_progress (0 at SIT_HEIGHT_M, 1 at walk-target height) below which
+# forward_velocity_reward gets EXACTLY ZERO credit -- hard cutoff, not a
+# soft linear ramp from 0, per Antigravity's pushback (2026-08-10,
+# chatbot.md "fix it"): a plain linear climb_progress gate still paid out
+# ~30% of forward_velocity_reward's dominant weight-5.0 credit at the
+# ~0.30 climb_progress actually measured on a crouch-walking checkpoint,
+# comfortably outweighing climb_posture_reward's entire 1.0 weight -- not
+# enough to break the "walk from a crouch" local optimum. 0.8 forces the
+# policy to reach 80% of the way to walk height before ANY forward credit
+# unlocks, then ramps normally over the last 20% -- untuned placeholder,
+# not a formal sweep, watch the first training run's actual climb-vs-walk
+# sequencing closely.
+WALK_CLIMB_GATE_THRESHOLD = 0.8
+
+# STAND+WALK ONLY (walk_start_pose='random') -- direct user request
+# (2026-08-10, chatbot.md "stand, hold X seconds, THEN walk"): after
+# reaching standing height, hold there for WALK_STAND_HOLD_S continuous
+# seconds before forward_velocity_reward unlocks at all, instead of
+# unlocking immediately once WALK_CLIMB_GATE_THRESHOLD is crossed.
+# Deliberately a REWARD-shaping addition, not a deploy-side timer -- this
+# is one end-to-end autonomous policy (no external "start walking now"
+# command), so the only way to get a real pause is to teach it during
+# training, same mechanism family as WALK_CLIMB_GATE_THRESHOLD, just with
+# a duration requirement layered on top.
+#
+# User originally asked for a 5.0s default; multi-agent review w/
+# Antigravity flagged a real conflict: MAX_EPISODE_STEPS=1000 at the
+# model's 100Hz timestep means every WALK episode is only 10s total, so a
+# 5s hold (worse, resettable by push-perturbation mid-hold, now active
+# for WALK too) would consume half or more of the ENTIRE episode just
+# waiting, leaving little time left to actually walk and collect any of
+# this session's carefully-tuned walking reward within that episode.
+# Given a direct choice (extend episode length for 'random' mode only,
+# vs. shorten the default), user chose to shorten it instead -- kept
+# simple, no episode-length special-casing needed. 2.0s chosen as a real,
+# clearly-noticeable pause that still leaves most of a 10s episode for
+# actual walking once the hold completes. Untuned placeholder like every
+# other WALK weight/threshold in this file -- reconsider if training data
+# shows it's still too tight.
+WALK_STAND_HOLD_S = 2.0
+
+# STAND+WALK ONLY -- SEPARATE from WALK_CLIMB_GATE_THRESHOLD (2026-08-10,
+# multi-agent review w/ Antigravity, chatbot.md "stand, hold X seconds"):
+# my first draft reused WALK_CLIMB_GATE_THRESHOLD (0.8) to also start the
+# hold-timer -- Antigravity's pushback: at 0.8 the policy could reach a
+# climb_progress of 0.81 (a deep crouch, NOT actually standing), hold
+# THAT for the required duration, then walk -- satisfying the letter of
+# "wait, then walk" while completely missing the user's actual intent
+# ("make it STAND, wait X seconds, THEN start walking"). 0.8 stays
+# correct for scaling the eventual forward-reward ramp (see
+# WALK_CLIMB_GATE_THRESHOLD's own comment for why that value specifically
+# was chosen), but the hold-CLOCK now only starts once climb_progress
+# crosses this stricter, closer-to-fully-standing threshold instead.
+#
+# LOOSENED 0.95 -> 0.884 (2026-08-10, real-hardware-motivated: v3
+# checkpoint's score plateaued, standing but never walking -- multi-agent
+# review w/ Antigravity, chatbot.md "v3 stands but never walks"). 0.95
+# required height within 8.6mm of full STAND_HEIGHT_M, continuously --
+# measured directly on v3 that this was unreachable even with ZERO
+# push-perturbation: max continuous hold only ever reached 0.28-0.40s
+# against the 2.0s requirement, entirely from ordinary PD/balance
+# wobble, not external disturbance. 0.884 instead matches STAND_HEIGHT_
+# TOLERANCE_M's OWN established 20mm "small range allowed for error" --
+# i.e. this now requires the SAME standing precision the dedicated STAND
+# task itself is already considered to have achieved, not something
+# stricter. See WALK_STAND_HOLD_DIP_GRACE_S below for the other half of
+# this fix (tolerating brief wobble-driven dips without a full reset).
+WALK_STAND_HOLD_THRESHOLD = 0.884
+
+# STAND+WALK ONLY, added alongside the WALK_STAND_HOLD_THRESHOLD loosening
+# above (2026-08-10, Antigravity's extension on the same v3 diagnosis):
+# even at the loosened 0.884 threshold, a plain instant-reset-on-dip
+# still capped continuous holds around 0.5-0.66s -- ordinary PD control
+# noise means stand_progress briefly dips below almost any fixed
+# threshold many times per second, and an INSTANT reset means the timer
+# essentially never accumulates past one wobble cycle. Rather than loosen
+# the threshold further (which would compromise what "held a genuinely
+# tall stance" actually means), _update_standing_hold_time() now FREEZES
+# (doesn't grow, but doesn't reset either) for up to this many seconds
+# while stand_progress is briefly below threshold -- only a SUSTAINED dip
+# longer than this actually resets the hold timer to 0. Makes the hold
+# condition robust to normal balance noise while still requiring a real,
+# sustained standing hold overall. Antigravity's suggested example value
+# (0.2s), not independently tuned.
+WALK_STAND_HOLD_DIP_GRACE_S = 0.2
 
 # Reference forward speed (m/s) for gating WALK's upright_reward -- see
 # that gating's comment in _compute_reward_walk(). A genuinely walking
@@ -1192,12 +1324,25 @@ class DogEnv(gym.Env):
         # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
         # _not_all_feet_grounded().
         self._airborne_time = np.zeros(4)
+        # STAND+WALK ONLY -- seconds spent CONTINUOUSLY at/above
+        # WALK_STAND_HOLD_THRESHOLD stand_progress, resets to 0 after a
+        # SUSTAINED dip below (see WALK_STAND_HOLD_DIP_GRACE_S). See
+        # WALK_STAND_HOLD_S's comment / _update_standing_hold_time().
+        self._standing_hold_time = 0.0
+        # STAND+WALK ONLY -- seconds spent CONTINUOUSLY below
+        # WALK_STAND_HOLD_THRESHOLD since the hold was last satisfied --
+        # see WALK_STAND_HOLD_DIP_GRACE_S's comment / _update_standing_
+        # hold_time().
+        self._standing_hold_dip_time = 0.0
         # Push perturbation state (STAND + WALK) -- see PUSH_PROB_PER_STEP's
         # comment. _push_remaining_s counts down while a push is active;
-        # _push_force is the fixed force vector applied for that
-        # duration once triggered.
+        # _push_force/_push_torque are the fixed force/torque vectors
+        # applied for that duration once triggered (_push_torque added
+        # 2026-08-10 alongside PUSH_TORQUE_RANGE_NM -- see that
+        # constant's comment).
         self._push_remaining_s = 0.0
         self._push_force = np.zeros(3)
+        self._push_torque = np.zeros(3)
         # Per-leg seconds since that leg's contact state (grounded vs
         # swinging) last CHANGED, either direction -- see MAX_LEG_PHASE_S's
         # comment / _trot_symmetry_reward()'s stuck-phase gate.
@@ -1232,12 +1377,25 @@ class DogEnv(gym.Env):
         self._feet_stance_time = np.zeros(4)
         self._non_tip_contact_time = np.zeros(4)
         self._airborne_time = np.zeros(4)
+        # STAND+WALK ONLY -- seconds spent CONTINUOUSLY at/above
+        # WALK_STAND_HOLD_THRESHOLD stand_progress, resets to 0 after a
+        # SUSTAINED dip below (see WALK_STAND_HOLD_DIP_GRACE_S). See
+        # WALK_STAND_HOLD_S's comment / _update_standing_hold_time().
+        self._standing_hold_time = 0.0
+        # STAND+WALK ONLY -- seconds spent CONTINUOUSLY below
+        # WALK_STAND_HOLD_THRESHOLD since the hold was last satisfied --
+        # see WALK_STAND_HOLD_DIP_GRACE_S's comment / _update_standing_
+        # hold_time().
+        self._standing_hold_dip_time = 0.0
         # Push perturbation state (STAND + WALK) -- see PUSH_PROB_PER_STEP's
         # comment. _push_remaining_s counts down while a push is active;
-        # _push_force is the fixed force vector applied for that
-        # duration once triggered.
+        # _push_force/_push_torque are the fixed force/torque vectors
+        # applied for that duration once triggered (_push_torque added
+        # 2026-08-10 alongside PUSH_TORQUE_RANGE_NM -- see that
+        # constant's comment).
         self._push_remaining_s = 0.0
         self._push_force = np.zeros(3)
+        self._push_torque = np.zeros(3)
         self._leg_phase_time = np.zeros(4)
         self._prev_leg_contact = np.zeros(4, dtype=bool)
         self._high_pitch_time = 0.0
@@ -1444,7 +1602,7 @@ class DogEnv(gym.Env):
         return self._obs_history.copy(), {}
 
     def _randomize_ground(self):
-        friction = self.np_random.uniform(0.3, 0.8)
+        friction = self.np_random.uniform(*FLOOR_FRICTION_RANGE)
         self.model.geom_friction[self.floor_geom_id] = [friction, friction * 0.1, friction * 0.1]
 
     def _apply_position_gains(self, kp, kd):
@@ -1619,9 +1777,9 @@ class DogEnv(gym.Env):
         # Push perturbation, STAND + WALK (see PUSH_PROB_PER_STEP's
         # comment) -- applied every tick right before mj_step, same
         # pattern as ctrl above, so this tick's physics integration
-        # actually feels it. A push in progress keeps the SAME force
-        # vector applied for PUSH_DURATION_S; once it lapses, a fresh
-        # coin flip may start a new one in a new random direction.
+        # actually feels it. A push in progress keeps the SAME force AND
+        # torque vector applied for PUSH_DURATION_S; once it lapses, a
+        # fresh coin flip may start a new one in a new random direction.
         if self.task in ('stand', 'walk') and self.domain_randomization:
             dt = self.model.opt.timestep
             if self._push_remaining_s <= 0.0 and self.np_random.uniform() < PUSH_PROB_PER_STEP:
@@ -1629,12 +1787,24 @@ class DogEnv(gym.Env):
                 magnitude = self.np_random.uniform(*PUSH_FORCE_RANGE_N)
                 self._push_force = np.array(
                     [magnitude * np.cos(angle), magnitude * np.sin(angle), 0.0])
+                # Direct roll/pitch torque (2026-08-10, see PUSH_TORQUE_
+                # RANGE_NM's comment) -- INDEPENDENT random angle/
+                # magnitude from the force above, not derived from it, so
+                # a push can tilt in a different direction than it
+                # shoves. Yaw (z) deliberately left at 0 -- see that
+                # constant's comment for why.
+                torque_angle = self.np_random.uniform(0.0, 2 * np.pi)
+                torque_magnitude = self.np_random.uniform(*PUSH_TORQUE_RANGE_NM)
+                self._push_torque = np.array(
+                    [torque_magnitude * np.cos(torque_angle),
+                     torque_magnitude * np.sin(torque_angle), 0.0])
                 self._push_remaining_s = PUSH_DURATION_S
             if self._push_remaining_s > 0.0:
                 self.data.xfrc_applied[self.torso_body_id, 0:3] = self._push_force
+                self.data.xfrc_applied[self.torso_body_id, 3:6] = self._push_torque
                 self._push_remaining_s -= dt
             else:
-                self.data.xfrc_applied[self.torso_body_id, 0:3] = 0.0
+                self.data.xfrc_applied[self.torso_body_id, :] = 0.0
         elif self.data.xfrc_applied[self.torso_body_id].any():
             # Task/mode switched or domain_randomization turned off
             # mid-episode (shouldn't normally happen, but don't leave a
@@ -1657,6 +1827,18 @@ class DogEnv(gym.Env):
         # already reflected. See _update_leg_phase_time()'s docstring.
         self._update_leg_phase_time()
         self._update_high_pitch_time()
+        # MUST also update before _compute_reward() (2026-08-10, caught
+        # during implementation -- an earlier version of this call sat
+        # below, alongside _update_airborne_time()/_update_nontip_
+        # contact_time(), which only feed TERMINATION checks evaluated
+        # after reward/obs are already built. self._standing_hold_time is
+        # read INSIDE _compute_reward_walk()'s STAND+WALK ONLY SECTION,
+        # same category as leg_phase_time/high_pitch_time above, not the
+        # termination-only trackers -- calling it after reward computation
+        # would make the hold-gate read last tick's value, a stale
+        # off-by-one-tick lag). See _update_standing_hold_time()'s
+        # docstring.
+        self._update_standing_hold_time()
 
         reward = self._compute_reward(action)
 
@@ -1745,6 +1927,39 @@ class DogEnv(gym.Env):
 
     def _torso_height(self):
         return self.data.xpos[self.torso_body_id][2]
+
+    def _climb_progress(self):
+        """0 at SIT_HEIGHT_M ('home' start height), 1 at
+        _walk_target_height_m -- how far through the 'home'->walking-
+        height climb the torso currently is. WALK-only in practice
+        (STAND doesn't use _walk_target_height_m), but harmless to call
+        for any task. Factored out (2026-08-10) so _update_standing_hold_
+        time() and _compute_reward_walk()'s STAND+WALK ONLY SECTION share
+        one formula instead of two copies drifting apart."""
+        return np.clip(
+            (self._torso_height() - SIT_HEIGHT_M) / (self._walk_target_height_m - SIT_HEIGHT_M),
+            0.0, 1.0)
+
+    def _stand_progress(self):
+        """0 at SIT_HEIGHT_M, 1 at FULL STAND_HEIGHT_M -- unlike
+        _climb_progress() (which measures progress toward WALK's own,
+        deliberately crouched _walk_target_height_m), this measures
+        progress toward genuinely full standing height. Added 2026-08-10
+        (multi-agent review w/ Antigravity, chatbot.md "real hardware:
+        leg gets caught" -- user deployed PPO_5000000_walk_position_
+        obshistory_home_and_stand_v2 and found the back-right leg
+        catching mid-swing, never completing it). Root cause: the
+        original hold-gate used _climb_progress() at threshold 0.95,
+        which is 95% of the way to the CROUCHED _walk_target_height_m
+        (~0.2817m with the training run's actual --walk-height-fraction
+        default of 0.90) -- nowhere near full STAND_HEIGHT_M (0.313m),
+        not enough real leg clearance. _update_standing_hold_time() and
+        the HOLD-phase height_reward target (see _compute_reward_walk()'s
+        STAND+WALK ONLY SECTION) now use THIS instead, so the pause
+        genuinely happens at full standing height, not a crouch."""
+        return np.clip(
+            (self._torso_height() - SIT_HEIGHT_M) / (STAND_HEIGHT_M - SIT_HEIGHT_M),
+            0.0, 1.0)
 
     def _torso_up_z(self):
         """World-frame z-component of the torso's local up axis: 1.0 =
@@ -2249,6 +2464,39 @@ class DogEnv(gym.Env):
             else:
                 self._airborne_time[i] = 0.0
 
+    def _update_standing_hold_time(self):
+        """Advances self._standing_hold_time -- MUST be called once per
+        step, after mj_step. Grows while _stand_progress() (FULL
+        STAND_HEIGHT_M, NOT the crouched _climb_progress()/
+        _walk_target_height_m -- see _stand_progress()'s docstring for
+        why this was switched 2026-08-10) stays >= WALK_STAND_HOLD_
+        THRESHOLD. WALK-only in practice (task='stand' never reads this),
+        but harmless to call unconditionally -- see WALK_STAND_HOLD_S's
+        comment.
+
+        PATIENCE-BUFFERED RESET (2026-08-10, Antigravity's extension on
+        the v3-plateau diagnosis, chatbot.md "v3 stands but never
+        walks"): a brief dip below threshold FREEZES the hold timer
+        (stops growing, does NOT reset) for up to WALK_STAND_HOLD_DIP_
+        GRACE_S -- only a dip SUSTAINED longer than that actually resets
+        self._standing_hold_time to 0. Measured directly that an instant
+        reset-on-any-dip (the original version) made a real 2s continuous
+        hold essentially unreachable -- ordinary PD/balance wobble dips
+        below almost any fixed threshold multiple times per second, so an
+        instant reset meant the timer never accumulated past one wobble
+        cycle (~0.3-0.6s observed on v3, even threshold-loosened). This
+        keeps requiring a genuine, sustained standing hold overall while
+        tolerating the normal noise floor a real (or simulated) standing
+        robot always has."""
+        dt = self.model.opt.timestep
+        if self._stand_progress() >= WALK_STAND_HOLD_THRESHOLD:
+            self._standing_hold_time += dt
+            self._standing_hold_dip_time = 0.0
+        else:
+            self._standing_hold_dip_time += dt
+            if self._standing_hold_dip_time > WALK_STAND_HOLD_DIP_GRACE_S:
+                self._standing_hold_time = 0.0
+
     def _update_leg_phase_time(self):
         """Advances self._leg_phase_time per leg -- seconds since that
         leg's contact state (grounded vs swinging, from
@@ -2268,9 +2516,36 @@ class DogEnv(gym.Env):
         THIS tick, never whether the pattern had ever alternated. This
         timer is what lets _trot_symmetry_reward() tell "genuinely
         trotting" apart from "one leg has been stuck mid-swing for over
-        a second."""
+        a second.
+
+        STAND+WALK ONLY EXEMPTION (2026-08-10, multi-agent review w/
+        Antigravity, chatbot.md "v3 stands but never walks"): while
+        walk_start_pose='random' and the intentional hold phase is still
+        in progress (self._standing_hold_time < WALK_STAND_HOLD_S), don't
+        accumulate at all -- keep every leg's phase timer at 0. During the
+        hold, ALL legs are SUPPOSED to stay grounded (that's the entire
+        point of the pause), which is EXACTLY the pattern this timer
+        exists to flag as a failure elsewhere -- both _leg_stuck_too_
+        long()'s termination and _trot_symmetry_reward()'s ungated
+        stuck-phase penalty read this same state, and both would
+        incorrectly fire on correctly-executed stillness without this.
+        Root-caused directly on PPO_3000000_walk_position_obshistory_
+        home_and_stand_v3: every episode terminated at EXACTLY
+        LEG_PHASE_TERMINATION_S (3.0s) via _leg_stuck_too_long(), height
+        near-full-standing and perfectly level (not a fall) -- the
+        hold-phase legitimately couldn't move yet, so this timer had
+        already accumulated to the termination threshold before the
+        policy was ever allowed to start walking, making forward reward
+        structurally unreachable regardless of training progress. Not
+        accumulating during the hold also means the timer starts fresh
+        (at 0) the moment walking is actually unlocked, rather than
+        already pre-loaded with however long the hold took."""
         contacted = np.array(self._foot_contact_per_leg())
         dt = self.model.opt.timestep
+        if self.walk_start_pose == 'random' and self._standing_hold_time < WALK_STAND_HOLD_S:
+            self._leg_phase_time[:] = 0.0
+            self._prev_leg_contact = contacted
+            return
         changed = contacted != self._prev_leg_contact
         self._leg_phase_time[changed] = 0.0
         self._leg_phase_time[~changed] += dt
@@ -2740,39 +3015,110 @@ class DogEnv(gym.Env):
             pitch_gate = np.exp(
                 -(self._torso_pitch_rad() ** 2) / (2 * PITCH_TERMINATION_THRESHOLD_RAD ** 2))
             forward_velocity_reward = forward_velocity_reward * pitch_gate
+
+        # ===== STAND+WALK ONLY SECTION (walk_start_pose='random') =====
+        # Everything in this block is scoped behind is_stand_and_walk, and
+        # ONLY affects walk_start_pose='random' episodes -- 'standing'-only
+        # and 'home'-only FIXED training keep the reward exactly as it
+        # existed before either mechanism below was added, bit-for-bit,
+        # not just "numerically close to zero". Direct user request
+        # (2026-08-10): "this should not interfere with our other
+        # trainings... make sure there is a new section for stand+walking,
+        # so we do not mess with the only stand, and only walk". See
+        # climb_posture_reward's original 2026-08-09 comment (below,
+        # trimmed) for why climb_posture_reward exists at all -- that
+        # first version was unconditionally active whenever climb_progress
+        # <1, which is provably ~0 for 'standing' starts but WAS live for
+        # 'home'-only fixed training too, a real gap against this
+        # requirement once stated explicitly; fixed here by gating on
+        # is_stand_and_walk directly instead of relying on climb_progress
+        # happening to be ~1.
+        #
+        # climb_progress: 0 at SIT_HEIGHT_M ('home' start height), 1 at
+        # _walk_target_height_m. Uses the shared _climb_progress() helper
+        # (factored out 2026-08-10 alongside the hold-time addition below)
+        # rather than recomputing the formula inline.
+        is_stand_and_walk = (self.walk_start_pose == 'random')
+        climb_progress = self._climb_progress()
+
+        # forward_velocity_reward CLIMB-GATED (2026-08-10, user report:
+        # watched PPO_77000000_walk_position_obshistory_home_and_stand_v1
+        # and found it "did not even finish standing up before moving
+        # forward" -- confirmed directly on that checkpoint, deterministic
+        # home-start rollout: body-frame forward velocity reached
+        # near-target (0.15m/s) by tick 5 and stayed there, while
+        # climb_progress never exceeded ~0.30 even 50 ticks in (robot
+        # settled into walking at ~0.17-0.19m vs the 0.297m target).
+        # Root cause: forward_velocity_reward (weight 5.0, the single
+        # largest term in this whole function) was never gated by height/
+        # climb progress at all -- only by the overshoot cap and pitch
+        # gate above, both predating climb_posture_reward. Nothing in the
+        # reward math preferred "stand fully, then walk" over "walk from a
+        # crouch", so PPO correctly found the cheaper path.
+        #
+        # HARD THRESHOLD, not a soft linear ramp from climb_progress=0
+        # (multi-agent review w/ Antigravity, chatbot.md "fix it" --
+        # Antigravity's pushback on my first proposal): a plain linear
+        # `forward_velocity_reward *= climb_progress` would still pay out
+        # ~30% of the weight-5.0 term at the crouch height actually
+        # measured above (climb_progress~0.30) -- ~1.5 weighted, still
+        # dwarfing climb_posture_reward's entire 1.0 weight, so the
+        # policy would likely just accept the discount and keep crouching.
+        # WALK_CLIMB_GATE_THRESHOLD (0.8) instead gives EXACTLY ZERO
+        # forward credit below 80% of the way to walk height, then ramps
+        # linearly 0->1 over the last 20% -- Antigravity's framing:
+        # "you must master the 3.5-weight standing task [height_reward +
+        # climb_posture_reward] before unlocking the 5.0-weight walking
+        # task", a real sequencing curriculum rather than a soft discount.
+        #
+        # HOLD-GATED ON TOP (2026-08-10, direct user request "make it
+        # stand, wait X seconds (default 5 seconds) then start walking" +
+        # multi-agent review w/ Antigravity, chatbot.md "stand, hold X
+        # seconds"): the height ramp above unlocks forward credit
+        # immediately once climb_progress crosses WALK_CLIMB_GATE_
+        # THRESHOLD -- no pause. Layered an ADDITIONAL hard AND-gate on
+        # self._standing_hold_time (see WALK_STAND_HOLD_S's comment):
+        # forward credit stays at EXACTLY ZERO, regardless of height,
+        # until the robot has held near-fully-standing (climb_progress >=
+        # WALK_STAND_HOLD_THRESHOLD, a stricter threshold than 0.8 --
+        # see that constant's own comment for why 0.8 would let a deep
+        # crouch satisfy the hold) for WALK_STAND_HOLD_S CONTINUOUS
+        # seconds. height_reward/climb_posture_reward stay fully active
+        # during the wait (not touched by this gate) -- real, dense
+        # reward for holding still and upright, just none pulling it to
+        # walk yet.
+        if is_stand_and_walk:
+            climb_gate = np.clip(
+                (climb_progress - WALK_CLIMB_GATE_THRESHOLD) / (1.0 - WALK_CLIMB_GATE_THRESHOLD),
+                0.0, 1.0)
+            hold_gate = 1.0 if self._standing_hold_time >= WALK_STAND_HOLD_S else 0.0
+            forward_velocity_reward = forward_velocity_reward * climb_gate * hold_gate
+
         upright_reward = self._torso_up_z() * forward_progress
+
         # climb_posture_reward (2026-08-09, multi-agent review w/
-        # Antigravity, chatbot.md "single WALK policy that stands up
-        # from home AND walks"): added alongside walk_start_pose='random'
-        # (see __init__'s comment) specifically to close a gap
-        # Antigravity flagged before this was implemented -- height_reward
-        # below is an ungated, dense pull toward standing height, but
-        # NOTHING rewards good POSTURE (upright, level) while still below
-        # that height, since upright_reward above is gated by
-        # forward_progress (~0 during the climb, no forward velocity
-        # yet). Without this, a policy climbing from 'home' has a real
-        # incentive to heave its torso up to target height by whatever
-        # means (badly pitched/rolled, one leg braced oddly), since
-        # nothing currently penalizes that during the climb specifically.
-        # Antigravity's alternative suggestion (fully un-gate
-        # upright_reward) was rejected -- upright_reward is deliberately
-        # gated to prevent a previously-fixed, real exploit (a stationary,
-        # level policy collecting upright_reward forever without ever
-        # walking, see this reward function's own forward_progress
-        # comment above) -- un-gating it again would reintroduce that
-        # exploit for EVERY walk episode, not just home-start ones.
-        # climb_progress instead measures 0 (at SIT_HEIGHT_M, the 'home'
-        # start height) to 1 (at _walk_target_height_m) -- climb_posture_
-        # reward is only active while climb_progress<1, and by
-        # construction is ~0 for any 'standing'-start episode (which
-        # begins with climb_progress already ~1) -- so this is additive
-        # and doesn't touch existing 'standing'-start/'home'-fixed
-        # training dynamics at all, only the climb phase of a 'random'-
-        # start episode that actually starts low.
-        climb_progress = np.clip(
-            (self._torso_height() - SIT_HEIGHT_M) / (self._walk_target_height_m - SIT_HEIGHT_M),
-            0.0, 1.0)
-        climb_posture_reward = self._torso_up_z() * (1.0 - climb_progress)
+        # Antigravity, chatbot.md "single WALK policy that stands up from
+        # home AND walks", RE-SCOPED 2026-08-10 -- see this section's own
+        # header comment): height_reward below is an ungated, dense pull
+        # toward standing height, but NOTHING rewards good POSTURE
+        # (upright, level) while still below that height, since
+        # upright_reward above is gated by forward_progress (~0 during the
+        # climb, no forward velocity yet -- and now ALSO ~0 below
+        # WALK_CLIMB_GATE_THRESHOLD thanks to the climb-gate above).
+        # Without this, a policy climbing from 'home' has a real incentive
+        # to heave its torso up to target height by whatever means (badly
+        # pitched/rolled, one leg braced oddly), since nothing else
+        # penalizes that during the climb specifically. Antigravity's
+        # alternative suggestion (fully un-gate upright_reward) was
+        # rejected -- upright_reward is deliberately gated to prevent a
+        # previously-fixed, real exploit (a stationary, level policy
+        # collecting upright_reward forever without ever walking, see
+        # forward_progress's own comment above) -- un-gating it again
+        # would reintroduce that exploit for EVERY walk episode, not just
+        # home-start ones.
+        climb_posture_reward = (
+            self._torso_up_z() * (1.0 - climb_progress) if is_stand_and_walk else 0.0)
+        # ===== END STAND+WALK ONLY SECTION =====
         # See _trot_symmetry_reward()'s docstring -- gated by the SAME
         # forward_progress as upright_reward, for the same reason (this
         # term is partially satisfiable by standing still, so it needs
@@ -2813,7 +3159,29 @@ class DogEnv(gym.Env):
         # weight wasn't enough to reliably hold this if the goal is a
         # real height-based stability guarantee -- reassess based on
         # the next walk training run's actual height-tracking behavior).
-        height_reward = -abs(self._torso_height() - self._walk_target_height_m)
+        #
+        # TWO-PHASE TARGET for is_stand_and_walk (2026-08-10, multi-agent
+        # review w/ Antigravity, chatbot.md "real hardware: leg gets
+        # caught" -- same root-cause fix as _stand_progress()): during the
+        # HOLD phase (before self._standing_hold_time reaches
+        # WALK_STAND_HOLD_S), target FULL STAND_HEIGHT_M instead of the
+        # crouched _walk_target_height_m -- Antigravity's framing: "stand
+        # genuinely tall to clear its legs" before the first swing, THEN
+        # transition down to the crouched walking height once forward
+        # motion actually starts (same tick the hold-gate flips and
+        # forward_velocity_reward unlocks -- a step change tied to the
+        # SAME condition, not a separately-timed smooth ramp; simplest
+        # version that's still behaviorally coherent, revisit if training
+        # data shows the transition itself needs smoothing). Scoped
+        # strictly to is_stand_and_walk -- 'standing'-only/'home'-only
+        # fixed training keep targeting _walk_target_height_m exactly as
+        # before, bit-for-bit, same isolation guarantee as every other
+        # STAND+WALK ONLY SECTION mechanism.
+        if is_stand_and_walk and self._standing_hold_time < WALK_STAND_HOLD_S:
+            height_target = STAND_HEIGHT_M
+        else:
+            height_target = self._walk_target_height_m
+        height_reward = -abs(self._torso_height() - height_target)
 
         # Walk on the feet, not the knees/shins -- this task previously had
         # NO foot-placement term at all, which is exactly why a trained
