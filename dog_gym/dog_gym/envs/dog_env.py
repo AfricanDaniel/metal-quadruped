@@ -80,56 +80,97 @@ DEFAULT_MOTOR_MAPPING_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'config', 'moto
 STAND_HEIGHT_M = 0.313
 STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
 
-# STAND only, opt-in via domain_randomization -- periodic random external
-# push force on the torso (2026-08-09, multi-agent review w/ Antigravity,
-# chatbot.md "single-leg-lift isolation test" finding). Real hardware +
-# an open-loop sim test both confirmed the PHYSICS to tip/fall when
-# unbalanced already exists in sim -- what's missing is any reason for
-# training to ever practice recovering from it, especially now that
-# grounded_reward's num_airborne_legs penalty makes "never lift, never
-# need to balance" STAND's easiest strategy. Random pushes force the
-# policy into off-balance states it must recover FROM without ever
-# having to choose to unbalance itself (which the reward now actively
-# discourages) -- standard legged-robot RL domain randomization
-# technique, not specific to this project.
-STAND_PUSH_PROB_PER_STEP = 0.01  # ~1 push/second on average at dt=0.01s
-STAND_PUSH_FORCE_RANGE_N = (5.0, 20.0)  # magnitude range, horizontal only
-STAND_PUSH_DURATION_S = 0.15  # roughly a real shove, not a sustained force
+# STAND + WALK, opt-in via domain_randomization -- periodic random
+# external push force on the torso (2026-08-09, multi-agent review w/
+# Antigravity, chatbot.md "single-leg-lift isolation test" finding).
+# Real hardware + an open-loop sim test both confirmed the PHYSICS to
+# tip/fall when unbalanced already exists in sim -- what's missing is
+# any reason for training to ever practice recovering from it,
+# especially now that grounded_reward's num_airborne_legs penalty makes
+# "never lift, never need to balance" STAND's easiest strategy. Random
+# pushes force the policy into off-balance states it must recover FROM
+# without ever having to choose to unbalance itself (which the reward
+# now actively discourages) -- standard legged-robot RL domain
+# randomization technique, not specific to this project.
+#
+# EXTENDED TO WALK (2026-08-09, direct user request): originally kept
+# STAND-only on the reasoning that WALK's constant leg-lifting already
+# provides organic imbalance-recovery practice, and that adding another
+# new domain-randomization axis onto a still-fragile freshly-working
+# WALK setup risked destabilizing basic gait discovery before it was
+# even solved. WALK is far enough along now (working checkpoints, e.g.
+# v14+) that the user asked for this directly, specifically to help the
+# policy recover from the real-hardware tilting this session has been
+# chasing (an external shove mid-stride is a different failure mode
+# than a self-induced leg-lift wobble -- WALK's organic practice doesn't
+# cover it). Same constants/mechanism reused for both tasks; nothing
+# WALK-specific tuned in yet since there's no data suggesting it needs
+# a different force range than STAND does.
+PUSH_PROB_PER_STEP = 0.01  # ~1 push/second on average at dt=0.01s
+PUSH_FORCE_RANGE_N = (5.0, 20.0)  # magnitude range, horizontal only
+PUSH_DURATION_S = 0.15  # roughly a real shove, not a sustained force
 
 # Back-leg attachment position domain randomization (2026-08-09, user
 # report + multi-agent review w/ Antigravity, chatbot.md "user has the
 # real answer: known machining error, back legs mounted closer to
 # center"). The MJCF models leg_c_thigh/leg_d_thigh (back-right/
-# back-left) as perfectly symmetric with the front legs along the
-# torso's Y (front-back) axis -- real hardware isn't: user measured with
-# calipers that the back-right leg sits ~12mm closer to the torso's
-# center than the front-right leg, a machining/drilling tolerance error,
-# not a design choice. This directly explains the isolation test's
-# finding that lifting a back leg produces dramatically worse tipping
-# than lifting a front leg (worse moment arm on the remaining support
-# triangle than the symmetric CAD model assumes).
+# back-left) as perfectly symmetric with the front legs -- real hardware
+# isn't: a machining/drilling tolerance error, not a design choice.
+# Model's native frame has +x=right (dog.mjcf.xml's own header comment)
+# -- leg_a/leg_c (right side) sit at POSITIVE x, leg_b/leg_d (left side)
+# at NEGATIVE x -- "closer to center" (toward x=0) means SUBTRACTING the
+# offset for leg_c and ADDING it for leg_d (opposite signs, since
+# they're on opposite sides).
 #
-# HYBRID approach per multi-agent review, not pure randomization: the
-# user has a real measurement for leg_c (12mm), so that's hard-coded as
-# the MEAN offset, not just a randomization bound -- pure randomization
-# over a wide range would waste policy capacity generalizing across
-# values that don't actually vary. leg_d has no specific measurement
-# (user didn't caliper that one), but described the tilting as a
-# "back legs" (plural) issue and leg_d measured WORSE in the isolation
-# test than leg_c -- used the user's own stated 10mm default for it,
-# same direction as leg_c's measured offset. Both get a small +-1mm
-# spread on top of their mean, to hedge against measurement/estimation
-# uncertainty (not to explore a wide range of hypothetical values).
-# Front legs (leg_a/leg_b) LEFT UNCHANGED -- user's specific, confirmed
-# report is about the back legs; Antigravity separately suggested a
-# small hedge on all 4 legs too (manual machining errors rarely occur in
-# perfect isolation), not yet implemented -- easy follow-up if wanted.
+# HISTORY (kept for context, don't repeat these steps): (1) first
+# attempt applied this along Y (front-back) -- wrong axis, real-hardware
+# retest (PPO_3000000_walk_position_obshistory_v16) showed leg_d_thigh's
+# torque unchanged, proving it. (2) corrected to X-axis with a HYBRID
+# approach -- hard-coded a 12mm/10mm mean (from a caliper estimate) plus
+# a tiny +-1mm hedge -- user found "not working great" and zeroed it.
+# (3) user then physically removed the BATTERY entirely and reran the
+# real isolation test (`leg_isolation_test_nobattery.csv`): the same
+# back-legs-worse/leg_d-worst tilting persisted (leg_d_thigh mean torque
+# dropped ~-6.0N*m -> -1.14N*m but the SHAPE was unchanged) -- proved
+# the battery was a real but SECONDARY contributor, not the primary
+# cause, and confirmed the back-leg offset is the dominant factor after
+# all. (4) user also directly stated the true offset is "impossible to
+# measure" precisely (beyond the rough caliper estimate) -- multi-agent
+# review concluded a HARD-CODED mean is therefore the wrong tool
+# (brittle, false precision); switched to GENUINE domain randomization
+# over a wide range instead of a tight hedge around an assumed-known
+# mean. Range chosen per Antigravity's recommendation: the caliper
+# estimate (~10-12mm) was itself uncertain, so [5mm, 15mm] straddles it
+# with real spread rather than treating it as ground truth.
 #
-# Sign convention: model's native frame has +y=front (see dog.mjcf.xml's
-# own header comment) -- back legs sit at NEGATIVE y, so moving "closer
-# to center" (toward y=0) means ADDING a positive offset.
-BACK_LEG_Y_OFFSET_MEAN_M = {'leg_c': 0.012, 'leg_d': 0.012}  # measured / user-provided default
-BACK_LEG_Y_OFFSET_SPREAD_M = 0.001  # +-1mm, measurement-uncertainty hedge only
+# Sim isolation testing was independently found (same multi-agent
+# review, chatbot.md "quasi-static test" discussion) to NOT be a valid
+# analog for real hardware (open-loop, zero initial PD error, no
+# policy-in-the-loop compliance) -- so this range can't be validated in
+# sim before training; train under it and test on real hardware is the
+# actual feedback loop now, not a sim-only check.
+#
+# Opt-in via domain_randomization ONLY (unlike the earlier hybrid
+# version, there's no longer a "known" mean to apply unconditionally --
+# without domain_randomization this falls back to the original
+# symmetric CAD assumption). Front legs (leg_a/leg_b) still left
+# unchanged -- user's confirmed report is specifically about the back
+# legs.
+BACK_LEG_X_OFFSET_RANGE_M = (0.000, 0.015)  # 5-15mm inward, sampled independently per leg per episode
+
+# Battery position domain randomization (2026-08-09, user report: the
+# battery is physically removable/swappable -- slides in/out along the
+# torso's Y axis -- and doesn't reseat in EXACTLY the same spot every
+# time it's reinserted, just close). Unlike the back-leg attachment
+# offset above (a fixed manufacturing defect -- hard-code the mean, not
+# just randomize), this is genuine run-to-run physical variability with
+# no single "true" value to hard-code -- domain randomization is the
+# right tool here specifically because there ISN'T one fixed answer.
+# Opt-in via domain_randomization, same convention as ground friction/
+# back-leg spread. +-5mm is a placeholder guess for battery-slot seating
+# tolerance, not a measured value -- adjust if the user has a better
+# sense of the actual slop.
+BATTERY_Y_JITTER_RANGE_M = 0.005  # +-5mm along the insertion axis
 
 # Walk task's target torso height, as a fraction of STAND_HEIGHT_M.
 # RAISED 0.75 -> 0.90 (2026-08-02, user request). A crouched
@@ -192,6 +233,46 @@ WALK_ANGULAR_VEL_PENALTY_WEIGHT = -0.2
 # forward lean at all (some lean during dynamic walking gaits is normal).
 # Placeholder, not a formal sweep.
 WALK_PITCH_PENALTY_WEIGHT = 3.0
+
+# WALK-only, added 2026-08-09 (user: "robot is moving forward but not
+# straight" + multi-agent review w/ Antigravity, chatbot.md "help WALK
+# walk straight") -- see _body_frame_xy_velocity()'s docstring for the
+# root-cause analysis this pair addresses (forward_velocity_reward used
+# to be defined in a FIXED world axis, so nothing distinguished "walking
+# straight" from "walking straight in a direction the robot slowly
+# turned into"). Two separate, complementary penalties, not one:
+#
+# WALK_LATERAL_VEL_PENALTY_WEIGHT: -(lateral_velocity)**2, lateral_velocity
+# now body-frame (same _body_frame_xy_velocity() call as
+# forward_velocity_reward, same m/s units/scale) -- set equal to
+# forward_velocity_reward's own weight (5.0) so lateral drift is
+# penalized at the SAME rate forward progress is rewarded: if the robot
+# ever drifts sideways as fast as it walks forward, that should cost as
+# much as the forward progress is worth, not be a rounding error next to
+# it. Placeholder, not a formal sweep.
+#
+# WALK_YAW_RATE_PENALTY_WEIGHT: -(gyro_z)**2, gyro_z = self.data.
+# sensordata[5] -- the SAME body-frame angular-velocity signal a real
+# IMU reports directly (no torso_yaw_rad() finite-differencing needed).
+# This overlaps partially with WALK_ANGULAR_VEL_PENALTY_WEIGHT above
+# (which penalizes the FULL 3-axis gyro magnitude, calibrated against
+# roll/pitch wobble data, not yaw specifically) -- given independently
+# rather than folded into that shared budget so yaw drift can be tuned
+# on its own, and so a policy can't "spend" its whole wobble budget on
+# roll/pitch and get yaw drift for free. Comparable in spirit/scale to
+# WALK_PITCH_PENALTY_WEIGHT (both single-axis rotational-deviation
+# penalties) rather than to the diluted 3-axis term. Antigravity flagged
+# a real risk here directly comparable to WALK_PITCH_PENALTY_WEIGHT's
+# own history (see PITCH-GATED comment in _compute_reward_walk -- an
+# earlier, too-weak pitch_penalty was measured unable to counteract a
+# forward dive) -- if this weight proves similarly too weak against
+# forward_velocity_reward's dominant 5.0, expect the same fix pattern
+# (gate forward_velocity_reward by yaw-rate the way it's already gated
+# by pitch, rather than just raising this weight further). Untuned
+# placeholder, not a formal sweep -- watch the first training run's
+# actual yaw-rate/heading-drift numbers closely.
+WALK_LATERAL_VEL_PENALTY_WEIGHT = 5.0
+WALK_YAW_RATE_PENALTY_WEIGHT = 2.0
 
 # Reference forward speed (m/s) for gating WALK's upright_reward -- see
 # that gating's comment in _compute_reward_walk(). A genuinely walking
@@ -511,7 +592,7 @@ FOOT_CONTACT_RADIUS_M = 0.03
 # reward pattern in quadruped locomotion RL. Placeholder, not derived from
 # a real measured gait -- a few cm is enough to clear the ground without
 # demanding an unnaturally high step.
-FOOT_CLEARANCE_TARGET_M = 0.03
+FOOT_CLEARANCE_TARGET_M = 0.06
 
 # RAISED 0.1 -> 3.0 (2026-08-02, user request: "allow the feet to swing
 # for 3 seconds in the air"). NOTE this also raises FEET_AIR_TIME_MAX_S
@@ -698,7 +779,7 @@ class DogEnv(gym.Env):
                  render_mode=None, domain_randomization=False, task='stand',
                  walk_start_pose='standing', walk_height_fraction=WALK_HEIGHT_FRACTION,
                  control_mode='position', position_kp=None, position_kd=None,
-                 position_kp_range=None, position_kd_range=None):
+                 position_kp_range=None, position_kd_range=None, home_start_prob=0.0):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
@@ -768,9 +849,39 @@ class DogEnv(gym.Env):
         # stand policy + a walk policy was the original plan). 'home'
         # starts from the sitting/home pose instead, same starting state
         # STAND's own task uses -- see reset()'s walk branch.
-        if walk_start_pose not in ('standing', 'home'):
-            raise ValueError(f"walk_start_pose must be 'standing' or 'home', got {walk_start_pose!r}")
+        #
+        # 'random' (2026-08-09, direct user request + multi-agent review
+        # w/ Antigravity, chatbot.md "single WALK policy that stands up
+        # from home AND walks"): per-episode coin flip between 'home' and
+        # 'standing' (weighted by home_start_prob below), so ONE policy
+        # is trained to handle both -- rather than a whole run being
+        # fixed to one start condition. Added as a THIRD choice
+        # alongside the existing two, not a replacement -- 'standing'
+        # and 'home' still behave exactly as before for runs that want a
+        # dedicated single-start-condition policy. History worth noting:
+        # 'home' was actually the ORIGINAL default early in this project
+        # (v10/v11) and hit a real "legs 0/3 never move" local optimum;
+        # the project later moved to 'standing'-only (v14+, the first
+        # policy that actually walked well). That happened before the
+        # MAX_SLEW_DEG_PER_S fix (100->1000) and several reward fixes
+        # since -- plausibly addressed, not confirmed -- so a 'random'
+        # run mixing 'home' back in is worth watching closely early on,
+        # not assumed safe just because the infrastructure already
+        # existed once before.
+        if walk_start_pose not in ('standing', 'home', 'random'):
+            raise ValueError(
+                f"walk_start_pose must be 'standing', 'home', or 'random', got {walk_start_pose!r}")
         self.walk_start_pose = walk_start_pose
+        # Probability reset() picks 'home' over 'standing' when
+        # walk_start_pose='random' -- ignored otherwise. Defaults to 0.0
+        # (never picks 'home', i.e. behaves like 'standing' if 'random'
+        # is selected but no probability is configured) so this is inert
+        # unless deliberately set. Normally driven by train.py's
+        # HomeStartCurriculumCallback via set_home_start_prob() (mirrors
+        # set_position_gain_range()'s pattern exactly) -- see that
+        # callback for the curriculum reasoning (mostly 'standing' early,
+        # increasing 'home' frequency over training).
+        self._home_start_prob = home_start_prob
         self.task = task
         # torque_belt only -- see BELT_TARGET_ADAPT_RATE_STAND/_WALK's
         # comment for why these need different timescales. Harmless to set
@@ -859,17 +970,24 @@ class DogEnv(gym.Env):
         self.default_floor_friction = self.model.geom_friction[self.floor_geom_id].copy()
 
         # Back-leg attachment offset domain randomization (2026-08-09,
-        # see BACK_LEG_Y_OFFSET_M's comment) -- body IDs + the ORIGINAL
-        # (symmetric, CAD-intended) body_pos, so reset() can always
-        # compute the new position as an offset from a known baseline
-        # rather than compounding onto whatever the previous episode left
-        # it at.
+        # see BACK_LEG_X_OFFSET_RANGE_M's comment) -- body IDs + the
+        # ORIGINAL (symmetric, CAD-intended) body_pos, so reset() can
+        # always compute the new position as an offset from a known
+        # baseline rather than compounding onto whatever the previous
+        # episode left it at.
         self.leg_c_thigh_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, 'leg_c_thigh')
         self.leg_d_thigh_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, 'leg_d_thigh')
         self.default_leg_c_thigh_pos = self.model.body_pos[self.leg_c_thigh_body_id].copy()
         self.default_leg_d_thigh_pos = self.model.body_pos[self.leg_d_thigh_body_id].copy()
+
+        # Battery position domain randomization (2026-08-09, see
+        # BATTERY_Y_JITTER_RANGE_M's comment) -- same body-id +
+        # default-pos-snapshot pattern as the back-leg offsets above.
+        self.battery_body_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_BODY, 'battery_mass')
+        self.default_battery_pos = self.model.body_pos[self.battery_body_id].copy()
 
         # Each leg's collision capsule is named "<leg>_calf" (same name as
         # the calf joint, different MuJoCo namespace) and runs knee->foot
@@ -1074,7 +1192,7 @@ class DogEnv(gym.Env):
         # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
         # _not_all_feet_grounded().
         self._airborne_time = np.zeros(4)
-        # STAND push perturbation state -- see STAND_PUSH_PROB_PER_STEP's
+        # Push perturbation state (STAND + WALK) -- see PUSH_PROB_PER_STEP's
         # comment. _push_remaining_s counts down while a push is active;
         # _push_force is the fixed force vector applied for that
         # duration once triggered.
@@ -1114,7 +1232,7 @@ class DogEnv(gym.Env):
         self._feet_stance_time = np.zeros(4)
         self._non_tip_contact_time = np.zeros(4)
         self._airborne_time = np.zeros(4)
-        # STAND push perturbation state -- see STAND_PUSH_PROB_PER_STEP's
+        # Push perturbation state (STAND + WALK) -- see PUSH_PROB_PER_STEP's
         # comment. _push_remaining_s counts down while a push is active;
         # _push_force is the fixed force vector applied for that
         # duration once triggered.
@@ -1126,7 +1244,18 @@ class DogEnv(gym.Env):
         self._step_count = 0
 
         if self.task == 'walk':
-            if self.walk_start_pose == 'standing':
+            # 'random' (see walk_start_pose's __init__ comment): sample
+            # THIS episode's actual start pose now, once, then use that
+            # sampled value (not self.walk_start_pose directly) for both
+            # branches below -- the motor-qpos branch here and the
+            # torso-height branch further down both need to agree on the
+            # SAME episode's choice, not re-sample independently.
+            if self.walk_start_pose == 'random':
+                episode_start_pose = (
+                    'home' if self.np_random.uniform() < self._home_start_prob else 'standing')
+            else:
+                episode_start_pose = self.walk_start_pose
+            if episode_start_pose == 'standing':
                 # Start already standing -- see module docstring: composing
                 # a stand policy + a walk policy is the plan, not one
                 # policy learning to stand up and walk forward at once.
@@ -1167,7 +1296,7 @@ class DogEnv(gym.Env):
                 prev_action = qpos_rad.copy()
                 prev_action[self.calf_idx] -= self.calf_belt_sign * qpos_rad[self.calf_thigh_idx]
                 self.prev_action = prev_action.astype(np.float32)
-            if self.walk_start_pose == 'standing':
+            if episode_start_pose == 'standing':
                 # The free joint's own z (qpos[2]) still defaults to the
                 # model's qpos=0 spawn height (0.287m, chosen to clear the
                 # floor at the CAD-captured/sitting leg pose) -- leaving it
@@ -1236,26 +1365,40 @@ class DogEnv(gym.Env):
         else:
             self.model.geom_friction[self.floor_geom_id] = self.default_floor_friction
 
-        # Back-leg attachment offset -- see BACK_LEG_Y_OFFSET_MEAN_M's
-        # comment. The MEAN correction applies UNCONDITIONALLY (every
-        # reset, regardless of domain_randomization) since it's a known,
-        # permanent fact about this specific robot's actual geometry, not
-        # a hypothetical to train robustness against -- sim should just
-        # reflect known reality by default. Only the small +-1mm spread
-        # (hedging real measurement/estimation uncertainty, not exploring
-        # a wide range of possibilities) is gated behind
-        # domain_randomization, same convention as ground friction above.
-        for leg, body_id, default_pos in (
-            ('leg_c', self.leg_c_thigh_body_id, self.default_leg_c_thigh_pos),
-            ('leg_d', self.leg_d_thigh_body_id, self.default_leg_d_thigh_pos),
+        # Back-leg attachment offset -- see BACK_LEG_X_OFFSET_RANGE_M's
+        # comment (X = shoulder/left-right axis, NOT front-back --
+        # corrected 2026-08-09 after the first Y-axis version was
+        # confirmed on real hardware to not touch the actual problem).
+        # GENUINE randomization, fully gated behind domain_randomization
+        # (unlike the earlier hybrid mean+hedge version) -- the true
+        # offset is acknowledged as unmeasurable, so there's no "known"
+        # default value to apply unconditionally; without
+        # domain_randomization the back legs stay at the original
+        # symmetric CAD position. sign is PER LEG (not shared) -- leg_c
+        # (right side, positive x) moves toward center by SUBTRACTING;
+        # leg_d (left side, negative x) moves toward center by ADDING --
+        # see the constant's comment.
+        for leg, body_id, default_pos, sign in (
+            ('leg_c', self.leg_c_thigh_body_id, self.default_leg_c_thigh_pos, -1.0),
+            ('leg_d', self.leg_d_thigh_body_id, self.default_leg_d_thigh_pos, 1.0),
         ):
-            offset = BACK_LEG_Y_OFFSET_MEAN_M[leg]
-            if self.domain_randomization:
-                offset += self.np_random.uniform(
-                    -BACK_LEG_Y_OFFSET_SPREAD_M, BACK_LEG_Y_OFFSET_SPREAD_M)
             new_pos = default_pos.copy()
-            new_pos[1] += offset  # y = model's front-back axis
+            if self.domain_randomization:
+                offset = self.np_random.uniform(*BACK_LEG_X_OFFSET_RANGE_M)
+                new_pos[0] += sign * offset  # x = model's shoulder/left-right axis
             self.model.body_pos[body_id] = new_pos
+
+        # Battery position jitter -- see BATTERY_Y_JITTER_RANGE_M's
+        # comment. Opt-in only (unlike the back-leg mean correction
+        # above, there's no fixed value to apply unconditionally here --
+        # this IS the randomization, not a hedge around a known mean).
+        if self.domain_randomization:
+            battery_pos = self.default_battery_pos.copy()
+            battery_pos[1] += self.np_random.uniform(
+                -BATTERY_Y_JITTER_RANGE_M, BATTERY_Y_JITTER_RANGE_M)
+            self.model.body_pos[self.battery_body_id] = battery_pos
+        else:
+            self.model.body_pos[self.battery_body_id] = self.default_battery_pos
 
         # position_kp_range/position_kd_range (see __init__'s comment):
         # fresh sample every episode from whatever the CURRENT range
@@ -1331,6 +1474,18 @@ class DogEnv(gym.Env):
         itself."""
         self._position_kp_range = kp_range
         self._position_kd_range = kd_range
+
+    def set_home_start_prob(self, prob):
+        """Updates the probability reset() uses to pick 'home' over
+        'standing' when walk_start_pose='random', on the NEXT episode --
+        does NOT affect the episode already in progress (same
+        deliberate timing as set_position_gain_range()). Meant to be
+        called externally via VecEnv.env_method() from
+        train.py's HomeStartCurriculumCallback -- see walk_start_pose's
+        __init__ comment for the full reasoning. No-op in practice if
+        walk_start_pose != 'random' (reset() never reads
+        self._home_start_prob in that case)."""
+        self._home_start_prob = prob
 
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)
@@ -1461,20 +1616,20 @@ class DogEnv(gym.Env):
             ctrl[self.calf_idx] = action[self.calf_idx] + self.calf_belt_sign * self.data.qpos[self.calf_thigh_qpos_adr]
             self.data.ctrl[:] = ctrl
 
-        # STAND push perturbation (see STAND_PUSH_PROB_PER_STEP's
+        # Push perturbation, STAND + WALK (see PUSH_PROB_PER_STEP's
         # comment) -- applied every tick right before mj_step, same
         # pattern as ctrl above, so this tick's physics integration
         # actually feels it. A push in progress keeps the SAME force
-        # vector applied for STAND_PUSH_DURATION_S; once it lapses, a
-        # fresh coin flip may start a new one in a new random direction.
-        if self.task == 'stand' and self.domain_randomization:
+        # vector applied for PUSH_DURATION_S; once it lapses, a fresh
+        # coin flip may start a new one in a new random direction.
+        if self.task in ('stand', 'walk') and self.domain_randomization:
             dt = self.model.opt.timestep
-            if self._push_remaining_s <= 0.0 and self.np_random.uniform() < STAND_PUSH_PROB_PER_STEP:
+            if self._push_remaining_s <= 0.0 and self.np_random.uniform() < PUSH_PROB_PER_STEP:
                 angle = self.np_random.uniform(0.0, 2 * np.pi)
-                magnitude = self.np_random.uniform(*STAND_PUSH_FORCE_RANGE_N)
+                magnitude = self.np_random.uniform(*PUSH_FORCE_RANGE_N)
                 self._push_force = np.array(
                     [magnitude * np.cos(angle), magnitude * np.sin(angle), 0.0])
-                self._push_remaining_s = STAND_PUSH_DURATION_S
+                self._push_remaining_s = PUSH_DURATION_S
             if self._push_remaining_s > 0.0:
                 self.data.xfrc_applied[self.torso_body_id, 0:3] = self._push_force
                 self._push_remaining_s -= dt
@@ -1616,6 +1771,36 @@ class DogEnv(gym.Env):
         gap up_z's insensitivity was masking)."""
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         return np.arcsin(np.clip(-xmat[2, 1], -1.0, 1.0))
+
+    def _body_frame_xy_velocity(self):
+        """(forward, lateral) components of the free joint's world-frame
+        xy velocity (qvel[0:2]), projected onto the torso's OWN local
+        forward/right axes -- not world qvel[1]/qvel[0] directly. Exact
+        vector projection via the torso's actual xmat columns (same
+        layout convention as _torso_up_z()/_torso_pitch_rad(): xmat's
+        columns are the torso's local axes expressed in world
+        coordinates), not a trig identity assuming any particular yaw.
+
+        Added 2026-08-09 (multi-agent review w/ Antigravity, chatbot.md
+        "help WALK walk straight"): _compute_reward_walk() previously
+        read raw world-frame qvel[1] as "forward velocity" -- that's only
+        actually forward while the torso's heading exactly matches its
+        start orientation. Nothing previously penalized yaw drift, so
+        qvel[1] would silently stop meaning "forward" the moment the
+        robot turned even slightly, rewarding whatever direction it
+        happened to be facing as long as it had positive world-y
+        velocity -- a policy slowly curving off in a rotated direction
+        looked identical to one walking straight, reward-wise. This
+        fixes forward/lateral velocity at the source (always relative to
+        the robot's OWN current heading) instead of only discouraging
+        the drift after the fact."""
+        xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
+        forward_axis_xy = xmat[0:2, 1]
+        right_axis_xy = xmat[0:2, 0]
+        world_vel_xy = self.data.qvel[0:2]
+        forward_vel = float(np.dot(world_vel_xy, forward_axis_xy))
+        lateral_vel = float(np.dot(world_vel_xy, right_axis_xy))
+        return forward_vel, lateral_vel
 
     def _num_feet_grounded(self):
         """How many of the 4 calf capsules are in actual contact with the
@@ -2455,15 +2640,34 @@ class DogEnv(gym.Env):
     def _compute_reward_walk(self, action):
         # dog.mjcf.xml is still in the CAD's own native frame (+y=front,
         # +x=right -- see the model's own header comment), NOT yet
-        # remapped to ROS REP-103 (+x=forward). qvel[1] is therefore the
-        # real forward velocity here, not qvel[0] (an earlier version of
-        # this line used qvel[0] under the wrong assumption that +x was
-        # already forward -- confirmed as the cause of a policy that
-        # leaned/drifted rightward instead of walking forward after a
-        # full 22M-timestep training run, since qvel[0] literally rewards
-        # rightward motion in this frame). Revisit this line together with
-        # the frame remap if that ever gets applied.
-        forward_velocity_reward = self.data.qvel[1]
+        # remapped to ROS REP-103 (+x=forward). Historically this line
+        # was raw world-frame qvel[1] (an even earlier version used
+        # qvel[0] under the wrong assumption that +x was already forward
+        # -- confirmed as the cause of a policy that leaned/drifted
+        # rightward instead of walking forward after a full 22M-timestep
+        # training run, since qvel[0] literally rewards rightward motion
+        # in this frame).
+        #
+        # SWITCHED TO BODY-FRAME 2026-08-09 (user: "robot is moving
+        # forward but not straight" + multi-agent review w/ Antigravity,
+        # chatbot.md "help WALK walk straight"): even the qvel[1] fix
+        # above only measures TRUE forward speed while the torso's
+        # heading matches its start orientation exactly -- nothing
+        # previously penalized yaw drift, so as soon as the robot turned
+        # even slightly, world-frame qvel[1] silently stopped meaning
+        # "forward" and started rewarding whatever direction the robot
+        # happened to be facing, as long as it had positive world-y
+        # velocity. A policy slowly curving off in a rotated direction
+        # looked identical to one walking straight, reward-wise -- likely
+        # the real root cause of the curving/drifting seen on real
+        # deployments. _body_frame_xy_velocity() fixes this at the
+        # source: forward/lateral are now always relative to the robot's
+        # OWN current heading, not a fixed world axis. See
+        # lateral_velocity_penalty/yaw_rate_penalty below for the other
+        # half of the fix (this alone doesn't stop the HEADING itself
+        # from drifting, only makes "forward" mean the right thing
+        # tick-to-tick).
+        forward_velocity_reward, lateral_velocity = self._body_frame_xy_velocity()
         # Gated by forward progress (0 at zero/negative velocity, 1 at
         # WALK_FORWARD_PROGRESS_TARGET_M_S+) -- mirrors the stand task's
         # own height_progress gate on its upright_reward, same underlying
@@ -2537,6 +2741,38 @@ class DogEnv(gym.Env):
                 -(self._torso_pitch_rad() ** 2) / (2 * PITCH_TERMINATION_THRESHOLD_RAD ** 2))
             forward_velocity_reward = forward_velocity_reward * pitch_gate
         upright_reward = self._torso_up_z() * forward_progress
+        # climb_posture_reward (2026-08-09, multi-agent review w/
+        # Antigravity, chatbot.md "single WALK policy that stands up
+        # from home AND walks"): added alongside walk_start_pose='random'
+        # (see __init__'s comment) specifically to close a gap
+        # Antigravity flagged before this was implemented -- height_reward
+        # below is an ungated, dense pull toward standing height, but
+        # NOTHING rewards good POSTURE (upright, level) while still below
+        # that height, since upright_reward above is gated by
+        # forward_progress (~0 during the climb, no forward velocity
+        # yet). Without this, a policy climbing from 'home' has a real
+        # incentive to heave its torso up to target height by whatever
+        # means (badly pitched/rolled, one leg braced oddly), since
+        # nothing currently penalizes that during the climb specifically.
+        # Antigravity's alternative suggestion (fully un-gate
+        # upright_reward) was rejected -- upright_reward is deliberately
+        # gated to prevent a previously-fixed, real exploit (a stationary,
+        # level policy collecting upright_reward forever without ever
+        # walking, see this reward function's own forward_progress
+        # comment above) -- un-gating it again would reintroduce that
+        # exploit for EVERY walk episode, not just home-start ones.
+        # climb_progress instead measures 0 (at SIT_HEIGHT_M, the 'home'
+        # start height) to 1 (at _walk_target_height_m) -- climb_posture_
+        # reward is only active while climb_progress<1, and by
+        # construction is ~0 for any 'standing'-start episode (which
+        # begins with climb_progress already ~1) -- so this is additive
+        # and doesn't touch existing 'standing'-start/'home'-fixed
+        # training dynamics at all, only the climb phase of a 'random'-
+        # start episode that actually starts low.
+        climb_progress = np.clip(
+            (self._torso_height() - SIT_HEIGHT_M) / (self._walk_target_height_m - SIT_HEIGHT_M),
+            0.0, 1.0)
+        climb_posture_reward = self._torso_up_z() * (1.0 - climb_progress)
         # See _trot_symmetry_reward()'s docstring -- gated by the SAME
         # forward_progress as upright_reward, for the same reason (this
         # term is partially satisfiable by standing still, so it needs
@@ -2720,6 +2956,16 @@ class DogEnv(gym.Env):
         # enough to a sustained forward lean on its own.
         pitch_penalty = -(self._torso_pitch_rad() ** 2)
 
+        # -(lateral_velocity)^2, -(yaw_rate)^2 -- see WALK_LATERAL_VEL_
+        # PENALTY_WEIGHT/WALK_YAW_RATE_PENALTY_WEIGHT's comment above for
+        # the full "help WALK walk straight" reasoning. lateral_velocity
+        # already came from the same _body_frame_xy_velocity() call as
+        # forward_velocity_reward above -- not recomputed here. yaw_rate
+        # reads gyro_z directly (sensordata[3:6] is [gyro_x, gyro_y,
+        # gyro_z], same slice _angular_vel_penalty() reads in full).
+        lateral_velocity_penalty = -(lateral_velocity ** 2)
+        yaw_rate_penalty = -(self.data.sensordata[5] ** 2)
+
         # SIMPLIFIED-REWARD EXPERIMENT (2026-08-02, `simple_rewards` branch,
         # user request: "only include forward movement, base height").
         # Every OTHER term below is deliberately zeroed via its coefficient,
@@ -2790,6 +3036,7 @@ class DogEnv(gym.Env):
         return (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
+            + 1.0 * climb_posture_reward
             + 2.5 * height_reward
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
@@ -2812,6 +3059,8 @@ class DogEnv(gym.Env):
             # nothing else in this reward currently provides that densely.
             + 1.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
+            + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
+            + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty
             + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + 0.02 * calf_swing_motion_reward
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive

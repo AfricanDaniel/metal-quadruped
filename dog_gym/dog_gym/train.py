@@ -215,9 +215,45 @@ class GainRangeCurriculumCallback(BaseCallback):
         return True
 
 
+class HomeStartCurriculumCallback(BaseCallback):
+    """Widens the probability DogEnv.reset() uses to start a WALK episode
+    from 'home' (tucked) instead of 'standing', linearly, from
+    prob_start to prob_end, over decay_steps cumulative timesteps -- only
+    relevant when walk_start_pose='random' (2026-08-09, multi-agent
+    review w/ Antigravity re: single WALK policy that stands up from
+    home AND walks, chatbot.md). Same rationale/pattern as
+    GainRangeCurriculumCallback: mostly 'standing' (the proven-working
+    regime) early, increasing 'home' frequency once the policy already
+    has a basic walking gait to fall back on, rather than handing it the
+    harder combined stand-up+walk problem from step 0.
+
+    Pushes the updated probability into every parallel sub-environment
+    via VecEnv.env_method('set_home_start_prob', ...) -- same
+    DummyVecEnv/SubprocVecEnv-compatible mechanism as
+    GainRangeCurriculumCallback, same update_interval_steps throttling
+    reasoning."""
+
+    def __init__(self, prob_start, prob_end, decay_steps, update_interval_steps=2000, verbose=0):
+        super().__init__(verbose)
+        self.prob_start = prob_start
+        self.prob_end = prob_end
+        self.decay_steps = decay_steps
+        self.update_interval_steps = update_interval_steps
+        self._last_update_step = -update_interval_steps  # forces an update on the very first call
+
+    def _on_step(self):
+        if self.num_timesteps - self._last_update_step < self.update_interval_steps:
+            return True
+        self._last_update_step = self.num_timesteps
+        progress = min(1.0, self.num_timesteps / self.decay_steps) if self.decay_steps > 0 else 1.0
+        prob = self.prob_start + (self.prob_end - self.prob_start) * progress
+        self.training_env.env_method('set_home_start_prob', prob)
+        return True
+
+
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
              model_path=None, position_kp=None, position_kd=None,
-             position_kp_range=None, position_kd_range=None):
+             position_kp_range=None, position_kd_range=None, home_start_prob_start=None):
     kwargs = dict(domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose,
                   walk_height_fraction=walk_height_fraction,
@@ -250,6 +286,15 @@ def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction
         kwargs['position_kp_range'] = position_kp_range
     if position_kd_range is not None:
         kwargs['position_kd_range'] = position_kd_range
+    # --home-start-prob-start (2026-08-09): env is constructed with the
+    # STARTING probability -- HomeStartCurriculumCallback widens it over
+    # training via set_home_start_prob(), this is just the initial value
+    # so it's well-defined before the callback's first update. Only
+    # meaningful when walk_start_pose='random'; harmless to pass
+    # otherwise (DogEnv stores it but reset() never reads it for
+    # 'standing'/'home').
+    if home_start_prob_start is not None:
+        kwargs['home_start_prob'] = home_start_prob_start
     return lambda: gym.make(env_id, **kwargs)
 
 
@@ -260,16 +305,19 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           control_mode='position', model_path=None, position_kp=None, position_kd=None,
           position_kp_range_start=None, position_kp_range_end=None,
           position_kd_range_start=None, position_kd_range_end=None,
-          gain_curriculum_steps=None, lr_schedule='linear', desired_kl=0.01):
+          gain_curriculum_steps=None, lr_schedule='linear', desired_kl=0.01,
+          home_start_prob_start=None, home_start_prob_end=None,
+          home_start_curriculum_steps=None):
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
           f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction}, '
           f'control_mode={control_mode}, position_kp={position_kp}, position_kd={position_kd}, '
           f'position_kp_range_start={position_kp_range_start}, position_kp_range_end={position_kp_range_end}, '
-          f'position_kd_range_start={position_kd_range_start}, position_kd_range_end={position_kd_range_end})')
+          f'position_kd_range_start={position_kd_range_start}, position_kd_range_end={position_kd_range_end}, '
+          f'home_start_prob_start={home_start_prob_start}, home_start_prob_end={home_start_prob_end})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
                          control_mode, model_path, position_kp, position_kd,
-                         position_kp_range_start, position_kd_range_start)
+                         position_kp_range_start, position_kd_range_start, home_start_prob_start)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -398,6 +446,15 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
             kp_range_start=position_kp_range_start, kp_range_end=position_kp_range_end,
             kd_range_start=position_kd_range_start, kd_range_end=position_kd_range_end,
             decay_steps=gain_curriculum_steps if gain_curriculum_steps is not None else decay_steps))
+    # Opt-in: only constructed if walk_start_pose='random' (see main()'s
+    # validation -- the -prob-start/-end flags are meaningless otherwise
+    # and rejected earlier if passed without it). A run using 'standing'
+    # or 'home' directly behaves exactly as before, no curriculum.
+    if walk_start_pose == 'random':
+        callbacks.append(HomeStartCurriculumCallback(
+            prob_start=home_start_prob_start, prob_end=home_start_prob_end,
+            decay_steps=home_start_curriculum_steps if home_start_curriculum_steps is not None
+            else decay_steps))
     callback = CallbackList(callbacks)
 
     iteration = 0
@@ -420,7 +477,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
          walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position',
-         model_path=None, position_kp=None, position_kd=None):
+         model_path=None, position_kp=None, position_kd=None, home_start_prob=None):
     kwargs = dict(render_mode='human', domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
                   control_mode=control_mode)
@@ -430,6 +487,12 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
         kwargs['position_kp'] = position_kp
     if position_kd is not None:
         kwargs['position_kd'] = position_kd
+    # walk_start_pose='random' only -- test has no curriculum (unlike
+    # train()'s HomeStartCurriculumCallback), so this is just the single
+    # fixed probability used for the whole test session. Reuses
+    # --home-start-prob-start's value; harmless to pass otherwise.
+    if home_start_prob is not None:
+        kwargs['home_start_prob'] = home_start_prob
     env = gym.make(env_id, **kwargs)
 
     if algo not in ALGOS:
@@ -515,7 +578,7 @@ def main():
     parser.add_argument('--log-dir', default='dogGymTrain_logs')
     parser.add_argument('--model-dir', default='models')
     parser.add_argument('--domain-randomization', action='store_true')
-    parser.add_argument('--walk-start-pose', default='standing', choices=['standing', 'home'],
+    parser.add_argument('--walk-start-pose', default='standing', choices=['standing', 'home', 'random'],
                          help='Dog-Walk-v0 only: episode starting pose. \'standing\' (default) '
                               'is the original behavior -- starts already standing, see this '
                               'module\'s docstring for why (composing a stand policy + a walk '
@@ -524,7 +587,12 @@ def main():
                               'has to climb to standing height AND walk forward, inspired by '
                               'friend_code\'s approach of training a single policy end-to-end '
                               'rather than assuming a separate stand policy always runs first. '
-                              'No effect on Dog-Stand-v0.')
+                              '\'random\' (2026-08-09) mixes both within ONE training run -- '
+                              'each episode independently coin-flips \'home\' vs \'standing\' '
+                              '(weighted by --home-start-prob-start/-end, see those flags), so a '
+                              'single policy learns to stand up from home AND walk, while '
+                              '\'standing\'/\'home\' remain available unchanged for a dedicated '
+                              'single-start-condition policy. No effect on Dog-Stand-v0.')
     parser.add_argument('--walk-height-fraction', type=float, default=0.90,
                          help='Dog-Walk-v0 only: target torso height during walking, as a '
                               'fraction of STAND_HEIGHT_M (0.313m). Was a hardcoded constant '
@@ -601,6 +669,23 @@ def main():
                               'range-* linearly widen from start to end, then hold at end. Defaults '
                               'to --decay-steps if not set (same "how long is the ramp" knob as '
                               'ent_coef/learning_rate decay, but independently overridable here).')
+    parser.add_argument('--home-start-prob-start', type=float, default=0.0,
+                         help='--walk-start-pose random only, --train only (2026-08-09): starting '
+                              'probability (0-1) that a WALK episode begins from \'home\' instead of '
+                              '\'standing\' -- HomeStartCurriculumCallback linearly widens this to '
+                              '--home-start-prob-end over --home-start-curriculum-steps. Default 0.0 '
+                              '(behaves like \'standing\' until the curriculum ramps up). Also used '
+                              'directly (no ramp) as --test\'s single fixed probability when testing '
+                              'a \'random\'-trained checkpoint.')
+    parser.add_argument('--home-start-prob-end', type=float, default=0.5,
+                         help='--walk-start-pose random, --train only: ending probability the '
+                              'curriculum ramps toward. Default 0.5 (even mix at full ramp) rather '
+                              'than 1.0, so the policy keeps seeing \'standing\'-start episodes '
+                              'throughout training too, not just early on. See --home-start-prob-start.')
+    parser.add_argument('--home-start-curriculum-steps', type=int, default=None,
+                         help='Cumulative timesteps over which --home-start-prob-start/-end linearly '
+                              'ramp, then hold at -end. Defaults to --decay-steps if not set, same '
+                              'convention as --gain-curriculum-steps.')
     parser.add_argument('--lr-schedule', default='linear', choices=['linear', 'adaptive'],
                          help='PPO only, --train only (2026-08-06): "linear" (default, unchanged) '
                               'uses --learning-rate/--learning-rate-end/--decay-steps\' linear decay '
@@ -695,11 +780,13 @@ def main():
               args.control_mode, args.model_path, args.position_kp, args.position_kd,
               args.position_kp_range_start, args.position_kp_range_end,
               args.position_kd_range_start, args.position_kd_range_end,
-              args.gain_curriculum_steps, args.lr_schedule, args.desired_kl)
+              args.gain_curriculum_steps, args.lr_schedule, args.desired_kl,
+              args.home_start_prob_start, args.home_start_prob_end,
+              args.home_start_curriculum_steps)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
-             args.position_kp, args.position_kd)
+             args.position_kp, args.position_kd, args.home_start_prob_start)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 
