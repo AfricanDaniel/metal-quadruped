@@ -712,21 +712,51 @@ MAX_SLEW_DEG_PER_S = 1000.0
 # is doing the real smoothing work, but doesn't hurt to keep a hard
 # ceiling).
 #
+# RAISED 0.15 -> 0.3 (2026-08-11, multi-agent review w/ Antigravity,
+# chatbot.md "EMA-trained checkpoints drag their feet") -- 0.15 fixed the
+# crouching/drift problem above but was found TOO aggressive a filter:
+# trained checkpoints (PPO_7000000_walk_position_obshistory_v22/
+# _standing_v7) showed a severe leg-usage asymmetry when measured
+# directly -- 2-3 legs stayed in near-permanent ground contact (87-100%
+# tip contact, essentially never lifting) while only 1-2 legs did almost
+# all the actual stepping (one leg up to 98% airborne). NOT literal
+# knee/nontip dragging (confirmed 0.0% nontip contact on every leg in
+# both checkpoints) -- a real, working gait, just one using far fewer
+# legs than a real trot, which visually reads as "dragging" the
+# permanently-planted legs along as static skids. Root cause: a leg
+# swing needs a large, FAST joint-angle excursion within one stride's
+# ~10-30 tick swing-phase window -- at alpha=0.15 (needing ~20 ticks to
+# reach 96% of ANY new sustained target) that swing barely has time to
+# complete at all, so a genuine 4-leg alternating gait became more
+# "expensive"/risky under the filter than concentrating swinging on
+# whichever legs could reliably complete one in time. Multi-agent
+# agreement: fix the filter's bandwidth directly (raise alpha) rather
+# than trying to counteract this via reward tuning (e.g. strengthening
+# WALK_TROT_SYMMETRY_WEIGHT/MAX_LEG_PHASE_S) -- the policy was doing the
+# mathematically optimal thing under an artificially restrictive filter;
+# punishing it for that without fixing the filter would just fight an
+# architectural bottleneck this project introduced, not a policy defect.
+#
 # Value: for i.i.d.-ish noise, an EMA's output std scales roughly as
-# input_std * sqrt(alpha / (2 - alpha)) -- at alpha=0.15 that's ~0.28x,
-# taming the measured ~35-45deg raw swings down to a ~10-13deg effective
-# range, closer to what real hardware's own client-side clamps
-# (max_delta_deg_per_step, historically 5-50deg/tick this session) can
-# actually track. A sustained, genuinely-intended target still converges
-# reasonably fast under this alpha (1-(1-0.15)^20 = 96% of the way there
-# after 20 ticks, about one gait-cycle's worth) -- untuned placeholder
-# like every other constant in this file, not a formal sweep. THIS
-# CHANGES SIM TRAINING DYNAMICS -- existing checkpoints (trained without
-# this) are unaffected by this change but don't benefit from it either;
-# only a FRESH training run picks this up. dog_deploy/policy_node.py
-# mirrors this exact transform for real deployment -- MUST stay in sync
-# if this value or mechanism ever changes.
-EMA_ALPHA = 0.15
+# input_std * sqrt(alpha / (2 - alpha)) -- at alpha=0.3 that's ~0.42x
+# (vs 0.15's ~0.28x), still real, substantial noise reduction on the
+# measured ~35-45deg raw swings, just less aggressive. Time-to-96%-of-
+# target drops from ~20 ticks (alpha=0.15) to ~9 ticks (alpha=0.3) --
+# Antigravity's framing: enough bandwidth for a legitimate fast swing to
+# actually complete within a normal stride, while still taking the edge
+# off the most violent single-tick PPO exploration noise. Untuned
+# placeholder like every other constant in this file, not a formal sweep
+# -- if leg-usage asymmetry persists at this value, 0.4 was raised as
+# the next step to try before reconsidering the whole approach. THIS
+# CHANGES SIM TRAINING DYNAMICS -- existing checkpoints (trained under
+# either no EMA or the old 0.15) are unaffected by this change but don't
+# benefit from it either; only a FRESH training run picks this up.
+# dog_deploy/policy_node.py mirrors this exact transform for real
+# deployment -- MUST stay in sync if this value or mechanism ever
+# changes (that file's own ema_alpha parameter default stays 1.0/no-op
+# regardless -- only the VALUE a user would explicitly pass to match a
+# newly-trained checkpoint changes, from 0.15 to 0.3).
+EMA_ALPHA = 0.3
 
 # TORQUE mode only (2026-08-04, user request): velocity damping, applied
 # in step() as ctrl = action - TORQUE_KD_GAIN*qvel -- MUST equal
