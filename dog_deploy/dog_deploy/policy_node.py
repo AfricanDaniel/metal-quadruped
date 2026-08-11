@@ -179,6 +179,23 @@ class PolicyNode(Node):
         self.declare_parameter('policy_path', '')
         self.declare_parameter('control_rate_hz', 20.0)
         self.declare_parameter('max_delta_deg_per_step', 5.0)
+        # POSITION mode only. 1.0 (default) = no smoothing, exactly
+        # today's existing behavior -- MUST match whatever dog_gym/envs/
+        # dog_env.py's EMA_ALPHA the loaded policy_path was actually
+        # TRAINED under (2026-08-11, multi-agent review w/ Antigravity,
+        # chatbot.md "v4 crouches on real hardware" -- see EMA_ALPHA's
+        # comment there for the full mechanism/reasoning: smooths the
+        # policy's raw, per-tick-noisy output the same way sim training
+        # now optionally does, applied BEFORE the max_delta_deg_per_step
+        # slew clamp below). Only policies TRAINED with dog_gym's
+        # EMA_ALPHA actually benefit from this being anything other than
+        # 1.0 -- an OLDER checkpoint (trained before this transform
+        # existed) doesn't expect it and shouldn't have it silently
+        # applied, which is exactly why this defaults to a no-op instead
+        # of dog_gym's own 0.15 default. This file has no way to detect
+        # which regime a given .pt was actually trained under -- set this
+        # explicitly to match, same responsibility as control_mode.
+        self.declare_parameter('ema_alpha', 1.0)
         self.declare_parameter('imu_timeout_sec', 0.5)
         self.declare_parameter('dry_run_hold_pose', True)
         # 'position' (default, unchanged) or 'torque' -- see this module's
@@ -286,6 +303,7 @@ class PolicyNode(Node):
         self.control_rate_hz = self.get_parameter('control_rate_hz').value
         self.max_delta_rad = (
             self.get_parameter('max_delta_deg_per_step').value * DEG_TO_RAD)
+        self.ema_alpha = self.get_parameter('ema_alpha').value
         self.max_target_lead_rad = (
             self.get_parameter('max_target_lead_deg').value * DEG_TO_RAD)
         self.imu_timeout_sec = self.get_parameter('imu_timeout_sec').value
@@ -534,6 +552,17 @@ class PolicyNode(Node):
         if self.control_mode == 'torque':
             self._send_torque_command(response, motor_qpos_rad, action_rad)
             return
+
+        # EMA smoothing -- see ema_alpha's declare_parameter comment for
+        # the full mechanism/reasoning. MUST mirror DogEnv.step()'s
+        # placement exactly (before the slew clamp below, same
+        # self.prev_action anchor) -- no-op at the default ema_alpha=1.0
+        # (action_rad passes through completely unchanged, today's
+        # existing behavior).
+        action_rad = [
+            self.ema_alpha * action_rad[i] + (1.0 - self.ema_alpha) * self.prev_action[i]
+            for i in range(NUM_MOTORS)
+        ]
 
         # Safety clamp, anchored to the PREVIOUS COMMANDED TARGET (not
         # the measured position) -- exactly like DogEnv.step()'s slew

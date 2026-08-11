@@ -665,6 +665,69 @@ NUM_MOTORS = 8
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
 MAX_SLEW_DEG_PER_S = 1000.0
 
+# POSITION mode only, applied every step() BEFORE MAX_SLEW_DEG_PER_S (see
+# where it's used, just below) -- direct sim-to-real mechanism fix
+# (2026-08-11, multi-agent review w/ Antigravity, chatbot.md "explain the
+# whole MAX_SLEW_DEG_PER_S=1000 issue" + "v4 crouches on real hardware").
+#
+# Root cause this addresses: MAX_SLEW_DEG_PER_S=1000 (needed for WALK
+# training to ever discover a working gait at all -- see MAX_SLEW_DEG_
+# PER_S's own extensive history) works ONLY because it lets a
+# fundamentally NOISY raw policy output (measured directly: 35-45deg
+# mean tick-to-tick swings, up to 150+deg in single ticks, even on a
+# FULLY CONVERGED checkpoint) get clamped into something that happens to
+# accumulate toward a working gait over ~20-50 ticks. The clamp was
+# always doing the smoothing -- training never actually taught the
+# network to output temporally-correlated, confident actions on its own.
+# This "works" in sim because every WALK-from-standing episode starts
+# EXACTLY at the target height (no climb needed) and sim integrates
+# noise ticks over perfectly identical 0.01s intervals, so a noisy,
+# only-WEAKLY-biased-toward-correct signal is "good enough" to hold
+# position for one short, idealized episode. Real hardware doesn't
+# forgive this: real ROS service-call timing jitter integrates the SAME
+# noise asymmetrically, and combined with real gravity/backlash (which
+# sim's idealized PD model doesn't pay for), this tips the fragile
+# noise-riding equilibrium into a slow, SELF-REINFORCING downward drift
+# -- confirmed directly on PPO_3000000_walk_position_obshistory_
+# standing_v4's real deployment: raw_action stayed just as noisy
+# (50-100+deg swings) regardless of the real max_delta_deg_per_step
+# clamp setting (tested at both 5.0 and 50.0), and the robot
+# progressively crouched toward home in both cases -- raising the real
+# clamp doesn't help because the underlying signal was never confident
+# in the first place, it was just being smoothed by a mechanism (the
+# clamp) that real hardware's own gravity/timing imperfections can
+# out-compete.
+#
+# EMA_ALPHA smooths the RAW action itself, in the SAME place the old
+# slew clamp was the only source of smoothing -- see step()'s position-
+# mode branch for exactly how (reuses self.prev_action as both the EMA's
+# previous-output state AND the slew clamp's anchor, same variable, no
+# new state). This forces PPO's OWN exploration noise to be temporally
+# correlated from step 0 of training, not just clamped after the fact --
+# a policy that wants a net large excursion has to COMMIT to a direction
+# over several consecutive ticks for the EMA to actually get there,
+# which is much closer to what real hardware's timing/dynamics can
+# actually track faithfully. MAX_SLEW_DEG_PER_S is kept as an outer
+# safety bound on top (defense in depth -- should rarely bind once EMA
+# is doing the real smoothing work, but doesn't hurt to keep a hard
+# ceiling).
+#
+# Value: for i.i.d.-ish noise, an EMA's output std scales roughly as
+# input_std * sqrt(alpha / (2 - alpha)) -- at alpha=0.15 that's ~0.28x,
+# taming the measured ~35-45deg raw swings down to a ~10-13deg effective
+# range, closer to what real hardware's own client-side clamps
+# (max_delta_deg_per_step, historically 5-50deg/tick this session) can
+# actually track. A sustained, genuinely-intended target still converges
+# reasonably fast under this alpha (1-(1-0.15)^20 = 96% of the way there
+# after 20 ticks, about one gait-cycle's worth) -- untuned placeholder
+# like every other constant in this file, not a formal sweep. THIS
+# CHANGES SIM TRAINING DYNAMICS -- existing checkpoints (trained without
+# this) are unaffected by this change but don't benefit from it either;
+# only a FRESH training run picks this up. dog_deploy/policy_node.py
+# mirrors this exact transform for real deployment -- MUST stay in sync
+# if this value or mechanism ever changes.
+EMA_ALPHA = 0.15
+
 # TORQUE mode only (2026-08-04, user request): velocity damping, applied
 # in step() as ctrl = action - TORQUE_KD_GAIN*qvel -- MUST equal
 # actuator's own torque_kd_gain parameter (basic_control.cpp) exactly, in
@@ -1849,6 +1912,16 @@ class DogEnv(gym.Env):
                 # ctrl, and every reward term still operate on absolute
                 # angles exactly as before.
                 action = self._walk_default_action_rad + action
+            # EMA smoothing (see EMA_ALPHA's comment for the full
+            # mechanism/reasoning) -- applied to the RAW action BEFORE the
+            # slew clamp below, reusing self.prev_action as the EMA's own
+            # previous-output state (same variable already anchors the
+            # slew clamp -- no new state needed). This is what forces
+            # PPO's own exploration noise to be temporally correlated
+            # from step 0 of training, rather than relying entirely on
+            # the slew clamp below to smooth a fundamentally noisy raw
+            # signal after the fact.
+            action = EMA_ALPHA * action + (1.0 - EMA_ALPHA) * self.prev_action
             # Rate-limit how far any single motor's target can move per step,
             # same idea (and same underlying number) as dog_deploy/policy_node.py's
             # real-hardware safety clamp: that clamps 5deg per 20Hz control tick
