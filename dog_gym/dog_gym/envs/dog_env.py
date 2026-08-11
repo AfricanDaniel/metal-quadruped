@@ -216,6 +216,38 @@ BACK_LEG_X_OFFSET_RANGE_M = (0.000, 0.015)  # 5-15mm inward, sampled independent
 # sense of the actual slop.
 BATTERY_Y_JITTER_RANGE_M = 0.005  # +-5mm along the insertion axis
 
+# Overall robot center-of-mass domain randomization (2026-08-10, direct
+# user request + multi-agent review w/ Antigravity, chatbot.md "add
+# domain randomization to the center of mass of the overall robot").
+# Jitters the TORSO body's own <inertial> offset (self.model.body_ipos,
+# same mutable-field pattern as body_pos above -- dog.mjcf.xml defines an
+# explicit torso inertial at pos="0 0.0005 -0.065342", not an
+# auto-computed one) -- torso mass (4.73kg) dominates the robot's total
+# ~12.6kg, so this is a direct, standard way (well-established technique
+# in legged-robot sim-to-real literature generally, not specific to this
+# project) to cover residual real-vs-CAD mass-distribution uncertainty
+# NOT already explained by the specifically-modeled sources above
+# (battery position, back-leg attachment offset) -- e.g. unmodeled
+# wiring/connectors/minor asymmetries in the torso shell itself. Opt-in
+# via domain_randomization, same convention as every other randomization
+# here -- no "known correct" offset to apply by default.
+#
+# XY (horizontal) vs Z (vertical) given SEPARATE ranges, Antigravity's
+# extension on my first draft (which left Z at default): XY shift
+# dominates tipping/roll/asymmetric loading (the primary real-hardware
+# problem this whole session has been chasing), so gets the larger range;
+# Z shift alters the robot's effective inverted-pendulum dynamics (swing
+# timing, hip torque requirements) rather than static tipping, a real but
+# smaller effect -- given a smaller range specifically so the policy
+# still sees SOME robustness pressure for things like the battery sagging
+# slightly or the wiring harness sitting lower than modeled, without
+# treating it as equally significant as the horizontal uncertainty.
+# Both untuned placeholders, no real measurement to calibrate against
+# (same situation as FLOOR_FRICTION_RANGE) -- adjust based on real-
+# hardware transfer results, not further sim-only reasoning.
+TORSO_COM_JITTER_XY_RANGE_M = 0.008  # +-8mm, X (left-right) and Y (front-back)
+TORSO_COM_JITTER_Z_RANGE_M = 0.003  # +-3mm, Z (up-down)
+
 # Walk task's target torso height, as a fraction of STAND_HEIGHT_M.
 # RAISED 0.75 -> 0.90 (2026-08-02, user request). A crouched
 # target -- legs more bent than full standing extension -- is standard
@@ -317,6 +349,43 @@ WALK_PITCH_PENALTY_WEIGHT = 3.0
 # actual yaw-rate/heading-drift numbers closely.
 WALK_LATERAL_VEL_PENALTY_WEIGHT = 5.0
 WALK_YAW_RATE_PENALTY_WEIGHT = 2.0
+
+# WALK-wide (not is_stand_and_walk-scoped, same as the two weights above)
+# -- ESCALATION on top of WALK_YAW_RATE_PENALTY_WEIGHT (2026-08-10, user
+# report: PPO_5000000_walk_position_obshistory_v20 still curves on real
+# hardware; multi-agent review w/ Antigravity, chatbot.md "v20 still
+# doesn't walk straight"). Mechanism: a pure yaw-RATE penalty (gyro_z
+# squared) heavily punishes fast spinning but is only infinitesimally
+# costly for a slow, CONSTANT drift -- e.g. a steady 0.1 rad/s drift
+# costs just 2.0*0.1**2=0.02/tick. If there's a PERSISTENT bias (the same
+# back-leg mechanical asymmetry this whole session has been chasing --
+# see item 1's v20 CSV analysis: leg_d_thigh mean torque -7.55N*m, a
+# massive, consistent outlier vs the other 3 legs), the policy can find
+# it cheaper to accept a small constant residual yaw rate than to
+# actively fight the bias every tick -- a rate penalty alone doesn't
+# distinguish "small and momentary" from "small and forever", and the
+# latter integrates to a large total heading change over a 10s episode
+# even though it never once looked expensive on any single tick. This
+# was flagged as the likely next lever back when the rate-penalty-only
+# version was first implemented (chatbot.md "help WALK walk straight"),
+# deliberately deferred pending real data -- the user's direct real-
+# hardware report is that data.
+#
+# STACKED on top of (not replacing) WALK_YAW_RATE_PENALTY_WEIGHT --
+# Antigravity's framing: the rate penalty is a damping (D) term
+# preventing high-frequency spinning/jitter, the new absolute-deviation
+# penalty is a proportional (P) term correcting long-term drift; they
+# serve different purposes, and replacing the rate term with only the
+# absolute one would likely let the robot oscillate/fishtail across the
+# target heading instead of settling. See heading_deviation_penalty in
+# _compute_reward_walk() -- self._episode_start_yaw captured at reset(),
+# _torso_yaw_rad() vs that reference, WRAPPED to [-pi, pi] before
+# squaring (a naive difference would jump discontinuously if the robot
+# ever crosses the +-pi boundary). Weight picked so a real, noticeable
+# ~10deg (0.17rad) drift costs a meaningful ~0.14/tick (4.0*0.17**2),
+# competitive with -- not dominated by -- the other terms. Untuned
+# placeholder like the rate weight above, not a formal sweep.
+WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 
 # STAND+WALK ONLY (walk_start_pose='random') -- see _compute_reward_walk()'s
 # "STAND+WALK ONLY SECTION" comment for the full derivation. Fraction of
@@ -1121,6 +1190,13 @@ class DogEnv(gym.Env):
             self.model, mujoco.mjtObj.mjOBJ_BODY, 'battery_mass')
         self.default_battery_pos = self.model.body_pos[self.battery_body_id].copy()
 
+        # Overall robot CoM domain randomization (2026-08-10, see
+        # TORSO_COM_JITTER_XY_RANGE_M's comment) -- jitters the TORSO's
+        # own <inertial> offset (body_ipos, not body_pos -- this is the
+        # body's internal mass-center offset, not its position in the
+        # kinematic tree), same default-snapshot pattern as above.
+        self.default_torso_ipos = self.model.body_ipos[self.torso_body_id].copy()
+
         # Each leg's collision capsule is named "<leg>_calf" (same name as
         # the calf joint, different MuJoCo namespace) and runs knee->foot
         # as ONE capsule (no separate foot geom) -- so a contact anywhere
@@ -1357,6 +1433,12 @@ class DogEnv(gym.Env):
         # value set at the end of reset() below, once this episode's
         # starting pose is finalized; 0.0 here is just a placeholder.
         self._episode_start_y = 0.0
+        # Torso heading (yaw) at episode start -- see
+        # WALK_HEADING_DEVIATION_PENALTY_WEIGHT's comment /
+        # _compute_reward_walk()'s heading_deviation_penalty. Same
+        # end-of-reset()-sets-the-real-value pattern as
+        # self._episode_start_y above.
+        self._episode_start_yaw = 0.0
 
         # motor qpos (8) + motor qvel (8) + IMU sensordata + prev_action (8)
         self.single_obs_dim = NUM_MOTORS + NUM_MOTORS + self.model.nsensordata + NUM_MOTORS
@@ -1558,6 +1640,19 @@ class DogEnv(gym.Env):
         else:
             self.model.body_pos[self.battery_body_id] = self.default_battery_pos
 
+        # Overall robot CoM jitter -- see TORSO_COM_JITTER_XY_RANGE_M's
+        # comment. Opt-in only, same reasoning as battery jitter above --
+        # no fixed "correct" offset to apply unconditionally.
+        if self.domain_randomization:
+            com_jitter = np.array([
+                self.np_random.uniform(-TORSO_COM_JITTER_XY_RANGE_M, TORSO_COM_JITTER_XY_RANGE_M),
+                self.np_random.uniform(-TORSO_COM_JITTER_XY_RANGE_M, TORSO_COM_JITTER_XY_RANGE_M),
+                self.np_random.uniform(-TORSO_COM_JITTER_Z_RANGE_M, TORSO_COM_JITTER_Z_RANGE_M),
+            ])
+            self.model.body_ipos[self.torso_body_id] = self.default_torso_ipos + com_jitter
+        else:
+            self.model.body_ipos[self.torso_body_id] = self.default_torso_ipos
+
         # position_kp_range/position_kd_range (see __init__'s comment):
         # fresh sample every episode from whatever the CURRENT range
         # bounds are (may have been widened since the last episode by a
@@ -1593,6 +1688,9 @@ class DogEnv(gym.Env):
         # read AFTER mj_forward above, same reasoning as
         # _belt_target_abs_calf's own comment.
         self._episode_start_y = self.data.xpos[self.torso_body_id][1]
+        # See WALK_HEADING_DEVIATION_PENALTY_WEIGHT's comment -- same
+        # timing reasoning as self._episode_start_y above.
+        self._episode_start_yaw = self._torso_yaw_rad()
 
         # Populate initial history (copy the first obs to all history slots)
         initial_obs = self._get_obs()
@@ -1986,6 +2084,21 @@ class DogEnv(gym.Env):
         gap up_z's insensitivity was masking)."""
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         return np.arcsin(np.clip(-xmat[2, 1], -1.0, 1.0))
+
+    def _torso_yaw_rad(self):
+        """Heading angle (radians) about the world z-axis: 0 = facing the
+        model's native forward (+y) direction, matching atan2's standard
+        convention -- world-x/y components of the torso's local FORWARD
+        (y) axis, same xmat layout convention as _torso_up_z()/
+        _torso_pitch_rad() (columns = local axes in world coords). Same
+        underlying quantity _body_frame_xy_velocity() already uses
+        implicitly (via the raw xmat columns directly) -- this is the
+        explicit angle, added 2026-08-10 for WALK_HEADING_DEVIATION_
+        PENALTY_WEIGHT's episode-start-relative comparison (see that
+        constant's comment), which needs an actual angle to diff, not
+        just a projection."""
+        xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
+        return np.arctan2(xmat[0, 1], xmat[1, 1])
 
     def _body_frame_xy_velocity(self):
         """(forward, lateral) components of the free joint's world-frame
@@ -3334,6 +3447,18 @@ class DogEnv(gym.Env):
         lateral_velocity_penalty = -(lateral_velocity ** 2)
         yaw_rate_penalty = -(self.data.sensordata[5] ** 2)
 
+        # -(heading_deviation)^2 -- see WALK_HEADING_DEVIATION_PENALTY_
+        # WEIGHT's comment for the full mechanism/reasoning (stacked on
+        # TOP of yaw_rate_penalty above, not a replacement). WRAPPED to
+        # [-pi, pi] before squaring -- a naive (current - start)
+        # difference would jump discontinuously by ~2*pi if the robot
+        # ever crosses the wraparound boundary (e.g. current=+3.13rad,
+        # start=-3.13rad is actually a tiny ~0.02rad real difference, not
+        # the ~6.26rad a naive subtraction would compute).
+        yaw_diff = self._torso_yaw_rad() - self._episode_start_yaw
+        yaw_diff = (yaw_diff + np.pi) % (2 * np.pi) - np.pi
+        heading_deviation_penalty = -(yaw_diff ** 2)
+
         # SIMPLIFIED-REWARD EXPERIMENT (2026-08-02, `simple_rewards` branch,
         # user request: "only include forward movement, base height").
         # Every OTHER term below is deliberately zeroed via its coefficient,
@@ -3429,6 +3554,7 @@ class DogEnv(gym.Env):
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
             + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty
+            + 1.0 * WALK_HEADING_DEVIATION_PENALTY_WEIGHT * heading_deviation_penalty
             + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + 0.02 * calf_swing_motion_reward
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
