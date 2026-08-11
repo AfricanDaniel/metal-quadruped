@@ -237,6 +237,23 @@ class PolicyNode(Node):
         # (e.g. matching a specific /set_home call's response) without
         # needing the robot physically re-posed at that exact stance.
         self.declare_parameter('home_position_deg', [])
+        # '' (default) disables this -- unchanged behavior. When set (and
+        # home_position_deg above is NOT also given -- that still takes
+        # priority), loads home_position_deg from this YAML cache file
+        # instead of auto-capturing from whatever position the robot is
+        # CURRENTLY in. See dog_deploy/set_home_and_cache.py -- written by
+        # that node's own /set_home call, at the moment the robot is
+        # PROVABLY tucked (not whenever this policy_node happens to
+        # start). Added 2026-08-10 (chatbot.md "running STAND then
+        # WALK-from-standing back to back") after auto-capture was found
+        # to silently corrupt a SECOND policy_node run's home reference if
+        # it starts while the robot is already standing (from a prior
+        # policy) rather than tucked -- every subsequent observation then
+        # reads as "near home" even though the robot is actually fully
+        # extended, producing wrong, potentially dangerous actions. Use
+        # this for any workflow that runs more than one policy_node in
+        # sequence against the same physical home reference.
+        self.declare_parameter('home_position_deg_cache_path', '')
         # Windup guard for the prev_action-anchored slew limiter (see
         # _on_positions_read): max degrees the commanded target may LEAD
         # the measured position. Large enough to never bind during
@@ -335,6 +352,7 @@ class PolicyNode(Node):
                 self.get_logger().warning(f'Waiting for {name} service (is actuator running?)...')
 
         home_position_deg = list(self.get_parameter('home_position_deg').value)
+        home_cache_path = self.get_parameter('home_position_deg_cache_path').value
         if home_position_deg:
             if len(home_position_deg) != NUM_MOTORS:
                 raise ValueError(
@@ -342,10 +360,22 @@ class PolicyNode(Node):
                     f'got {len(home_position_deg)}')
             self.home_position_deg = home_position_deg
             self.get_logger().info(f'Using provided home_position_deg: {self.home_position_deg}')
+        elif home_cache_path:
+            # See home_position_deg_cache_path's declare_parameter comment
+            # -- written by set_home_and_cache.py, at the moment the robot
+            # was PROVABLY tucked (when /set_home was called), not
+            # whatever position it's in right now.
+            cache_path = os.path.expanduser(home_cache_path)
+            self.get_logger().info(f'Loading home_position_deg from cache: {cache_path}')
+            with open(cache_path) as f:
+                cached = yaml.safe_load(f)['home_position_deg']
+            self.home_position_deg = [cached[i] for i in range(1, NUM_MOTORS + 1)]
+            self.get_logger().info(f'Loaded home_position_deg from cache: {self.home_position_deg}')
         else:
             self.get_logger().info(
-                'No home_position_deg provided -- reading current motor positions as home. '
-                'The robot MUST already be physically posed at the tucked/home stance now.')
+                'No home_position_deg or home_position_deg_cache_path provided -- reading '
+                'current motor positions as home. The robot MUST already be physically posed '
+                'at the tucked/home stance now.')
             request = ReadMotorPositions.Request()
             request.motor_id = list(range(1, NUM_MOTORS + 1))
             future = self.read_client.call_async(request)

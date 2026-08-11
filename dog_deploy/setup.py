@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             'policy_node = dog_deploy.policy_node:main',
             'leg_isolation_test = dog_deploy.leg_isolation_test:main',
+            'set_home_and_cache = dog_deploy.set_home_and_cache:main',
         ],
     },
 )
