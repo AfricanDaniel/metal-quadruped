@@ -290,6 +290,44 @@ WALK_HEIGHT_FRACTION = 0.95
 ACTION_RATE_PENALTY_WEIGHT_RISING = -0.1
 ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
 
+# WALK-only, SEPARATE from STAND's ACTION_RATE_PENALTY_WEIGHT_RISING/
+# _STANDING above (2026-08-11, multi-agent review w/ Antigravity,
+# chatbot.md "revert EMA and implement the two reward-based fixes") --
+# WALK previously reused STAND's _RISING weight (-0.1) for its own flat
+# action_rate_penalty; split out into its own constant so raising this
+# doesn't also change STAND's already-tuned/battle-tested calibration
+# (same per-task-split convention already established for angular_vel_
+# penalty -- see STAND_ANGULAR_VEL_PENALTY_WEIGHT/WALK_ANGULAR_VEL_
+# PENALTY_WEIGHT).
+#
+# Raised 10x (-0.1 -> -1.0), same order-of-magnitude jump as the
+# 2026-07-27 STAND fix this mechanism already has on record (-0.01 ->
+# -0.1, see _action_rate_penalty()'s own docstring) -- direct reward-
+# based replacement for the EMA output-smoothing filter (see
+# MAX_SLEW_DEG_PER_S's block above for that attempt's full history and
+# why it was reverted): rather than architecturally forcing smoothness
+# via a filter that also throttled legitimate fast leg swings, this lets
+# PPO learn temporal smoothness on its own, penalizing the SAME raw
+# tick-to-tick action deltas (measured directly: 35-45deg mean swings,
+# up to 150+deg single-tick, even on converged pre-fix checkpoints) that
+# real hardware's timing/dynamics can't track faithfully. Quadratic in
+# delta (_action_rate_penalty()'s own formula), so a normal, purposeful
+# ~10deg/tick swing across a couple motors costs only a small, tolerable
+# amount (~0.06 at this weight) while a noisy ~40deg/tick multi-motor
+# swing costs substantially more (~1.2) -- meant to be a real, felt
+# competitor to forward_velocity_reward's weight 5.0 for noisy motion
+# specifically, without fighting genuinely large corrective swings the
+# way a uniform filter would. Untuned placeholder like every other
+# constant in this file, not a formal sweep -- watch the next training
+# run's actual raw-action tick-to-tick statistics (same measurement used
+# throughout this investigation) to see if this needs to go higher.
+WALK_ACTION_RATE_PENALTY_WEIGHT = -1.0
+
+# WALK-only -- see height_sag_penalty's comment in _compute_reward_walk()
+# for the full mechanism/reasoning (2026-08-11, multi-agent review w/
+# Antigravity, same round as WALK_ACTION_RATE_PENALTY_WEIGHT above).
+WALK_HEIGHT_SAG_PENALTY_WEIGHT = 100.0
+
 # _angular_vel_penalty()'s per-task weights -- see that method's
 # docstring for the full 2026-07-30 derivation (walk-specific wobble
 # getting worse with more training while forward_velocity_reward
@@ -665,98 +703,26 @@ NUM_MOTORS = 8
 # safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
 MAX_SLEW_DEG_PER_S = 1000.0
 
-# POSITION mode only, applied every step() BEFORE MAX_SLEW_DEG_PER_S (see
-# where it's used, just below) -- direct sim-to-real mechanism fix
-# (2026-08-11, multi-agent review w/ Antigravity, chatbot.md "explain the
-# whole MAX_SLEW_DEG_PER_S=1000 issue" + "v4 crouches on real hardware").
-#
-# Root cause this addresses: MAX_SLEW_DEG_PER_S=1000 (needed for WALK
-# training to ever discover a working gait at all -- see MAX_SLEW_DEG_
-# PER_S's own extensive history) works ONLY because it lets a
-# fundamentally NOISY raw policy output (measured directly: 35-45deg
-# mean tick-to-tick swings, up to 150+deg in single ticks, even on a
-# FULLY CONVERGED checkpoint) get clamped into something that happens to
-# accumulate toward a working gait over ~20-50 ticks. The clamp was
-# always doing the smoothing -- training never actually taught the
-# network to output temporally-correlated, confident actions on its own.
-# This "works" in sim because every WALK-from-standing episode starts
-# EXACTLY at the target height (no climb needed) and sim integrates
-# noise ticks over perfectly identical 0.01s intervals, so a noisy,
-# only-WEAKLY-biased-toward-correct signal is "good enough" to hold
-# position for one short, idealized episode. Real hardware doesn't
-# forgive this: real ROS service-call timing jitter integrates the SAME
-# noise asymmetrically, and combined with real gravity/backlash (which
-# sim's idealized PD model doesn't pay for), this tips the fragile
-# noise-riding equilibrium into a slow, SELF-REINFORCING downward drift
-# -- confirmed directly on PPO_3000000_walk_position_obshistory_
-# standing_v4's real deployment: raw_action stayed just as noisy
-# (50-100+deg swings) regardless of the real max_delta_deg_per_step
-# clamp setting (tested at both 5.0 and 50.0), and the robot
-# progressively crouched toward home in both cases -- raising the real
-# clamp doesn't help because the underlying signal was never confident
-# in the first place, it was just being smoothed by a mechanism (the
-# clamp) that real hardware's own gravity/timing imperfections can
-# out-compete.
-#
-# EMA_ALPHA smooths the RAW action itself, in the SAME place the old
-# slew clamp was the only source of smoothing -- see step()'s position-
-# mode branch for exactly how (reuses self.prev_action as both the EMA's
-# previous-output state AND the slew clamp's anchor, same variable, no
-# new state). This forces PPO's OWN exploration noise to be temporally
-# correlated from step 0 of training, not just clamped after the fact --
-# a policy that wants a net large excursion has to COMMIT to a direction
-# over several consecutive ticks for the EMA to actually get there,
-# which is much closer to what real hardware's timing/dynamics can
-# actually track faithfully. MAX_SLEW_DEG_PER_S is kept as an outer
-# safety bound on top (defense in depth -- should rarely bind once EMA
-# is doing the real smoothing work, but doesn't hurt to keep a hard
-# ceiling).
-#
-# RAISED 0.15 -> 0.3 (2026-08-11, multi-agent review w/ Antigravity,
-# chatbot.md "EMA-trained checkpoints drag their feet") -- 0.15 fixed the
-# crouching/drift problem above but was found TOO aggressive a filter:
-# trained checkpoints (PPO_7000000_walk_position_obshistory_v22/
-# _standing_v7) showed a severe leg-usage asymmetry when measured
-# directly -- 2-3 legs stayed in near-permanent ground contact (87-100%
-# tip contact, essentially never lifting) while only 1-2 legs did almost
-# all the actual stepping (one leg up to 98% airborne). NOT literal
-# knee/nontip dragging (confirmed 0.0% nontip contact on every leg in
-# both checkpoints) -- a real, working gait, just one using far fewer
-# legs than a real trot, which visually reads as "dragging" the
-# permanently-planted legs along as static skids. Root cause: a leg
-# swing needs a large, FAST joint-angle excursion within one stride's
-# ~10-30 tick swing-phase window -- at alpha=0.15 (needing ~20 ticks to
-# reach 96% of ANY new sustained target) that swing barely has time to
-# complete at all, so a genuine 4-leg alternating gait became more
-# "expensive"/risky under the filter than concentrating swinging on
-# whichever legs could reliably complete one in time. Multi-agent
-# agreement: fix the filter's bandwidth directly (raise alpha) rather
-# than trying to counteract this via reward tuning (e.g. strengthening
-# WALK_TROT_SYMMETRY_WEIGHT/MAX_LEG_PHASE_S) -- the policy was doing the
-# mathematically optimal thing under an artificially restrictive filter;
-# punishing it for that without fixing the filter would just fight an
-# architectural bottleneck this project introduced, not a policy defect.
-#
-# Value: for i.i.d.-ish noise, an EMA's output std scales roughly as
-# input_std * sqrt(alpha / (2 - alpha)) -- at alpha=0.3 that's ~0.42x
-# (vs 0.15's ~0.28x), still real, substantial noise reduction on the
-# measured ~35-45deg raw swings, just less aggressive. Time-to-96%-of-
-# target drops from ~20 ticks (alpha=0.15) to ~9 ticks (alpha=0.3) --
-# Antigravity's framing: enough bandwidth for a legitimate fast swing to
-# actually complete within a normal stride, while still taking the edge
-# off the most violent single-tick PPO exploration noise. Untuned
-# placeholder like every other constant in this file, not a formal sweep
-# -- if leg-usage asymmetry persists at this value, 0.4 was raised as
-# the next step to try before reconsidering the whole approach. THIS
-# CHANGES SIM TRAINING DYNAMICS -- existing checkpoints (trained under
-# either no EMA or the old 0.15) are unaffected by this change but don't
-# benefit from it either; only a FRESH training run picks this up.
-# dog_deploy/policy_node.py mirrors this exact transform for real
-# deployment -- MUST stay in sync if this value or mechanism ever
-# changes (that file's own ema_alpha parameter default stays 1.0/no-op
-# regardless -- only the VALUE a user would explicitly pass to match a
-# newly-trained checkpoint changes, from 0.15 to 0.3).
-EMA_ALPHA = 0.3
+# EMA output-smoothing filter TRIED AND REVERTED (2026-08-11, multi-agent
+# review w/ Antigravity, chatbot.md "the alpha=0.3 fix made things worse"
+# -- full history there, not repeated here). Attempted as a sim-to-real
+# fix for real-hardware crouching (raw policy output measured noisy,
+# 35-45deg mean tick-to-tick swings even on converged checkpoints -- see
+# MAX_SLEW_DEG_PER_S's own history for why that noise exists in the first
+# place). Tried at alpha=0.15, then 0.3 after 0.15 was found to cause a
+# severe leg-usage asymmetry (2-3 legs pinned near-permanently planted).
+# Raising alpha to 0.3 made every measured sim metric WORSE, not better,
+# compared to both the alpha=0.15 checkpoint AND the pre-EMA baseline
+# (lower forward velocity, early terminations via knee-dragging, MORE
+# extreme leg-asymmetry, not less) -- confirmed across all 3 checkpoints
+# along that training run's own arc (3M/5M/7M), ruling out "just needs
+# more training." Multi-agent conclusion: abandon the architectural
+# filter entirely -- it was blunt-instrument smoothing every action
+# uniformly, including the large fast excursions a real leg swing
+# legitimately needs, and the pre-EMA baseline was the best-performing
+# checkpoint in this whole comparison regardless. Replaced with two
+# targeted, reward-based fixes instead -- see WALK_ACTION_RATE_PENALTY_
+# WEIGHT and WALK_HEIGHT_SAG_PENALTY_WEIGHT below.
 
 # TORQUE mode only (2026-08-04, user request): velocity damping, applied
 # in step() as ctrl = action - TORQUE_KD_GAIN*qvel -- MUST equal
@@ -1942,16 +1908,6 @@ class DogEnv(gym.Env):
                 # ctrl, and every reward term still operate on absolute
                 # angles exactly as before.
                 action = self._walk_default_action_rad + action
-            # EMA smoothing (see EMA_ALPHA's comment for the full
-            # mechanism/reasoning) -- applied to the RAW action BEFORE the
-            # slew clamp below, reusing self.prev_action as the EMA's own
-            # previous-output state (same variable already anchors the
-            # slew clamp -- no new state needed). This is what forces
-            # PPO's own exploration noise to be temporally correlated
-            # from step 0 of training, rather than relying entirely on
-            # the slew clamp below to smooth a fundamentally noisy raw
-            # signal after the fact.
-            action = EMA_ALPHA * action + (1.0 - EMA_ALPHA) * self.prev_action
             # Rate-limit how far any single motor's target can move per step,
             # same idea (and same underlying number) as dog_deploy/policy_node.py's
             # real-hardware safety clamp: that clamps 5deg per 20Hz control tick
@@ -3399,6 +3355,43 @@ class DogEnv(gym.Env):
             height_target = self._walk_target_height_m
         height_reward = -abs(self._torso_height() - height_target)
 
+        # height_sag_penalty (2026-08-11, multi-agent review w/
+        # Antigravity, chatbot.md "revert EMA and implement the two
+        # reward-based fixes") -- direct reward-based replacement for the
+        # EMA output-smoothing filter's OTHER intended purpose (see
+        # MAX_SLEW_DEG_PER_S's block above for that attempt's full
+        # history): real-hardware deployments showed a slow, SELF-
+        # REINFORCING downward drift in torso height over an episode --
+        # confirmed the mechanism directly (chatbot.md "explain the whole
+        # MAX_SLEW_DEG_PER_S=1000 issue"): real timing jitter integrates
+        # the policy's own noisy raw action asymmetrically, and combined
+        # with real gravity/backlash sim doesn't pay for, this tips a
+        # fragile noise-riding equilibrium into progressive sagging that
+        # the existing LINEAR height_reward (weight 2.5, symmetric,
+        # equally weak whether over or under target) was never strong
+        # enough to actively fight once it started. This term is
+        # deliberately ASYMMETRIC (only active when BELOW target, unlike
+        # height_reward which penalizes both directions equally) and
+        # QUADRATIC (not linear) specifically so the RESTORING force gets
+        # sharply stronger the further it sags, rather than a constant
+        # gentle pull that a small amount of noise/drift can out-compete
+        # -- directly targets "actively resist ongoing sag," which is a
+        # different job than height_reward's "gently prefer being near
+        # target." height_deficit clipped to >=0 so this contributes
+        # NOTHING when at or above target (overshoot is height_reward's
+        # job alone, unaffected by this term). Applied GENERALLY (not
+        # is_stand_and_walk-scoped) -- the real-hardware crouching this
+        # addresses was observed on plain walk-from-home/walk-from-
+        # standing checkpoints, not just the combined mode. Weight is a
+        # large number specifically because typical deficits are small in
+        # meters (a real 5-10cm sag is only 0.0025-0.01 squared) --
+        # WALK_HEIGHT_SAG_PENALTY_WEIGHT=100 makes even a modest ~10cm
+        # sag cost ~1.0, competitive with forward_velocity_reward's
+        # weight-5.0 typical per-tick contribution. Untuned placeholder
+        # like every other constant in this file, not a formal sweep.
+        height_deficit = max(0.0, height_target - self._torso_height())
+        height_sag_penalty = -(height_deficit ** 2)
+
         # Walk on the feet, not the knees/shins -- this task previously had
         # NO foot-placement term at all, which is exactly why a trained
         # policy was observed walking on its knees: nothing in the reward
@@ -3513,8 +3506,11 @@ class DogEnv(gym.Env):
         # Flat, NOT gated by height_progress (unlike the stand task's,
         # see ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING's comment) --
         # walking needs continuous leg motion forever, there's no
-        # "should now be still" phase to gate toward here.
-        action_rate_penalty = self._action_rate_penalty(action, ACTION_RATE_PENALTY_WEIGHT_RISING)
+        # "should now be still" phase to gate toward here. Uses its OWN
+        # WALK_ACTION_RATE_PENALTY_WEIGHT (see that constant's comment) --
+        # previously reused STAND's _RISING weight, split out 2026-08-11
+        # so raising it doesn't also affect STAND's own calibration.
+        action_rate_penalty = self._action_rate_penalty(action, WALK_ACTION_RATE_PENALTY_WEIGHT)
 
         # forward_velocity_reward weight raised 2.0 -> 5.0 (2026-07-29):
         # PPO_13000000_walk_policy_v3 measured foot_clearance_reward's
@@ -3634,6 +3630,7 @@ class DogEnv(gym.Env):
             + 0.5 * upright_reward
             + 1.0 * climb_posture_reward
             + 2.5 * height_reward
+            + WALK_HEIGHT_SAG_PENALTY_WEIGHT * height_sag_penalty
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
             + 1.0 * foot_clearance_reward
@@ -3658,7 +3655,7 @@ class DogEnv(gym.Env):
             + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
             + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty
             + 1.0 * WALK_HEADING_DEVIATION_PENALTY_WEIGHT * heading_deviation_penalty
-            + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            + 0.5 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + 0.02 * calf_swing_motion_reward
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
