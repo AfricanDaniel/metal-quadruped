@@ -317,11 +317,39 @@ ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
 # swing costs substantially more (~1.2) -- meant to be a real, felt
 # competitor to forward_velocity_reward's weight 5.0 for noisy motion
 # specifically, without fighting genuinely large corrective swings the
-# way a uniform filter would. Untuned placeholder like every other
-# constant in this file, not a formal sweep -- watch the next training
-# run's actual raw-action tick-to-tick statistics (same measurement used
-# throughout this investigation) to see if this needs to go higher.
-WALK_ACTION_RATE_PENALTY_WEIGHT = -1.0
+# way a uniform filter would.
+#
+# RAISED -1.0 -> -3.0 (2026-08-11, multi-agent review w/ Antigravity,
+# chatbot.md "v24 plateauing" -- same round as WALK_TROT_SYMMETRY_
+# WEIGHT's own increase below). Measured directly on PPO_3000000_walk_
+# position_obshistory_v24 (trained under the -1.0 value): mean raw-
+# action tick-to-tick delta INCREASED 2M->3M steps (0.5403 -> 0.7041
+# rad), not decreased -- the opposite of this term's intent. Antigravity's
+# read: the policy found it mathematically worthwhile to eat the -1.0
+# penalty in exchange for whatever the violent movements unlock, i.e.
+# -1.0 was still too weak to be a real deterrent. Picked -3.0 (the lower
+# end of Antigravity's -3.0/-5.0 suggested range) as the next step rather
+# than jumping straight to -5.0, since this is now the SECOND increase
+# with no data yet on how -3.0 alone performs -- go further if the same
+# rising-noise pattern persists. Still an untuned placeholder, not a
+# formal sweep -- watch the next training run's actual raw-action
+# tick-to-tick statistics the same way this round's diagnosis did.
+#
+# REVERTED -3.0 -> -0.1 (2026-08-11, direct user request: "revert those
+# also" -- alongside WALK_TROT_SYMMETRY_WEIGHT below and the already-
+# stashed height_sag_penalty -- user wants to get back to the exact
+# behavior PPO_5000000_walk_position_obshistory_v20 (the confirmed-best
+# checkpoint in every sim comparison this whole thread) was trained
+# under, to isolate/test something specific. -0.1 numerically matches
+# what WALK was using BEFORE this constant was even split out from
+# STAND's own ACTION_RATE_PENALTY_WEIGHT_RISING (v20 predates that
+# split too -- it reused STAND's -0.1 directly). Kept the split
+# constant itself rather than reverting to literally reusing STAND's --
+# the split is a genuine, independent code-quality improvement (so a
+# future STAND-only tuning pass can't silently affect WALK again) with
+# nothing to do with the specific -0.1/-1.0/-3.0 value question being
+# tested here; only the VALUE reverts, not the structural split.
+WALK_ACTION_RATE_PENALTY_WEIGHT = -0.1
 
 # WALK-only -- see height_sag_penalty's comment in _compute_reward_walk()
 # for the full mechanism/reasoning (2026-08-11, multi-agent review w/
@@ -531,6 +559,36 @@ WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 # doing more work than assumed. Back at 0.5 -- a third of the original
 # 1.5, enough to reapply that pressure without letting it dominate
 # forward_velocity_reward (5.0) again.
+#
+# RAISED 0.5 -> 2.5 (2026-08-11, multi-agent review w/ Antigravity,
+# chatbot.md "v24 plateauing" -- primary lever against a persistent
+# leg-usage-asymmetry local optimum, same round as WALK_ACTION_RATE_
+# PENALTY_WEIGHT's own increase above). Measured directly on
+# PPO_3000000_walk_position_obshistory_v24: 2 of 4 legs (a, d) pinned
+# near-permanently planted (97-100% tip contact) while the other 2 did
+# almost all the stepping -- the EXACT "two legs go dormant" pattern
+# this term exists to fight, and it PERSISTED essentially unchanged
+# across THREE separate smoothing regimes this session (EMA=0.15,
+# EMA=0.3, and no-EMA/action_rate_penalty), confirming it's a genuinely
+# separate, persistent local optimum, not something either smoothing
+# approach was ever going to fix on its own. At the old 0.5, this term
+# was easily dwarfed by forward_velocity_reward's 5.0 -- raised to 2.5
+# (matching the same "high 2s, meaningful but not dominant" scale
+# WALK_PITCH_PENALTY_WEIGHT=3.0/height_reward's 2.5 already use) so the
+# cost of leaving legs permanently planted has a real chance of
+# outweighing whatever the skidding gait's locomotion benefit is.
+# Antigravity explicitly recommended AGAINST also tightening
+# LEG_PHASE_TERMINATION_S/MAX_LEG_PHASE_S at the same time -- ending
+# episodes even earlier would truncate the learning signal further and
+# risks inducing a DIFFERENT exploit; left those completely untouched,
+# reward-shape the behavior first. Untuned placeholder like every other
+# constant in this file, not a formal sweep.
+#
+# REVERTED 2.5 -> 0.5 (2026-08-11, direct user request: "revert those
+# also" -- see WALK_ACTION_RATE_PENALTY_WEIGHT's matching revert comment
+# above for the full reasoning, same round). Back to the exact value
+# PPO_5000000_walk_position_obshistory_v20 (the confirmed-best checkpoint
+# in every sim comparison this whole thread) was trained under.
 WALK_TROT_SYMMETRY_WEIGHT = 0.5
 
 # WALK-specific RESIDUAL action space (2026-08-02) -- inspired by both
@@ -3630,7 +3688,15 @@ class DogEnv(gym.Env):
             + 0.5 * upright_reward
             + 1.0 * climb_posture_reward
             + 2.5 * height_reward
-            + WALK_HEIGHT_SAG_PENALTY_WEIGHT * height_sag_penalty
+            # STASHED 2026-08-11 (direct user request: "remove/stash the
+            # changes that you added to fix the sagging issue, I want to
+            # go back to a version where sim worked, I want to test
+            # something") -- NOT deleted, term still computed above
+            # (height_sag_penalty/WALK_HEIGHT_SAG_PENALTY_WEIGHT both
+            # left fully intact) so this is trivially reversible (flip
+            # 0.0 back to 1.0) -- see this term's own comment above for
+            # the full history/reasoning if restoring later.
+            + 0.0 * WALK_HEIGHT_SAG_PENALTY_WEIGHT * height_sag_penalty
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
             + 1.0 * foot_clearance_reward
@@ -3655,7 +3721,7 @@ class DogEnv(gym.Env):
             + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
             + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty
             + 1.0 * WALK_HEADING_DEVIATION_PENALTY_WEIGHT * heading_deviation_penalty
-            + 0.5 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
             + 0.02 * calf_swing_motion_reward
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
