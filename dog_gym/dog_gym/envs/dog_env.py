@@ -341,7 +341,21 @@ ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
 # tendon). Back to the value from this constant's own diagnosis-driven
 # increase above (measured directly that -1.0 wasn't enough to stop
 # rising raw-action noise; -3.0 was the next step tried).
-WALK_ACTION_RATE_PENALTY_WEIGHT = -3.0
+#
+# REVERSED DIRECTION -3.0 -> -0.01 (2026-08-11, multi-agent review w/
+# Antigravity, chatbot.md "the triad already exists" round -- externally
+# corroborated by saif_ws/go2-sim2real-locomotion-rl's own dt-scaled
+# ~2e-4/step action_rate weight, roughly two orders of magnitude below
+# where this constant had been raised to). The whole -0.1 -> -1.0 -> -3.0
+# escalation was going the WRONG direction: raising it measurably
+# INCREASED our own raw action noise (0.5403 -> 0.7041 rad, v24 2M->3M),
+# the opposite of this term's intent -- a strong action-rate penalty
+# actively suppresses the fast, high-amplitude joint excursions a leg
+# swing needs, biasing toward "keep joints still," which for 2 of 4 legs
+# showed up as permanent planting. -0.01 matches the reference project's
+# own raw (pre-dt-scaling) value directly, per Antigravity's explicit
+# recommendation.
+WALK_ACTION_RATE_PENALTY_WEIGHT = -0.01
 
 # WALK-only -- see height_sag_penalty's comment in _compute_reward_walk()
 # for the full mechanism/reasoning (2026-08-11, multi-agent review w/
@@ -444,6 +458,35 @@ WALK_YAW_RATE_PENALTY_WEIGHT = 2.0
 # competitive with -- not dominated by -- the other terms. Untuned
 # placeholder like the rate weight above, not a formal sweep.
 WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
+
+# WALK-wide -- added 2026-08-11 (multi-agent review w/ Antigravity,
+# chatbot.md "v27 checkpoint arc diagnostic + swing-time-fairness") after
+# dropping trot_symmetry_reward (see that term's DROPPED comment in the
+# return statement below) left a real gap: v27's per-leg diagnostic showed
+# leg_c (back-right) stuck at ~80-85% ground-contact share by 3M-5M steps
+# (vs ~55-65% for the other three), timing its brief lifts right at
+# FEET_STANCE_TIME_MAX_S's 0.3s cap rather than taking a genuine ~0.3s
+# swing like the other legs -- gaming the per-leg stance-time cap's
+# timing rather than actually alternating.
+#
+# User's explicit design constraint: do NOT reintroduce trot_symmetry_
+# reward's PER-TICK cross-leg phase comparison -- that punishes a leg
+# independently delaying/advancing a single step for balance recovery
+# against a domain-randomized push (PUSH_FORCE_RANGE_N/PUSH_TORQUE_
+# RANGE_NM), which is real adaptive gait strategy, not a bug. This term
+# is deliberately a different mechanism: a SLOW per-leg EMA of ground-
+# contact state (SWING_FAIRNESS_EMA_ALPHA's ~50-tick/0.5s time constant,
+# roughly one gait cycle) tracks each leg's rolling DUTY CYCLE, and the
+# penalty is the VARIANCE across the 4 legs' duty cycles -- see
+# _update_swing_duty_cycle()/swing_fairness_penalty in
+# _compute_reward_walk(). A single-tick timing shift barely moves a
+# 0.5s EMA, so recovery reflexes stay free; only a leg that's
+# STRUCTURALLY over-favored as stance for a sustained stretch (like
+# leg_c's measured ~80% share) accumulates a real, growing variance
+# penalty. Untuned placeholder (Antigravity's suggested weight range was
+# 1.0-2.0, picked the middle), not a formal sweep.
+SWING_FAIRNESS_EMA_ALPHA = 0.02
+WALK_SWING_FAIRNESS_WEIGHT = 1.5
 
 # STAND+WALK ONLY (walk_start_pose='random') -- see _compute_reward_walk()'s
 # "STAND+WALK ONLY SECTION" comment for the full derivation. Fraction of
@@ -903,12 +946,31 @@ FOOT_CONTACT_RADIUS_M = 0.03
 # demanding an unnaturally high step.
 FOOT_CLEARANCE_TARGET_M = 0.06
 
-# RAISED 0.1 -> 3.0 (2026-08-02, user request: "allow the feet to swing
-# for 3 seconds in the air"). NOTE this also raises FEET_AIR_TIME_MAX_S
-# (defined as 3x this) to 9.0s -- within a 10s episode that's close to
-# removing the swing-duration cap's teeth entirely, flagged to the user
-# at the time of this change.
-FEET_AIR_TIME_TARGET_S = 3.0
+# RAISED 0.1 -> 3.0 on 2026-08-02 (user request: "allow the feet to swing
+# for 3 seconds in the air") -- ALSO raised FEET_AIR_TIME_MAX_S (3x this)
+# to 9.0s, close to removing the swing-duration cap's teeth entirely,
+# flagged to the user at the time.
+#
+# REVERTED 3.0 -> 0.1 (2026-08-11, multi-agent review w/ Antigravity,
+# chatbot.md "the triad already exists, and its timescale constants look
+# badly miscalibrated" -- discovered while implementing the reference-
+# project comparison from saif_ws/go2-sim2real-locomotion-rl, whose own
+# equivalent target is 0.1s, exactly this original pre-2026-08-02 value).
+# 3.0 SECONDS as a per-leg swing-duration target is off by roughly 30x
+# from anything resembling a real walking gait's swing phase for a robot
+# this size -- it meant a leg could stay planted for a FULL 3 seconds
+# (often close to or beyond an entire episode's actual length, given
+# terminations this whole session have repeatedly fired around 1-3s)
+# with ZERO penalty from the very mechanism (_feet_air_time_reward(),
+# see FEET_STANCE_TIME_MAX_S below) specifically built to catch a leg
+# that never lifts -- directly explaining the persistent leg-usage
+# asymmetry (2 legs pinned near-100% tip contact) that survived THREE
+# different, unrelated reward-tuning attempts (EMA smoothing at two
+# values, then raising WALK_ACTION_RATE_PENALTY_WEIGHT/WALK_TROT_
+# SYMMETRY_WEIGHT) before this was found. Back to the SAME value both
+# this constant's own pre-2026-08-02 history AND the independently-
+# developed reference project converged on -- not a fresh guess.
+FEET_AIR_TIME_TARGET_S = 0.1
 
 # Cap (seconds) beyond which a currently-airborne leg starts accruing a
 # GROWING per-tick penalty in _feet_air_time_reward(), even before it
@@ -954,7 +1016,22 @@ FEET_AIR_TIME_MAX_S = 3.0 * FEET_AIR_TIME_TARGET_S
 # still far below the original ~10s near-permanent-stance exploit (would
 # still clearly catch that), but real room for a natural cadence instead
 # of forcing premature, poorly-timed corrections.
-FEET_STANCE_TIME_MAX_S = 3.0
+#
+# REVERTED 3.0 -> 0.3 (2026-08-11, multi-agent review w/ Antigravity,
+# chatbot.md "the triad already exists, and its timescale constants look
+# badly miscalibrated" -- same round as FEET_AIR_TIME_TARGET_S's own
+# revert above; at some point after the 1.0->2.0 change above this drifted
+# further to 3.0, undocumented). 3.0s meant a leg could sit planted for a
+# FULL 3 seconds -- often close to or beyond an entire episode's actual
+# length this session's terminations have shown -- before this
+# mechanism's growing penalty even STARTED accruing, directly explaining
+# the persistent leg-usage asymmetry. Matched to FEET_AIR_TIME_MAX_S's
+# own new value (3x the 0.1s swing target = 0.3s) -- comparable
+# magnitude to a real stance phase, not shorter than swing the way the
+# old 1.0s value was found to be too tight, but nowhere near loose enough
+# to let a leg go unpunished for multiple real gait cycles the way 3.0s
+# did.
+FEET_STANCE_TIME_MAX_S = 0.3
 
 # _trot_symmetry_reward()'s stuck-phase gate (2026-08-05): a leg that's
 # held the SAME contact state (grounded or swinging, via
@@ -1532,6 +1609,12 @@ class DogEnv(gym.Env):
         # comment / _trot_symmetry_reward()'s stuck-phase gate.
         self._leg_phase_time = np.zeros(4)
         self._prev_leg_contact = np.zeros(4, dtype=bool)
+        # Per-leg SLOW EMA (SWING_FAIRNESS_EMA_ALPHA) of ground-contact
+        # state (1.0 = grounded, 0.0 = airborne) -- rolling duty cycle
+        # used by swing_fairness_penalty in _compute_reward_walk(), see
+        # WALK_SWING_FAIRNESS_WEIGHT's comment. Updated once per step by
+        # _update_swing_duty_cycle(), reset in reset() below.
+        self._contact_duty_cycle = np.zeros(4)
         # Seconds torso pitch magnitude has stayed continuously above
         # PITCH_TERMINATION_THRESHOLD_RAD -- see that constant's comment
         # / _pitch_diverging_too_long().
@@ -1588,6 +1671,7 @@ class DogEnv(gym.Env):
         self._push_torque = np.zeros(3)
         self._leg_phase_time = np.zeros(4)
         self._prev_leg_contact = np.zeros(4, dtype=bool)
+        self._contact_duty_cycle = np.zeros(4)
         self._high_pitch_time = 0.0
         self._step_count = 0
 
@@ -2045,6 +2129,11 @@ class DogEnv(gym.Env):
         # off-by-one-tick lag). See _update_standing_hold_time()'s
         # docstring.
         self._update_standing_hold_time()
+        # MUST also update before _compute_reward() -- swing_fairness_
+        # penalty reads self._contact_duty_cycle inside _compute_reward_
+        # walk(), same off-by-one-tick-lag reasoning as the calls above.
+        # See _update_swing_duty_cycle()'s docstring.
+        self._update_swing_duty_cycle()
 
         reward = self._compute_reward(action)
 
@@ -2772,6 +2861,24 @@ class DogEnv(gym.Env):
         self._leg_phase_time[~changed] += dt
         self._prev_leg_contact = contacted
 
+    def _update_swing_duty_cycle(self):
+        """Advances self._contact_duty_cycle -- a per-leg SLOW EMA
+        (SWING_FAIRNESS_EMA_ALPHA) of ground-contact state (1.0 while
+        grounded this tick, 0.0 while airborne), feeding
+        swing_fairness_penalty in _compute_reward_walk(). See
+        WALK_SWING_FAIRNESS_WEIGHT's comment for why this is a duty-cycle
+        EMA (long timescale, ~50 ticks) rather than a per-tick phase
+        comparison like the dropped trot_symmetry_reward -- a single
+        step's timing barely moves this, only a sustained imbalance does.
+        MUST be called once per step, after mj_step, BEFORE
+        _compute_reward() (same reasoning as _update_leg_phase_time()/
+        _update_standing_hold_time() -- this tick's contact state must
+        already be reflected when the reward reads it)."""
+        contacted = np.array(self._foot_contact_per_leg(), dtype=np.float64)
+        self._contact_duty_cycle = (
+            SWING_FAIRNESS_EMA_ALPHA * contacted
+            + (1.0 - SWING_FAIRNESS_EMA_ALPHA) * self._contact_duty_cycle)
+
     def _update_high_pitch_time(self):
         """Advances self._high_pitch_time -- seconds torso pitch
         magnitude has stayed CONTINUOUSLY above
@@ -3369,6 +3476,15 @@ class DogEnv(gym.Env):
         trot_symmetry_reward = (
             self._trot_symmetry_reward() if leg_stuck
             else self._trot_symmetry_reward() * forward_progress)
+        # See WALK_SWING_FAIRNESS_WEIGHT's comment: replaces
+        # trot_symmetry_reward's dropped cross-leg role with a slower,
+        # duty-cycle-only signal that doesn't constrain per-tick timing.
+        # Deliberately UNGATED by forward_progress (unlike trot_symmetry_
+        # reward above) -- a leg parked at near-100% stance share while
+        # standing still is exactly the pattern this term exists to catch,
+        # same reasoning as trot_symmetry_reward's own stuck-phase branch
+        # being left ungated.
+        swing_fairness_penalty = -float(np.var(self._contact_duty_cycle))
         # Targets self._walk_target_height_m (walk_height_fraction * full
         # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
@@ -3709,7 +3825,27 @@ class DogEnv(gym.Env):
             + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
             + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty
             + 1.0 * WALK_HEADING_DEVIATION_PENALTY_WEIGHT * heading_deviation_penalty
-            + 1.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            # DROPPED 2026-08-11 (multi-agent review w/ Antigravity,
+            # chatbot.md "the triad already exists" -- same round as the
+            # FEET_AIR_TIME_TARGET_S/FEET_STANCE_TIME_MAX_S recalibration
+            # above). Cross-leg comparison (this term penalizes all 4 feet
+            # sharing one contact state) can entangle the gradient and
+            # create coupled local optima -- e.g. locking two legs
+            # together rather than fixing either one independently.
+            # Antigravity's recommendation, matching the reference
+            # project's (saif_ws/go2-sim2real-locomotion-rl) own no-
+            # cross-leg-comparison paradigm: rely on the now-recalibrated
+            # PER-LEG terms above (feet_air_time_reward's stance-time cap
+            # especially) instead, which judge each leg independently
+            # rather than against the others. NOT deleted -- term/weight
+            # both still fully computed above, trivially restorable (flip
+            # 0.0 back to 1.0) if the recalibrated per-leg terms alone
+            # prove insufficient.
+            + 0.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            # ADDED 2026-08-11 (multi-agent review w/ Antigravity,
+            # chatbot.md "swing-time-fairness" -- see WALK_SWING_FAIRNESS_
+            # WEIGHT's comment for the full derivation/design rationale).
+            + WALK_SWING_FAIRNESS_WEIGHT * swing_fairness_penalty
             + 0.02 * calf_swing_motion_reward
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
