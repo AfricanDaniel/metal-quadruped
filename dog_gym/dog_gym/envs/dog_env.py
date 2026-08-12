@@ -335,21 +335,13 @@ ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
 # formal sweep -- watch the next training run's actual raw-action
 # tick-to-tick statistics the same way this round's diagnosis did.
 #
-# REVERTED -3.0 -> -0.1 (2026-08-11, direct user request: "revert those
-# also" -- alongside WALK_TROT_SYMMETRY_WEIGHT below and the already-
-# stashed height_sag_penalty -- user wants to get back to the exact
-# behavior PPO_5000000_walk_position_obshistory_v20 (the confirmed-best
-# checkpoint in every sim comparison this whole thread) was trained
-# under, to isolate/test something specific. -0.1 numerically matches
-# what WALK was using BEFORE this constant was even split out from
-# STAND's own ACTION_RATE_PENALTY_WEIGHT_RISING (v20 predates that
-# split too -- it reused STAND's -0.1 directly). Kept the split
-# constant itself rather than reverting to literally reusing STAND's --
-# the split is a genuine, independent code-quality improvement (so a
-# future STAND-only tuning pass can't silently affect WALK again) with
-# nothing to do with the specific -0.1/-1.0/-3.0 value question being
-# tested here; only the VALUE reverts, not the structural split.
-WALK_ACTION_RATE_PENALTY_WEIGHT = -0.1
+# RE-RESTORED -0.1 -> -3.0 (2026-08-11, direct user request: "revert and
+# unstash all the things we deleted" -- switched to the sag_fix branch
+# first, so this is isolated there, not affecting main/torque_belt_
+# tendon). Back to the value from this constant's own diagnosis-driven
+# increase above (measured directly that -1.0 wasn't enough to stop
+# rising raw-action noise; -3.0 was the next step tried).
+WALK_ACTION_RATE_PENALTY_WEIGHT = -3.0
 
 # WALK-only -- see height_sag_penalty's comment in _compute_reward_walk()
 # for the full mechanism/reasoning (2026-08-11, multi-agent review w/
@@ -584,12 +576,11 @@ WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 # reward-shape the behavior first. Untuned placeholder like every other
 # constant in this file, not a formal sweep.
 #
-# REVERTED 2.5 -> 0.5 (2026-08-11, direct user request: "revert those
-# also" -- see WALK_ACTION_RATE_PENALTY_WEIGHT's matching revert comment
-# above for the full reasoning, same round). Back to the exact value
-# PPO_5000000_walk_position_obshistory_v20 (the confirmed-best checkpoint
-# in every sim comparison this whole thread) was trained under.
-WALK_TROT_SYMMETRY_WEIGHT = 0.5
+# RE-RESTORED 0.5 -> 2.5 (2026-08-11, direct user request: "revert and
+# unstash all the things we deleted" -- switched to the sag_fix branch
+# first, so this is isolated there. See WALK_ACTION_RATE_PENALTY_
+# WEIGHT's matching restore comment above, same round.
+WALK_TROT_SYMMETRY_WEIGHT = 2.5
 
 # WALK-specific RESIDUAL action space (2026-08-02) -- inspired by both
 # reference repos in this workspace (quadrupeds_locomotion/friend_code),
@@ -3688,15 +3679,12 @@ class DogEnv(gym.Env):
             + 0.5 * upright_reward
             + 1.0 * climb_posture_reward
             + 2.5 * height_reward
-            # STASHED 2026-08-11 (direct user request: "remove/stash the
-            # changes that you added to fix the sagging issue, I want to
-            # go back to a version where sim worked, I want to test
-            # something") -- NOT deleted, term still computed above
-            # (height_sag_penalty/WALK_HEIGHT_SAG_PENALTY_WEIGHT both
-            # left fully intact) so this is trivially reversible (flip
-            # 0.0 back to 1.0) -- see this term's own comment above for
-            # the full history/reasoning if restoring later.
-            + 0.0 * WALK_HEIGHT_SAG_PENALTY_WEIGHT * height_sag_penalty
+            # UNSTASHED 2026-08-11 (direct user request: "revert and
+            # unstash all the things we deleted" -- switched to the
+            # sag_fix branch first, so restoring this is isolated there.
+            # See this term's own comment above for the full original
+            # implementation history/reasoning.
+            + WALK_HEIGHT_SAG_PENALTY_WEIGHT * height_sag_penalty
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
             + 1.0 * foot_clearance_reward
