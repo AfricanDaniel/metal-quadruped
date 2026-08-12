@@ -488,6 +488,30 @@ WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 SWING_FAIRNESS_EMA_ALPHA = 0.02
 WALK_SWING_FAIRNESS_WEIGHT = 1.5
 
+# JOINT_LIMIT_MARGIN_PENALTY_WEIGHT/_joint_limit_margin_penalty() REMOVED
+# 2026-08-12 (multi-agent review w/ Antigravity, chatbot.md "PPO_6000000_
+# jointlimit_probe_v1 real deployment"). Was a TEMPORARY diagnostic term
+# (added earlier the same day) to test whether front knees staying tucked
+# in real deployment was a sim-side reward loophole or a placeholder-
+# geometry problem -- it served that purpose: a 3M-step fine-tune from
+# v29 unpinned leg_a in sim AND on real hardware without destabilizing
+# anything, proving sim never needed the tuck (ruling out the geometry
+# theory). But by 6M steps the same symmetric, fairly severe penalty
+# (weight 30.0) had warped the WHOLE gait instead of just fixing the
+# original front-tuck: back legs' thighs ended up stuck past their own
+# STANDING_QPOS_DEG reference 88-93% of ticks (just pushing, no real
+# swing/recovery phase) and leg_a's thigh was repeatedly driving to its
+# action ceiling every ~5-7s -- confirmed via real CSV torque/velocity
+# data that this wasn't a stuck/dragging leg (no stall signature: torque
+# and velocity both stayed normal through the "over-extended" stretches),
+# i.e. the policy was actively choosing this distorted gait to satisfy
+# the penalty, not fighting a mechanical block. Question answered, term
+# now actively harmful -- removed rather than zeroed, since (unlike
+# WALK_TROT_SYMMETRY_WEIGHT/tip_reward above) there's no reason to keep
+# it reachable via a 0.0 flip; the real fix for the front-leg deficit is
+# believed to be an observation-build/calibration issue on motors 1-4,
+# not reward shaping (see chatbot.md for the fuller thread).
+
 # STAND+WALK ONLY (walk_start_pose='random') -- see _compute_reward_walk()'s
 # "STAND+WALK ONLY SECTION" comment for the full derivation. Fraction of
 # climb_progress (0 at SIT_HEIGHT_M, 1 at walk-target height) below which
