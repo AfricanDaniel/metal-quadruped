@@ -23,7 +23,9 @@ far that is from what a correctly-calibrated reading SHOULD show at a
 known reference pose -- 'home' (all motors should read ~0) or 'standing'
 (should match dog_env.py's STANDING_QPOS_DEG, duplicated below rather
 than imported since dog_deploy is meant to run without dog_gym
-installed -- see policy_node.py's own module docstring for why).
+installed -- see policy_node.py's own module docstring for why. Compared
+in the ABSOLUTE/belt-decoupled frame, matching obs_deg -- see
+_standing_absolute_deg()).
 
 Usage (home reference must match whatever the real deployed policy used
 -- pass the SAME home_position_deg/home_position_deg_cache_path you'd
@@ -58,14 +60,40 @@ from sensor_msgs.msg import Imu
 
 from actuator.srv import ReadMotorPositions
 from dog_deploy.policy_node import (
-    NUM_MOTORS, load_motor_joint_names, load_motor_signs, ros_to_cad,
+    CALF_BELT_SIGN, NUM_MOTORS, find_calf_thigh_pairs, load_motor_joint_names,
+    load_motor_signs, ros_to_cad,
 )
 
 # Motor 1..8 order -- duplicated from dog_gym/envs/dog_env.py's own
 # STANDING_QPOS_DEG (see that constant's comment there for its
 # derivation/history). Keep in sync if it's ever re-tuned.
-STANDING_QPOS_DEG = np.array(
+#
+# THIS IS THE RAW, THIGH-COUPLED (MuJoCo-native) FRAME -- confirmed by
+# dog_env.py's own conversion right below where it's defined:
+# `walk_default_rad[calf_idx] -= calf_belt_sign * qpos[thigh_idx]` builds
+# the ABSOLUTE/belt-decoupled equivalent FROM this constant, meaning the
+# constant itself is NOT already absolute. Bug found 2026-08-12 (user
+# caught it, chatbot.md "front knees tucked in / walking on shins"): an
+# earlier version of this file compared this raw array directly against
+# `obs_deg` (which IS absolute/decoupled, matching real hardware's own
+# motor_qpos_deg convention) -- an apples-to-oranges comparison that
+# produced a misleading ~90deg "diff" on every calf motor. See
+# _standing_absolute_deg() below for the fix -- same raw-to-absolute
+# transform dog_env.py itself applies, not duplicated ad hoc.
+STANDING_QPOS_DEG_RAW = np.array(
     [107.507, 104.071, -86.789, -98.804, 98.743, 98.011, -93.049, -103.804])
+
+
+def _standing_absolute_deg(motor_joint_names):
+    """STANDING_QPOS_DEG_RAW converted to the ABSOLUTE, belt-decoupled
+    frame -- directly comparable to obs_deg/motor_qpos_deg, matching
+    dog_env.py's own `walk_default_rad` conversion exactly (calf_idx -=
+    calf_belt_sign * qpos[thigh_idx]; thighs are unaffected, they're not
+    belt-coupled)."""
+    absolute_deg = STANDING_QPOS_DEG_RAW.copy()
+    for calf_i, thigh_i in find_calf_thigh_pairs(motor_joint_names).items():
+        absolute_deg[calf_i] -= CALF_BELT_SIGN * STANDING_QPOS_DEG_RAW[thigh_i]
+    return absolute_deg
 
 
 class LogStaticObservation(Node):
@@ -104,7 +132,7 @@ class LogStaticObservation(Node):
         self.expected_deg = (
             None if expected_pose == 'none'
             else np.zeros(NUM_MOTORS) if expected_pose == 'home'
-            else STANDING_QPOS_DEG)
+            else _standing_absolute_deg(self.motor_joint_names))
 
         self.tick = 0
         self.csv_file = None
