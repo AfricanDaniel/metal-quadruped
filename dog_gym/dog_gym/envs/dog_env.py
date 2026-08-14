@@ -555,6 +555,26 @@ SWING_FAIRNESS_EMA_ALPHA = 0.02
 # implies a ~0.4s gait cycle, i.e. a 25% swing / 75% stance ratio.
 SWING_FAIRNESS_TARGET_DUTY_CYCLE = 0.75
 
+# Foot horizontal speed (m/s), ABOVE which ground contact no longer
+# counts as "stance" for _update_swing_duty_cycle()'s duty-cycle EMA --
+# see that method's docstring for the full walk_position_hf_v8 sliding-
+# loophole derivation (2026-08-14, multi-agent review w/ Antigravity).
+# Antigravity's own illustrative example (0.05) was rejected as
+# miscalibrated for THIS sim's actual behavior -- checked directly:
+# even hf_v6's best/most-converged state (32M steps) never went below
+# ~0.17 m/s RMS on ANY leg, so a 0.05 cutoff would mean no leg, ever,
+# counts as good stance, breaking the mechanism entirely rather than
+# fixing it. Calibrated from this project's own measured data instead
+# (matching every other constant in this file): hf_v8's front legs
+# (genuinely gripping, and leg_b actively improving over training) sat
+# at 0.17-0.29 m/s, its back legs (sliding, zero improving trend) sat
+# at 0.27-0.35 m/s. 0.25 sits at the upper end of the user's requested
+# 0.22-0.25 range -- clearly excludes the current back-leg sliding
+# range while still crediting genuinely good front-leg-level grip.
+# Untuned beyond that direct calibration, not a formal sweep -- revisit
+# if training data shows it's still too strict/lenient.
+SWING_FAIRNESS_GOOD_STANCE_MAX_SLIP_M_S = 0.25
+
 # Weight for the target-deviation formula -- NOT carried forward from
 # the variance version's 90.0, since the two metrics have completely
 # different scales (Antigravity's worked example: if all 4 legs were
@@ -2968,20 +2988,46 @@ class DogEnv(gym.Env):
 
     def _update_swing_duty_cycle(self):
         """Advances self._contact_duty_cycle -- a per-leg SLOW EMA
-        (SWING_FAIRNESS_EMA_ALPHA) of ground-contact state (1.0 while
-        grounded this tick, 0.0 while airborne), feeding
-        swing_fairness_penalty in _compute_reward_walk(). See
-        WALK_SWING_FAIRNESS_WEIGHT's comment for why this is a duty-cycle
-        EMA (long timescale, ~50 ticks) rather than a per-tick phase
-        comparison like the dropped trot_symmetry_reward -- a single
-        step's timing barely moves this, only a sustained imbalance does.
-        MUST be called once per step, after mj_step, BEFORE
-        _compute_reward() (same reasoning as _update_leg_phase_time()/
-        _update_standing_hold_time() -- this tick's contact state must
-        already be reflected when the reward reads it)."""
+        (SWING_FAIRNESS_EMA_ALPHA) of GOOD-QUALITY ground-contact state
+        (1.0 while grounded AND gripping this tick, 0.0 while airborne
+        OR sliding -- see SWING_FAIRNESS_GOOD_STANCE_MAX_SLIP_M_S's
+        comment), feeding swing_fairness_penalty in
+        _compute_reward_walk(). See WALK_SWING_FAIRNESS_WEIGHT's comment
+        for why this is a duty-cycle EMA (long timescale, ~50 ticks)
+        rather than a per-tick phase comparison like the dropped
+        trot_symmetry_reward -- a single step's timing barely moves
+        this, only a sustained imbalance does. MUST be called once per
+        step, after mj_step, BEFORE _compute_reward() (same reasoning as
+        _update_leg_phase_time()/_update_standing_hold_time() -- this
+        tick's contact state must already be reflected when the reward
+        reads it).
+
+        QUALITY-GATED, not just contact/no-contact (2026-08-14, multi-
+        agent review w/ Antigravity, chatbot.md "hf_v8: back legs now
+        satisfy the duty-cycle target by SLIDING instead of gripping").
+        Before this, ANY ground contact counted toward the duty cycle,
+        with no regard for whether the foot was actually planted and
+        holding vs. sliding along the floor -- after scoping swing_
+        fairness_penalty to the back legs, the policy found it could
+        satisfy the 0.75 duty-cycle target on leg_c/leg_d cheaply by
+        keeping the foot nominally in contact while letting it slide
+        (measured: hf_v8's back legs converged to duty cycle ~0.79-0.87,
+        right at/above target, while their RMS horizontal foot speed
+        while 'in contact' stayed at 0.27-0.35 m/s with zero improving
+        trend across 4M steps -- vs. front legs' 0.17-0.29 m/s, and
+        front legs improving over the same span). Antigravity's proposed
+        fix, over reactively rebalancing weights again (the same pattern
+        that already produced two prior side effects this session):
+        redefine what counts as 'stance' at the source so sliding simply
+        doesn't accumulate duty-cycle credit, closing the loophole by
+        definition rather than by opposing pressure."""
         contacted = np.array(self._foot_contact_per_leg(), dtype=np.float64)
+        slip_sq = np.array(
+            [self._foot_horizontal_speed_sq(i) for i in range(len(contacted))])
+        good_stance = contacted * (
+            slip_sq < SWING_FAIRNESS_GOOD_STANCE_MAX_SLIP_M_S ** 2).astype(np.float64)
         self._contact_duty_cycle = (
-            SWING_FAIRNESS_EMA_ALPHA * contacted
+            SWING_FAIRNESS_EMA_ALPHA * good_stance
             + (1.0 - SWING_FAIRNESS_EMA_ALPHA) * self._contact_duty_cycle)
 
     def _update_high_pitch_time(self):
