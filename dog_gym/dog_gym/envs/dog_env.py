@@ -3588,7 +3588,9 @@ class DogEnv(gym.Env):
         # reward above) -- a leg parked at near-100% stance share while
         # standing still is exactly the pattern this term exists to catch,
         # same reasoning as trot_symmetry_reward's own stuck-phase branch
-        # being left ungated.
+        # being left ungated. SUPERSEDED by the PARTIAL gate below
+        # (2026-08-14) -- see that comment for why full-ungated stopped
+        # being safe once the metric itself got strong enough to matter.
         #
         # FORMULA CHANGED, population VARIANCE -> per-leg TARGET
         # deviation (2026-08-14, see WALK_SWING_FAIRNESS_WEIGHT/
@@ -3601,8 +3603,42 @@ class DogEnv(gym.Env):
         # instead, same decoupling philosophy as feet_air_time_reward's
         # own per-leg FEET_STANCE_TIME_MAX_S cap -- no cross-leg
         # comparison left anywhere in this mechanism.
+        #
+        # PARTIAL-GATED BY forward_progress, 2026-08-14 (multi-agent
+        # review w/ Antigravity, chatbot.md "hf_v6: swing-fairness fix
+        # WORKED, but forward walking has now stalled entirely" -- user
+        # skepticism, directly validated). walk_position_hf_v6 (32M-36M
+        # steps, MORE than v29 needed to walk for real) converged duty
+        # cycles right to the 0.75 target (measured: [0.729, 0.648,
+        # 0.736, 0.704], weighted penalty -0.26) while forward speed
+        # stayed near zero (~0.005-0.009 m/s, essentially marching in
+        # place) -- at that speed forward_velocity_reward (weight 5.0,
+        # target 0.15 m/s) contributes only ~0.03-0.05, dwarfed by the
+        # ALREADY-SATISFIED fairness term. Root cause: a policy that's
+        # found a comfortable, low-penalty marching-in-place duty-cycle
+        # balance has little incentive to risk disrupting it by
+        # exploring toward genuine forward locomotion, since that
+        # exploration would temporarily worsen duty-cycle balance (a
+        # real, immediate cost) for a currently-tiny forward-velocity
+        # gain -- the SAME "secondary constraint crowds out the primary
+        # objective" failure class as the original weight-90 uniform-
+        # stillness exploit, just less severe. Antigravity's own
+        # proposed fix was a FULL gate (`* forward_progress`, matching
+        # trot_symmetry_reward's original ungated-then-partial pattern);
+        # went with the SAME PARTIAL gate feet_air_time_reward already
+        # uses instead (`0.5 + 0.5*forward_progress`), not a full one --
+        # a full gate would drop this term to exactly zero whenever
+        # forward_progress is zero, and hf_v4's ORIGINAL leg_c-stuck
+        # problem also happened at near-zero forward progress, so fully
+        # gating this term risks reopening that exact bug during the
+        # same early phase it needs to be catching it. Partial gate
+        # keeps real (if halved) protection against a leg getting stuck
+        # even before real forward motion exists, while still cutting
+        # this term's current dominance over forward_velocity_reward
+        # roughly in half.
         swing_fairness_penalty = -float(np.sum(
-            (self._contact_duty_cycle - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2))
+            (self._contact_duty_cycle - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2)
+        ) * (0.5 + 0.5 * forward_progress)
         # Targets self._walk_target_height_m (walk_height_fraction * full
         # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
