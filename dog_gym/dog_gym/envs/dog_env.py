@@ -515,8 +515,59 @@ WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 # rejected per-tick cross-leg phase comparison) is completely unchanged
 # -- single-step balance-recovery adaptations are still free, only a
 # sustained multi-second imbalance now actually costs something.
+#
+# METRIC REPLACED, VARIANCE -> PER-LEG TARGET DEVIATION (2026-08-14,
+# multi-agent review w/ Antigravity, chatbot.md "WALK_SWING_FAIRNESS_
+# WEIGHT=90 backfired" -- the very next training run, walk_position_
+# hf_v5, under the weight-90 variance version above). Measured directly:
+# at 1M steps ALL FOUR legs collapsed to near-zero swing (4-13% airborne
+# each, not just leg_c) -- confirmed why numerically: population
+# VARIANCE penalizes legs being DIFFERENT FROM EACH OTHER, not any leg
+# being low specifically, so "all four legs equally still" (duty cycles
+# ~[0.90,0.87,0.96,0.93], variance ~0.001) satisfies it 16x MORE CHEAPLY
+# than "three good legs, one stuck" (hf_v4's actual pattern, variance
+# ~0.018) -- a real, cheap reward-hacking shortcut the weight-90 version
+# accidentally created. Antigravity's diagnosis: variance is itself a
+# CROSS-LEG COMPARISON, i.e. the exact category of mechanism
+# trot_symmetry_reward was removed for (see that term's DROPPED comment
+# above) -- reintroduced the same coupling risk through a different
+# formula. Replaced with per-leg squared deviation from
+# SWING_FAIRNESS_TARGET_DUTY_CYCLE (see that constant's own comment) --
+# each leg judged independently against an absolute target, same
+# decoupling philosophy as feet_air_time_reward/FEET_STANCE_TIME_MAX_S,
+# no cross-leg comparison left anywhere in this mechanism. 2M-3M's
+# instability (action deltas growing 10.8->38deg/tick, episodes ending
+# in 39-65 ticks instead of 400) is believed to be downstream of the
+# SAME uniform-stillness trap (PPO thrashing once forward_velocity_
+# reward/height terms started fighting the "stand still" local optimum
+# once it had already been found) -- not independently verified, no
+# walk_position_hf_v4 checkpoint below 5M exists to compare against.
 SWING_FAIRNESS_EMA_ALPHA = 0.02
-WALK_SWING_FAIRNESS_WEIGHT = 90.0
+
+# TARGET stance:swing ratio for swing_fairness_penalty's per-leg
+# deviation formula, added alongside the metric replacement above.
+# contact_duty_cycle tracks GROUND CONTACT (1.0 = fully stance, 0.0 =
+# fully swing), so this is a STANCE fraction, not a swing fraction.
+# Derived (Antigravity's recommendation) from this file's own OTHER
+# swing-timing constants rather than picked independently, so this
+# mechanism can't end up fighting them over what "correct" looks like:
+# FEET_AIR_TIME_TARGET_S=0.1s swing / FEET_STANCE_TIME_MAX_S=0.3s cap
+# implies a ~0.4s gait cycle, i.e. a 25% swing / 75% stance ratio.
+SWING_FAIRNESS_TARGET_DUTY_CYCLE = 0.75
+
+# Weight for the target-deviation formula -- NOT carried forward from
+# the variance version's 90.0, since the two metrics have completely
+# different scales (Antigravity's worked example: if all 4 legs were
+# permanently airborne, sum((0.0-0.75)**2 for 4 legs) = 4*0.5625 = 2.25
+# raw -- at weight 90 that alone would be a -202.5 penalty, wildly
+# dominating forward_velocity_reward's weight-5.0 typical contribution).
+# 20.0 (middle of Antigravity's recommended conservative 10-30 range)
+# picked deliberately conservative given this is the SECOND time this
+# session a fairness-weight change overshot into a different failure
+# mode instead of fixing the original one -- start low, re-measure
+# against real training data before raising, same lesson as the
+# variance version's own untested 90.0 jump.
+WALK_SWING_FAIRNESS_WEIGHT = 20.0
 
 # JOINT_LIMIT_MARGIN_PENALTY_WEIGHT/_joint_limit_margin_penalty() REMOVED
 # 2026-08-12 (multi-agent review w/ Antigravity, chatbot.md "PPO_6000000_
@@ -3538,7 +3589,20 @@ class DogEnv(gym.Env):
         # standing still is exactly the pattern this term exists to catch,
         # same reasoning as trot_symmetry_reward's own stuck-phase branch
         # being left ungated.
-        swing_fairness_penalty = -float(np.var(self._contact_duty_cycle))
+        #
+        # FORMULA CHANGED, population VARIANCE -> per-leg TARGET
+        # deviation (2026-08-14, see WALK_SWING_FAIRNESS_WEIGHT/
+        # SWING_FAIRNESS_TARGET_DUTY_CYCLE's comments for the full
+        # walk_position_hf_v5 uniform-stillness-exploit derivation).
+        # Variance judges legs only relative to EACH OTHER, so "all 4
+        # legs equally still" satisfies it just as well as "all 4 legs
+        # equally active" -- a real, measured reward-hacking shortcut.
+        # This judges each leg independently against an absolute target
+        # instead, same decoupling philosophy as feet_air_time_reward's
+        # own per-leg FEET_STANCE_TIME_MAX_S cap -- no cross-leg
+        # comparison left anywhere in this mechanism.
+        swing_fairness_penalty = -float(np.sum(
+            (self._contact_duty_cycle - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2))
         # Targets self._walk_target_height_m (walk_height_fraction * full
         # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
