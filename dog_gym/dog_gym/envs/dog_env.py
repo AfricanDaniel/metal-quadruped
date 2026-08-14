@@ -494,8 +494,29 @@ WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 # leg_c's measured ~80% share) accumulates a real, growing variance
 # penalty. Untuned placeholder (Antigravity's suggested weight range was
 # 1.0-2.0, picked the middle), not a formal sweep.
+#
+# RAISED 1.5 -> 90.0 (2026-08-13, multi-agent review w/ Antigravity,
+# chatbot.md "single-leg stance-dominance and bootstrap deadlock" --
+# walk_position_hf_v4, leg_c stuck at 9-22% swing/growing to ~133deg
+# thigh angle across 5M-9M with no improving trend). The 1.0-2.0 range
+# above was picked BEFORE anyone had actually computed what the
+# variance term produces in practice: duty-cycle values bounded in
+# [0,1] give variances on the order of ~0.02 even for a badly imbalanced
+# gait (measured directly from hf_v4's own 9M checkpoint: duty cycles
+# [0.425, 0.488, 0.122, 0.285] -> variance ~0.02) -- at weight 1.5 that's
+# a ~-0.03/tick contribution, mathematically negligible next to
+# forward_velocity_reward (5.0) or the height terms (100.0 each).
+# Antigravity's own re-review of this same weight (this round) confirmed
+# the original recommendation was never actually followed up
+# numerically, and recommended the high end of a corrected 75-100 range
+# so a typical ~0.02 variance yields a -1.5 to -2.0 penalty, genuinely
+# competitive with this reward's other dominant terms. Mechanism itself
+# (slow per-leg EMA duty-cycle variance, NOT trot_symmetry_reward's
+# rejected per-tick cross-leg phase comparison) is completely unchanged
+# -- single-step balance-recovery adaptations are still free, only a
+# sustained multi-second imbalance now actually costs something.
 SWING_FAIRNESS_EMA_ALPHA = 0.02
-WALK_SWING_FAIRNESS_WEIGHT = 1.5
+WALK_SWING_FAIRNESS_WEIGHT = 90.0
 
 # JOINT_LIMIT_MARGIN_PENALTY_WEIGHT/_joint_limit_margin_penalty() REMOVED
 # 2026-08-12 (multi-agent review w/ Antigravity, chatbot.md "PPO_6000000_
@@ -3732,7 +3753,28 @@ class DogEnv(gym.Env):
         # State tracking (self._feet_air_time/self._feet_stance_time)
         # still updates every call regardless of this gate -- only the
         # REWARD contribution is scaled, not the underlying measurement.
-        feet_air_time_reward = self._feet_air_time_reward() * forward_progress
+        #
+        # CHANGED FULL -> PARTIAL gate (2026-08-13, multi-agent review w/
+        # Antigravity, chatbot.md "single-leg stance-dominance and
+        # bootstrap deadlock" -- walk_position_hf_v4, leg_c stuck
+        # dragging with no improving trend across 5M-9M). A flat
+        # `* forward_progress` means this term's per-leg FEET_STANCE_
+        # TIME_MAX_S stance-time cap -- the ONE mechanism this file's own
+        # 2026-08-11 comment on trot_symmetry_reward's removal explicitly
+        # said to rely on instead -- contributes exactly ZERO whenever
+        # forward_progress is ~0, which is precisely when a stuck leg
+        # most needs to be penalized (a robot that hasn't started
+        # walking gets no credit for freeing the leg that's preventing it
+        # from walking -- a bootstrap deadlock, same class of problem
+        # foot_clearance_reward's own comment already identified and
+        # solved with a partial gate). Matches foot_clearance_reward's
+        # existing `0.5 + 0.5*forward_progress` pattern exactly instead
+        # of inventing a new one -- at zero progress the stance-time cap
+        # now fires at half strength, enough to push back against a
+        # permanent stall without fully un-gating (still zero credit for
+        # a policy that fakes swing cadence while standing still, same
+        # exploit this gate originally existed to prevent).
+        feet_air_time_reward = self._feet_air_time_reward() * (0.5 + 0.5 * forward_progress)
 
         # Flat, NOT gated by height_progress (unlike the stand task's,
         # see ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING's comment) --
