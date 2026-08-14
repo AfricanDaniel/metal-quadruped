@@ -494,139 +494,8 @@ WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 # leg_c's measured ~80% share) accumulates a real, growing variance
 # penalty. Untuned placeholder (Antigravity's suggested weight range was
 # 1.0-2.0, picked the middle), not a formal sweep.
-#
-# RAISED 1.5 -> 90.0 (2026-08-13, multi-agent review w/ Antigravity,
-# chatbot.md "single-leg stance-dominance and bootstrap deadlock" --
-# walk_position_hf_v4, leg_c stuck at 9-22% swing/growing to ~133deg
-# thigh angle across 5M-9M with no improving trend). The 1.0-2.0 range
-# above was picked BEFORE anyone had actually computed what the
-# variance term produces in practice: duty-cycle values bounded in
-# [0,1] give variances on the order of ~0.02 even for a badly imbalanced
-# gait (measured directly from hf_v4's own 9M checkpoint: duty cycles
-# [0.425, 0.488, 0.122, 0.285] -> variance ~0.02) -- at weight 1.5 that's
-# a ~-0.03/tick contribution, mathematically negligible next to
-# forward_velocity_reward (5.0) or the height terms (100.0 each).
-# Antigravity's own re-review of this same weight (this round) confirmed
-# the original recommendation was never actually followed up
-# numerically, and recommended the high end of a corrected 75-100 range
-# so a typical ~0.02 variance yields a -1.5 to -2.0 penalty, genuinely
-# competitive with this reward's other dominant terms. Mechanism itself
-# (slow per-leg EMA duty-cycle variance, NOT trot_symmetry_reward's
-# rejected per-tick cross-leg phase comparison) is completely unchanged
-# -- single-step balance-recovery adaptations are still free, only a
-# sustained multi-second imbalance now actually costs something.
-#
-# METRIC REPLACED, VARIANCE -> PER-LEG TARGET DEVIATION (2026-08-14,
-# multi-agent review w/ Antigravity, chatbot.md "WALK_SWING_FAIRNESS_
-# WEIGHT=90 backfired" -- the very next training run, walk_position_
-# hf_v5, under the weight-90 variance version above). Measured directly:
-# at 1M steps ALL FOUR legs collapsed to near-zero swing (4-13% airborne
-# each, not just leg_c) -- confirmed why numerically: population
-# VARIANCE penalizes legs being DIFFERENT FROM EACH OTHER, not any leg
-# being low specifically, so "all four legs equally still" (duty cycles
-# ~[0.90,0.87,0.96,0.93], variance ~0.001) satisfies it 16x MORE CHEAPLY
-# than "three good legs, one stuck" (hf_v4's actual pattern, variance
-# ~0.018) -- a real, cheap reward-hacking shortcut the weight-90 version
-# accidentally created. Antigravity's diagnosis: variance is itself a
-# CROSS-LEG COMPARISON, i.e. the exact category of mechanism
-# trot_symmetry_reward was removed for (see that term's DROPPED comment
-# above) -- reintroduced the same coupling risk through a different
-# formula. Replaced with per-leg squared deviation from
-# SWING_FAIRNESS_TARGET_DUTY_CYCLE (see that constant's own comment) --
-# each leg judged independently against an absolute target, same
-# decoupling philosophy as feet_air_time_reward/FEET_STANCE_TIME_MAX_S,
-# no cross-leg comparison left anywhere in this mechanism. 2M-3M's
-# instability (action deltas growing 10.8->38deg/tick, episodes ending
-# in 39-65 ticks instead of 400) is believed to be downstream of the
-# SAME uniform-stillness trap (PPO thrashing once forward_velocity_
-# reward/height terms started fighting the "stand still" local optimum
-# once it had already been found) -- not independently verified, no
-# walk_position_hf_v4 checkpoint below 5M exists to compare against.
 SWING_FAIRNESS_EMA_ALPHA = 0.02
-
-# TARGET stance:swing ratio for swing_fairness_penalty's per-leg
-# deviation formula, added alongside the metric replacement above.
-# contact_duty_cycle tracks GROUND CONTACT (1.0 = fully stance, 0.0 =
-# fully swing), so this is a STANCE fraction, not a swing fraction.
-# Derived (Antigravity's recommendation) from this file's own OTHER
-# swing-timing constants rather than picked independently, so this
-# mechanism can't end up fighting them over what "correct" looks like:
-# FEET_AIR_TIME_TARGET_S=0.1s swing / FEET_STANCE_TIME_MAX_S=0.3s cap
-# implies a ~0.4s gait cycle, i.e. a 25% swing / 75% stance ratio.
-SWING_FAIRNESS_TARGET_DUTY_CYCLE = 0.75
-
-# Foot horizontal speed (m/s), ABOVE which ground contact no longer
-# counts as "stance" for _update_swing_duty_cycle()'s duty-cycle EMA --
-# see that method's docstring for the full walk_position_hf_v8 sliding-
-# loophole derivation (2026-08-14, multi-agent review w/ Antigravity).
-# Antigravity's own illustrative example (0.05) was rejected as
-# miscalibrated for THIS sim's actual behavior -- checked directly:
-# even hf_v6's best/most-converged state (32M steps) never went below
-# ~0.17 m/s RMS on ANY leg, so a 0.05 cutoff would mean no leg, ever,
-# counts as good stance, breaking the mechanism entirely rather than
-# fixing it. Calibrated from this project's own measured data instead
-# (matching every other constant in this file): hf_v8's front legs
-# (genuinely gripping, and leg_b actively improving over training) sat
-# at 0.17-0.29 m/s, its back legs (sliding, zero improving trend) sat
-# at 0.27-0.35 m/s. 0.25 sits at the upper end of the user's requested
-# 0.22-0.25 range -- clearly excludes the current back-leg sliding
-# range while still crediting genuinely good front-leg-level grip.
-#
-# REPLACED, fixed constant -> HYBRID formula (2026-08-14, multi-agent
-# review w/ Antigravity, chatbot.md "hf_v9: slip genuinely improved,
-# but the FIXED threshold looks miscalibrated against the robot's own
-# near-zero forward speed"). walk_position_hf_v9 (trained under the
-# fixed 0.25 threshold above) DID measurably fix hf_v8's back-leg-
-# specific sliding (all 4 legs converged to a balanced 0.14-0.24 m/s),
-# but the user still saw visible dragging -- root cause: the robot's
-# OWN forward speed at these checkpoints is only ~0.01-0.03 m/s, so
-# even the IMPROVED 0.14-0.24 m/s slip is still 5-20x faster than the
-# body itself is moving -- a genuinely planted foot should slide
-# roughly no faster than the body passes over it, not a large multiple
-# of that. The fixed 0.25 threshold was calibrated against this
-# project's own RELATIVELY-better-vs-worse legs (hf_v8's front vs.
-# back), never against a genuine positive example of non-dragging
-# contact, since nothing in this investigation had produced one yet.
-#
-# Proposed a PURELY relative threshold (max_slip = K*body_velocity);
-# Antigravity identified a real failure mode with that -- at near-zero
-# body velocity (exactly this project's current state), a purely
-# relative cutoff collapses toward zero, colliding with the
-# IRREDUCIBLE PD-tracking/contact noise floor that exists even during
-# genuinely good grip -- nothing could ever satisfy it, and the
-# learning signal would vanish entirely rather than just tightening.
-# HYBRID fixes this: a fixed floor (SWING_FAIRNESS_SLIP_BASE_NOISE_
-# FLOOR_M_S, Antigravity's suggested 0.05 -- deliberately much lower
-# than the old flat 0.25, since that number was never actually
-# measuring a noise floor, it was measuring this project's own
-# historically-bad best case) PLUS a margin that scales with the
-# robot's own current forward speed (SWING_FAIRNESS_SLIP_VELOCITY_
-# MARGIN_K), so the cutoff stays meaningful across the whole training
-# arc from near-stationary (floor dominates, protects against false
-# positives on noise) to genuinely walking (margin term dominates,
-# scales with real gait dynamics instead of needing yet another manual
-# re-tune once the robot speeds up). K=1.0 -- at the target walk speed
-# (WALK_FORWARD_PROGRESS_TARGET_M_S=0.15 m/s), this gives an allowed
-# slip of 0.05+0.15=0.20 m/s, a physically reasonable margin for a foot
-# keeping pace with a body moving that fast. Both untuned beyond this
-# direct reasoning, not a formal sweep -- revisit once hf_v9's
-# successor shows real training data at nonzero forward speed.
-SWING_FAIRNESS_SLIP_BASE_NOISE_FLOOR_M_S = 0.05
-SWING_FAIRNESS_SLIP_VELOCITY_MARGIN_K = 1.0
-
-# Weight for the target-deviation formula -- NOT carried forward from
-# the variance version's 90.0, since the two metrics have completely
-# different scales (Antigravity's worked example: if all 4 legs were
-# permanently airborne, sum((0.0-0.75)**2 for 4 legs) = 4*0.5625 = 2.25
-# raw -- at weight 90 that alone would be a -202.5 penalty, wildly
-# dominating forward_velocity_reward's weight-5.0 typical contribution).
-# 20.0 (middle of Antigravity's recommended conservative 10-30 range)
-# picked deliberately conservative given this is the SECOND time this
-# session a fairness-weight change overshot into a different failure
-# mode instead of fixing the original one -- start low, re-measure
-# against real training data before raising, same lesson as the
-# variance version's own untested 90.0 jump.
-WALK_SWING_FAIRNESS_WEIGHT = 20.0
+WALK_SWING_FAIRNESS_WEIGHT = 1.5
 
 # JOINT_LIMIT_MARGIN_PENALTY_WEIGHT/_joint_limit_margin_penalty() REMOVED
 # 2026-08-12 (multi-agent review w/ Antigravity, chatbot.md "PPO_6000000_
@@ -3027,67 +2896,20 @@ class DogEnv(gym.Env):
 
     def _update_swing_duty_cycle(self):
         """Advances self._contact_duty_cycle -- a per-leg SLOW EMA
-        (SWING_FAIRNESS_EMA_ALPHA) of GOOD-QUALITY ground-contact state
-        (1.0 while grounded AND gripping this tick, 0.0 while airborne
-        OR sliding -- see SWING_FAIRNESS_GOOD_STANCE_MAX_SLIP_M_S's
-        comment), feeding swing_fairness_penalty in
-        _compute_reward_walk(). See WALK_SWING_FAIRNESS_WEIGHT's comment
-        for why this is a duty-cycle EMA (long timescale, ~50 ticks)
-        rather than a per-tick phase comparison like the dropped
-        trot_symmetry_reward -- a single step's timing barely moves
-        this, only a sustained imbalance does. MUST be called once per
-        step, after mj_step, BEFORE _compute_reward() (same reasoning as
-        _update_leg_phase_time()/_update_standing_hold_time() -- this
-        tick's contact state must already be reflected when the reward
-        reads it).
-
-        QUALITY-GATED, not just contact/no-contact (2026-08-14, multi-
-        agent review w/ Antigravity, chatbot.md "hf_v8: back legs now
-        satisfy the duty-cycle target by SLIDING instead of gripping").
-        Before this, ANY ground contact counted toward the duty cycle,
-        with no regard for whether the foot was actually planted and
-        holding vs. sliding along the floor -- after scoping swing_
-        fairness_penalty to the back legs, the policy found it could
-        satisfy the 0.75 duty-cycle target on leg_c/leg_d cheaply by
-        keeping the foot nominally in contact while letting it slide
-        (measured: hf_v8's back legs converged to duty cycle ~0.79-0.87,
-        right at/above target, while their RMS horizontal foot speed
-        while 'in contact' stayed at 0.27-0.35 m/s with zero improving
-        trend across 4M steps -- vs. front legs' 0.17-0.29 m/s, and
-        front legs improving over the same span). Antigravity's proposed
-        fix, over reactively rebalancing weights again (the same pattern
-        that already produced two prior side effects this session):
-        redefine what counts as 'stance' at the source so sliding simply
-        doesn't accumulate duty-cycle credit, closing the loophole by
-        definition rather than by opposing pressure.
-
-        THRESHOLD CHANGED, fixed constant -> HYBRID (noise floor + body-
-        velocity margin) (2026-08-14, same multi-agent round, chatbot.md
-        "hf_v9: slip genuinely improved, but the FIXED threshold looks
-        miscalibrated against the robot's own near-zero forward speed"
-        -- see SWING_FAIRNESS_SLIP_BASE_NOISE_FLOOR_M_S/_MARGIN_K's own
-        comment for the full derivation). The fixed 0.25 m/s version
-        DID balance/reduce slip (hf_v9 confirmed all 4 legs converged to
-        0.14-0.24 m/s), but that's still 5-20x the robot's own ~0.01-
-        0.03 m/s forward speed at these checkpoints -- calibrated
-        against this project's own relatively-better-vs-worse legs, not
-        a genuine non-dragging reference. Now scales with the robot's
-        OWN current forward speed instead of a single fixed number, so
-        the same mechanism stays meaningful whether the robot is
-        near-stationary (floor term dominates) or genuinely walking
-        (margin term dominates) -- a purely relative version was
-        considered and rejected (collapses toward an unsatisfiable
-        near-zero cutoff at low speed, colliding with the irreducible
-        contact-noise floor)."""
+        (SWING_FAIRNESS_EMA_ALPHA) of ground-contact state (1.0 while
+        grounded this tick, 0.0 while airborne), feeding
+        swing_fairness_penalty in _compute_reward_walk(). See
+        WALK_SWING_FAIRNESS_WEIGHT's comment for why this is a duty-cycle
+        EMA (long timescale, ~50 ticks) rather than a per-tick phase
+        comparison like the dropped trot_symmetry_reward -- a single
+        step's timing barely moves this, only a sustained imbalance does.
+        MUST be called once per step, after mj_step, BEFORE
+        _compute_reward() (same reasoning as _update_leg_phase_time()/
+        _update_standing_hold_time() -- this tick's contact state must
+        already be reflected when the reward reads it)."""
         contacted = np.array(self._foot_contact_per_leg(), dtype=np.float64)
-        slip_sq = np.array(
-            [self._foot_horizontal_speed_sq(i) for i in range(len(contacted))])
-        body_forward_speed = abs(self._body_frame_xy_velocity()[0])
-        max_slip = (SWING_FAIRNESS_SLIP_BASE_NOISE_FLOOR_M_S
-                    + SWING_FAIRNESS_SLIP_VELOCITY_MARGIN_K * body_forward_speed)
-        good_stance = contacted * (slip_sq < max_slip ** 2).astype(np.float64)
         self._contact_duty_cycle = (
-            SWING_FAIRNESS_EMA_ALPHA * good_stance
+            SWING_FAIRNESS_EMA_ALPHA * contacted
             + (1.0 - SWING_FAIRNESS_EMA_ALPHA) * self._contact_duty_cycle)
 
     def _update_high_pitch_time(self):
@@ -3690,85 +3512,12 @@ class DogEnv(gym.Env):
         # See WALK_SWING_FAIRNESS_WEIGHT's comment: replaces
         # trot_symmetry_reward's dropped cross-leg role with a slower,
         # duty-cycle-only signal that doesn't constrain per-tick timing.
-        # Deliberately UNGATED by forward_progress -- a leg parked at
-        # near-100% stance share while standing still is exactly the
-        # pattern this term exists to catch, same reasoning as trot_
-        # symmetry_reward's own stuck-phase branch being left ungated.
-        #
-        # FORMULA CHANGED, population VARIANCE -> per-leg TARGET
-        # deviation (2026-08-14, see WALK_SWING_FAIRNESS_WEIGHT/
-        # SWING_FAIRNESS_TARGET_DUTY_CYCLE's comments for the full
-        # walk_position_hf_v5 uniform-stillness-exploit derivation).
-        # Variance judges legs only relative to EACH OTHER, so "all 4
-        # legs equally still" satisfies it just as well as "all 4 legs
-        # equally active" -- a real, measured reward-hacking shortcut.
-        # This judges each leg independently against an absolute target
-        # instead, same decoupling philosophy as feet_air_time_reward's
-        # own per-leg FEET_STANCE_TIME_MAX_S cap -- no cross-leg
-        # comparison left anywhere in this mechanism.
-        #
-        # PARTIAL-GATED BY forward_progress, then REVERTED (both
-        # 2026-08-14). Gated first (multi-agent review w/ Antigravity,
-        # chatbot.md "hf_v6: swing-fairness fix WORKED, but forward
-        # walking has now stalled entirely") after walk_position_hf_v6
-        # (32M-36M steps) converged duty cycles right to the 0.75 target
-        # (measured: [0.729, 0.648, 0.736, 0.704], weighted penalty
-        # -0.26) while forward speed stayed near zero (~0.005-0.009 m/s,
-        # marching in place) -- at that speed forward_velocity_reward
-        # (weight 5.0, target 0.15 m/s) contributed only ~0.03-0.05,
-        # dwarfed by the already-satisfied fairness term, so the gate was
-        # added to reduce its dominance while progress is near zero.
-        # REVERTED (chatbot.md "strategic fork: scope swing_fairness to
-        # back legs only... hf_v7 now falls almost immediately") after
-        # direct A/B evidence: walk_position_hf_v7, trained under the
-        # gate with everything else identical to hf_v6 (same train.py
-        # invocation, confirmed by the user -- ONLY the reward code
-        # differed), fell from tilt within 21-24 ticks (~0.2s) on EVERY
-        # episode across its 3M/4M/5M checkpoints -- fetched hf_v6's OWN
-        # 1M/3M/5M checkpoints from the training machine (sheep) for a
-        # true same-step-count comparison (the earlier "hf_v6 never fell
-        # like this" claim had only checked hf_v6's late 32M+ checkpoints
-        # against hf_v7's early ones, an unfair comparison flagged and
-        # then corrected): hf_v6 ran the FULL 400 ticks with zero early
-        # termination at 1M and 3M. Given the gate was the only reward
-        # change between the two runs, it's the confirmed cause. Back to
-        # fully ungated -- matching what hf_v6 actually, stably trained
-        # on. Antigravity's own gate proposal was a FULL gate (`*
-        # forward_progress`); this project used a PARTIAL one instead
-        # specifically to avoid reopening hf_v4's original leg-stuck bug
-        # at zero progress -- turned out even the partial version wasn't
-        # safe, so gating this specific term by forward_progress AT ALL
-        # is now believed to be the wrong mechanism, not just a magnitude
-        # question. If forward-velocity-crowding needs addressing again,
-        # prefer scoping (below) or reducing WALK_SWING_FAIRNESS_WEIGHT
-        # over reintroducing any forward_progress gate on this term.
-        #
-        # SCOPED TO BACK LEGS ONLY (leg_c, leg_d = indices 2,3 in
-        # _contact_duty_cycle's leg_a/b/c/d order), 2026-08-14 (multi-
-        # agent review w/ Antigravity, same round as the gate revert
-        # above). The ORIGINAL problem this whole mechanism exists for
-        # (see WALK_SWING_FAIRNESS_WEIGHT's 2026-08-11 comment) was
-        # never a general 4-leg fairness issue -- it was leg_c
-        # specifically locking into a static prop pose, consistent with
-        # the measured back-leg torque asymmetry during the rise-to-
-        # height transient (both in sim and more strongly on real v29
-        # hardware -- see daniel_cl_context.md's "settle-and-hold"
-        # section). Front legs (a, b) were never observed doing this.
-        # Scoping to just the two legs where the actual problem is
-        # evidenced removes unnecessary constraint pressure on legs that
-        # were already fine, and roughly halves this term's maximum
-        # possible magnitude at the same weight (2 legs' worth of
-        # squared-deviation terms instead of 4), independently reducing
-        # -- though not on its own eliminating -- the same forward-
-        # velocity-crowding risk the gate was trying (and failing) to
-        # fix. Antigravity confirmed the target-deviation formula (not
-        # variance) prevents this from just shifting the static-prop
-        # behavior onto leg_d instead: each leg is still judged
-        # independently against 0.75, so leg_d adopting the same
-        # strategy costs exactly as much as leg_c doing it, and planting
-        # BOTH back legs costs double, not the same.
-        swing_fairness_penalty = -float(np.sum(
-            (self._contact_duty_cycle[2:] - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2))
+        # Deliberately UNGATED by forward_progress (unlike trot_symmetry_
+        # reward above) -- a leg parked at near-100% stance share while
+        # standing still is exactly the pattern this term exists to catch,
+        # same reasoning as trot_symmetry_reward's own stuck-phase branch
+        # being left ungated.
+        swing_fairness_penalty = -float(np.var(self._contact_duty_cycle))
         # Targets self._walk_target_height_m (walk_height_fraction * full
         # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
@@ -3983,28 +3732,7 @@ class DogEnv(gym.Env):
         # State tracking (self._feet_air_time/self._feet_stance_time)
         # still updates every call regardless of this gate -- only the
         # REWARD contribution is scaled, not the underlying measurement.
-        #
-        # CHANGED FULL -> PARTIAL gate (2026-08-13, multi-agent review w/
-        # Antigravity, chatbot.md "single-leg stance-dominance and
-        # bootstrap deadlock" -- walk_position_hf_v4, leg_c stuck
-        # dragging with no improving trend across 5M-9M). A flat
-        # `* forward_progress` means this term's per-leg FEET_STANCE_
-        # TIME_MAX_S stance-time cap -- the ONE mechanism this file's own
-        # 2026-08-11 comment on trot_symmetry_reward's removal explicitly
-        # said to rely on instead -- contributes exactly ZERO whenever
-        # forward_progress is ~0, which is precisely when a stuck leg
-        # most needs to be penalized (a robot that hasn't started
-        # walking gets no credit for freeing the leg that's preventing it
-        # from walking -- a bootstrap deadlock, same class of problem
-        # foot_clearance_reward's own comment already identified and
-        # solved with a partial gate). Matches foot_clearance_reward's
-        # existing `0.5 + 0.5*forward_progress` pattern exactly instead
-        # of inventing a new one -- at zero progress the stance-time cap
-        # now fires at half strength, enough to push back against a
-        # permanent stall without fully un-gating (still zero credit for
-        # a policy that fakes swing cadence while standing still, same
-        # exploit this gate originally existed to prevent).
-        feet_air_time_reward = self._feet_air_time_reward() * (0.5 + 0.5 * forward_progress)
+        feet_air_time_reward = self._feet_air_time_reward() * forward_progress
 
         # Flat, NOT gated by height_progress (unlike the stand task's,
         # see ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING's comment) --

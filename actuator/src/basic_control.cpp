@@ -116,7 +116,7 @@ public:
         // Read live (not cached) so `ros2 param set` takes effect on the next
         // move without restarting the node. go_to_pose can also override it
         // per-call via the request's speed_deg_s field.
-        this->declare_parameter("pose_speed_deg_s", 100.0);
+        this->declare_parameter("pose_speed_deg_s", 30.0);
 
         // TORQUE mode (2026-08-04, added alongside set_motor_torque for a
         // sim-trained torque-control RL policy -- see set_motor_torque.srv
