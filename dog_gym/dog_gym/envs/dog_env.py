@@ -571,9 +571,48 @@ SWING_FAIRNESS_TARGET_DUTY_CYCLE = 0.75
 # at 0.27-0.35 m/s. 0.25 sits at the upper end of the user's requested
 # 0.22-0.25 range -- clearly excludes the current back-leg sliding
 # range while still crediting genuinely good front-leg-level grip.
-# Untuned beyond that direct calibration, not a formal sweep -- revisit
-# if training data shows it's still too strict/lenient.
-SWING_FAIRNESS_GOOD_STANCE_MAX_SLIP_M_S = 0.25
+#
+# REPLACED, fixed constant -> HYBRID formula (2026-08-14, multi-agent
+# review w/ Antigravity, chatbot.md "hf_v9: slip genuinely improved,
+# but the FIXED threshold looks miscalibrated against the robot's own
+# near-zero forward speed"). walk_position_hf_v9 (trained under the
+# fixed 0.25 threshold above) DID measurably fix hf_v8's back-leg-
+# specific sliding (all 4 legs converged to a balanced 0.14-0.24 m/s),
+# but the user still saw visible dragging -- root cause: the robot's
+# OWN forward speed at these checkpoints is only ~0.01-0.03 m/s, so
+# even the IMPROVED 0.14-0.24 m/s slip is still 5-20x faster than the
+# body itself is moving -- a genuinely planted foot should slide
+# roughly no faster than the body passes over it, not a large multiple
+# of that. The fixed 0.25 threshold was calibrated against this
+# project's own RELATIVELY-better-vs-worse legs (hf_v8's front vs.
+# back), never against a genuine positive example of non-dragging
+# contact, since nothing in this investigation had produced one yet.
+#
+# Proposed a PURELY relative threshold (max_slip = K*body_velocity);
+# Antigravity identified a real failure mode with that -- at near-zero
+# body velocity (exactly this project's current state), a purely
+# relative cutoff collapses toward zero, colliding with the
+# IRREDUCIBLE PD-tracking/contact noise floor that exists even during
+# genuinely good grip -- nothing could ever satisfy it, and the
+# learning signal would vanish entirely rather than just tightening.
+# HYBRID fixes this: a fixed floor (SWING_FAIRNESS_SLIP_BASE_NOISE_
+# FLOOR_M_S, Antigravity's suggested 0.05 -- deliberately much lower
+# than the old flat 0.25, since that number was never actually
+# measuring a noise floor, it was measuring this project's own
+# historically-bad best case) PLUS a margin that scales with the
+# robot's own current forward speed (SWING_FAIRNESS_SLIP_VELOCITY_
+# MARGIN_K), so the cutoff stays meaningful across the whole training
+# arc from near-stationary (floor dominates, protects against false
+# positives on noise) to genuinely walking (margin term dominates,
+# scales with real gait dynamics instead of needing yet another manual
+# re-tune once the robot speeds up). K=1.0 -- at the target walk speed
+# (WALK_FORWARD_PROGRESS_TARGET_M_S=0.15 m/s), this gives an allowed
+# slip of 0.05+0.15=0.20 m/s, a physically reasonable margin for a foot
+# keeping pace with a body moving that fast. Both untuned beyond this
+# direct reasoning, not a formal sweep -- revisit once hf_v9's
+# successor shows real training data at nonzero forward speed.
+SWING_FAIRNESS_SLIP_BASE_NOISE_FLOOR_M_S = 0.05
+SWING_FAIRNESS_SLIP_VELOCITY_MARGIN_K = 1.0
 
 # Weight for the target-deviation formula -- NOT carried forward from
 # the variance version's 90.0, since the two metrics have completely
@@ -3020,12 +3059,33 @@ class DogEnv(gym.Env):
         that already produced two prior side effects this session):
         redefine what counts as 'stance' at the source so sliding simply
         doesn't accumulate duty-cycle credit, closing the loophole by
-        definition rather than by opposing pressure."""
+        definition rather than by opposing pressure.
+
+        THRESHOLD CHANGED, fixed constant -> HYBRID (noise floor + body-
+        velocity margin) (2026-08-14, same multi-agent round, chatbot.md
+        "hf_v9: slip genuinely improved, but the FIXED threshold looks
+        miscalibrated against the robot's own near-zero forward speed"
+        -- see SWING_FAIRNESS_SLIP_BASE_NOISE_FLOOR_M_S/_MARGIN_K's own
+        comment for the full derivation). The fixed 0.25 m/s version
+        DID balance/reduce slip (hf_v9 confirmed all 4 legs converged to
+        0.14-0.24 m/s), but that's still 5-20x the robot's own ~0.01-
+        0.03 m/s forward speed at these checkpoints -- calibrated
+        against this project's own relatively-better-vs-worse legs, not
+        a genuine non-dragging reference. Now scales with the robot's
+        OWN current forward speed instead of a single fixed number, so
+        the same mechanism stays meaningful whether the robot is
+        near-stationary (floor term dominates) or genuinely walking
+        (margin term dominates) -- a purely relative version was
+        considered and rejected (collapses toward an unsatisfiable
+        near-zero cutoff at low speed, colliding with the irreducible
+        contact-noise floor)."""
         contacted = np.array(self._foot_contact_per_leg(), dtype=np.float64)
         slip_sq = np.array(
             [self._foot_horizontal_speed_sq(i) for i in range(len(contacted))])
-        good_stance = contacted * (
-            slip_sq < SWING_FAIRNESS_GOOD_STANCE_MAX_SLIP_M_S ** 2).astype(np.float64)
+        body_forward_speed = abs(self._body_frame_xy_velocity()[0])
+        max_slip = (SWING_FAIRNESS_SLIP_BASE_NOISE_FLOOR_M_S
+                    + SWING_FAIRNESS_SLIP_VELOCITY_MARGIN_K * body_forward_speed)
+        good_stance = contacted * (slip_sq < max_slip ** 2).astype(np.float64)
         self._contact_duty_cycle = (
             SWING_FAIRNESS_EMA_ALPHA * good_stance
             + (1.0 - SWING_FAIRNESS_EMA_ALPHA) * self._contact_duty_cycle)
