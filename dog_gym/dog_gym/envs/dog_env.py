@@ -3584,13 +3584,10 @@ class DogEnv(gym.Env):
         # See WALK_SWING_FAIRNESS_WEIGHT's comment: replaces
         # trot_symmetry_reward's dropped cross-leg role with a slower,
         # duty-cycle-only signal that doesn't constrain per-tick timing.
-        # Deliberately UNGATED by forward_progress (unlike trot_symmetry_
-        # reward above) -- a leg parked at near-100% stance share while
-        # standing still is exactly the pattern this term exists to catch,
-        # same reasoning as trot_symmetry_reward's own stuck-phase branch
-        # being left ungated. SUPERSEDED by the PARTIAL gate below
-        # (2026-08-14) -- see that comment for why full-ungated stopped
-        # being safe once the metric itself got strong enough to matter.
+        # Deliberately UNGATED by forward_progress -- a leg parked at
+        # near-100% stance share while standing still is exactly the
+        # pattern this term exists to catch, same reasoning as trot_
+        # symmetry_reward's own stuck-phase branch being left ungated.
         #
         # FORMULA CHANGED, population VARIANCE -> per-leg TARGET
         # deviation (2026-08-14, see WALK_SWING_FAIRNESS_WEIGHT/
@@ -3604,41 +3601,68 @@ class DogEnv(gym.Env):
         # own per-leg FEET_STANCE_TIME_MAX_S cap -- no cross-leg
         # comparison left anywhere in this mechanism.
         #
-        # PARTIAL-GATED BY forward_progress, 2026-08-14 (multi-agent
-        # review w/ Antigravity, chatbot.md "hf_v6: swing-fairness fix
-        # WORKED, but forward walking has now stalled entirely" -- user
-        # skepticism, directly validated). walk_position_hf_v6 (32M-36M
-        # steps, MORE than v29 needed to walk for real) converged duty
-        # cycles right to the 0.75 target (measured: [0.729, 0.648,
-        # 0.736, 0.704], weighted penalty -0.26) while forward speed
-        # stayed near zero (~0.005-0.009 m/s, essentially marching in
-        # place) -- at that speed forward_velocity_reward (weight 5.0,
-        # target 0.15 m/s) contributes only ~0.03-0.05, dwarfed by the
-        # ALREADY-SATISFIED fairness term. Root cause: a policy that's
-        # found a comfortable, low-penalty marching-in-place duty-cycle
-        # balance has little incentive to risk disrupting it by
-        # exploring toward genuine forward locomotion, since that
-        # exploration would temporarily worsen duty-cycle balance (a
-        # real, immediate cost) for a currently-tiny forward-velocity
-        # gain -- the SAME "secondary constraint crowds out the primary
-        # objective" failure class as the original weight-90 uniform-
-        # stillness exploit, just less severe. Antigravity's own
-        # proposed fix was a FULL gate (`* forward_progress`, matching
-        # trot_symmetry_reward's original ungated-then-partial pattern);
-        # went with the SAME PARTIAL gate feet_air_time_reward already
-        # uses instead (`0.5 + 0.5*forward_progress`), not a full one --
-        # a full gate would drop this term to exactly zero whenever
-        # forward_progress is zero, and hf_v4's ORIGINAL leg_c-stuck
-        # problem also happened at near-zero forward progress, so fully
-        # gating this term risks reopening that exact bug during the
-        # same early phase it needs to be catching it. Partial gate
-        # keeps real (if halved) protection against a leg getting stuck
-        # even before real forward motion exists, while still cutting
-        # this term's current dominance over forward_velocity_reward
-        # roughly in half.
+        # PARTIAL-GATED BY forward_progress, then REVERTED (both
+        # 2026-08-14). Gated first (multi-agent review w/ Antigravity,
+        # chatbot.md "hf_v6: swing-fairness fix WORKED, but forward
+        # walking has now stalled entirely") after walk_position_hf_v6
+        # (32M-36M steps) converged duty cycles right to the 0.75 target
+        # (measured: [0.729, 0.648, 0.736, 0.704], weighted penalty
+        # -0.26) while forward speed stayed near zero (~0.005-0.009 m/s,
+        # marching in place) -- at that speed forward_velocity_reward
+        # (weight 5.0, target 0.15 m/s) contributed only ~0.03-0.05,
+        # dwarfed by the already-satisfied fairness term, so the gate was
+        # added to reduce its dominance while progress is near zero.
+        # REVERTED (chatbot.md "strategic fork: scope swing_fairness to
+        # back legs only... hf_v7 now falls almost immediately") after
+        # direct A/B evidence: walk_position_hf_v7, trained under the
+        # gate with everything else identical to hf_v6 (same train.py
+        # invocation, confirmed by the user -- ONLY the reward code
+        # differed), fell from tilt within 21-24 ticks (~0.2s) on EVERY
+        # episode across its 3M/4M/5M checkpoints -- fetched hf_v6's OWN
+        # 1M/3M/5M checkpoints from the training machine (sheep) for a
+        # true same-step-count comparison (the earlier "hf_v6 never fell
+        # like this" claim had only checked hf_v6's late 32M+ checkpoints
+        # against hf_v7's early ones, an unfair comparison flagged and
+        # then corrected): hf_v6 ran the FULL 400 ticks with zero early
+        # termination at 1M and 3M. Given the gate was the only reward
+        # change between the two runs, it's the confirmed cause. Back to
+        # fully ungated -- matching what hf_v6 actually, stably trained
+        # on. Antigravity's own gate proposal was a FULL gate (`*
+        # forward_progress`); this project used a PARTIAL one instead
+        # specifically to avoid reopening hf_v4's original leg-stuck bug
+        # at zero progress -- turned out even the partial version wasn't
+        # safe, so gating this specific term by forward_progress AT ALL
+        # is now believed to be the wrong mechanism, not just a magnitude
+        # question. If forward-velocity-crowding needs addressing again,
+        # prefer scoping (below) or reducing WALK_SWING_FAIRNESS_WEIGHT
+        # over reintroducing any forward_progress gate on this term.
+        #
+        # SCOPED TO BACK LEGS ONLY (leg_c, leg_d = indices 2,3 in
+        # _contact_duty_cycle's leg_a/b/c/d order), 2026-08-14 (multi-
+        # agent review w/ Antigravity, same round as the gate revert
+        # above). The ORIGINAL problem this whole mechanism exists for
+        # (see WALK_SWING_FAIRNESS_WEIGHT's 2026-08-11 comment) was
+        # never a general 4-leg fairness issue -- it was leg_c
+        # specifically locking into a static prop pose, consistent with
+        # the measured back-leg torque asymmetry during the rise-to-
+        # height transient (both in sim and more strongly on real v29
+        # hardware -- see daniel_cl_context.md's "settle-and-hold"
+        # section). Front legs (a, b) were never observed doing this.
+        # Scoping to just the two legs where the actual problem is
+        # evidenced removes unnecessary constraint pressure on legs that
+        # were already fine, and roughly halves this term's maximum
+        # possible magnitude at the same weight (2 legs' worth of
+        # squared-deviation terms instead of 4), independently reducing
+        # -- though not on its own eliminating -- the same forward-
+        # velocity-crowding risk the gate was trying (and failing) to
+        # fix. Antigravity confirmed the target-deviation formula (not
+        # variance) prevents this from just shifting the static-prop
+        # behavior onto leg_d instead: each leg is still judged
+        # independently against 0.75, so leg_d adopting the same
+        # strategy costs exactly as much as leg_c doing it, and planting
+        # BOTH back legs costs double, not the same.
         swing_fairness_penalty = -float(np.sum(
-            (self._contact_duty_cycle - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2)
-        ) * (0.5 + 0.5 * forward_progress)
+            (self._contact_duty_cycle[2:] - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2))
         # Targets self._walk_target_height_m (walk_height_fraction * full
         # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
