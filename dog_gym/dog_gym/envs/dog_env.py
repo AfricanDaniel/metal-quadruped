@@ -362,6 +362,15 @@ WALK_ACTION_RATE_PENALTY_WEIGHT = -0.01
 # Antigravity, same round as WALK_ACTION_RATE_PENALTY_WEIGHT above).
 WALK_HEIGHT_SAG_PENALTY_WEIGHT = 100.0
 
+# WALK-only -- see height_overshoot_penalty's comment in
+# _compute_reward_walk() (2026-08-13, user's --walk-height-fraction 0.7
+# crouch experiment, daniel_cl_context.md same date). Mirrors
+# WALK_HEIGHT_SAG_PENALTY_WEIGHT exactly (same weight, same quadratic
+# shape) so height_target is defended symmetrically from both sides --
+# see that constant's own comment for why the asymmetric-only version
+# was a real bug for low walk_height_fraction values specifically.
+WALK_HEIGHT_OVERSHOOT_PENALTY_WEIGHT = 100.0
+
 # _angular_vel_penalty()'s per-task weights -- see that method's
 # docstring for the full 2026-07-30 derivation (walk-specific wobble
 # getting worse with more training while forward_velocity_reward
@@ -3581,6 +3590,39 @@ class DogEnv(gym.Env):
         height_deficit = max(0.0, height_target - self._torso_height())
         height_sag_penalty = -(height_deficit ** 2)
 
+        # height_overshoot_penalty (2026-08-13, user's --walk-height-
+        # fraction 0.7 crouch experiment, daniel_cl_context.md same
+        # date) -- the mirror image of height_sag_penalty directly
+        # above, same quadratic shape, same WEIGHT (100.0, see
+        # WALK_HEIGHT_OVERSHOOT_PENALTY_WEIGHT's comment), but active
+        # ABOVE target instead of below. Needed because height_sag_
+        # penalty alone is a ONE-SIDED wall: at typical walk heights
+        # (fraction ~0.9-0.95) that was fine, there's barely any room to
+        # overshoot above target anyway. At a deliberately low fraction
+        # (0.7 here, height_target=0.219m vs full STAND_HEIGHT_M=
+        # 0.313m) it isn't fine -- measured directly on
+        # PPO_1000000/2000000_walk_position_hf_v3: torso height climbed
+        # from the 'home' start straight past 0.219m up to a stable
+        # ~0.30m and STAYED there across both checkpoints, essentially
+        # unchanged between 1M and 2M steps. Root cause: height_sag_
+        # penalty (weight 100, quadratic) fights hard to keep the robot
+        # from dropping below height_target, but nothing symmetric
+        # fights it drifting back UP once clear of that floor --
+        # height_reward's weight-2.5 symmetric linear pull is the only
+        # thing left, 40x too weak to out-compete the climb pressure
+        # that got it above target in the first place. Net effect: a
+        # one-way ratchet that settles well ABOVE height_target rather
+        # than AT it, worse the lower height_target is set (more empty
+        # room between height_target and full standing height to drift
+        # into). This term closes that gap by making height_target a
+        # genuine two-sided well regardless of what --walk-height-
+        # fraction is passed -- height_sag_penalty's own protection
+        # against below-target sag (its original real-hardware-drift
+        # motivation, see that term's comment) is completely unchanged;
+        # this only adds symmetric pressure from the other side.
+        height_overshoot_penalty = -(
+            max(0.0, self._torso_height() - height_target) ** 2)
+
         # Walk on the feet, not the knees/shins -- this task previously had
         # NO foot-placement term at all, which is exactly why a trained
         # policy was observed walking on its knees: nothing in the reward
@@ -3825,6 +3867,7 @@ class DogEnv(gym.Env):
             # See this term's own comment above for the full original
             # implementation history/reasoning.
             + WALK_HEIGHT_SAG_PENALTY_WEIGHT * height_sag_penalty
+            + WALK_HEIGHT_OVERSHOOT_PENALTY_WEIGHT * height_overshoot_penalty
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
             + 1.0 * foot_clearance_reward
