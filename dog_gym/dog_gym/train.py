@@ -466,9 +466,23 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         # below) at 0, regardless of how many steps the source checkpoint
         # had already accumulated -- see this module's docstring.
         reset_num_timesteps = bool(init_from) and iteration == 1
+        # tb_log_name=fname (2026-08-15, dashboard "Trainings" tab work):
+        # without an explicit name, SB3 falls back to its own auto-
+        # incrementing {algo}_{n} folder naming under log_dir, scoped per
+        # PROCESS not per fname -- confirmed directly that this let
+        # completely unrelated runs (different --fname, different days)
+        # collide on the same folder (log_dir/PPO_3/ contained event files
+        # from 7 different PIDs/timestamps), making "find the graphs for
+        # fname X" unreliable. Naming it after fname instead means every
+        # iteration of THIS run lands under log_dir/{fname}_{n}/ -- still
+        # one folder per .learn() call (SB3 still appends its own _n
+        # suffix even with a custom name), but now unambiguously
+        # prefixed, so a glob for f'{fname}_*' finds exactly this run's
+        # own folders and nothing else.
         model.learn(total_timesteps=total_timesteps_per_iter,
                     reset_num_timesteps=reset_num_timesteps,
-                    callback=callback)
+                    callback=callback,
+                    tb_log_name=fname)
         save_path = os.path.join(
             model_dir, f'{algo}_{total_timesteps_per_iter * iteration}_{fname}')
         model.save(save_path)
