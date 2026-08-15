@@ -497,6 +497,171 @@ WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 SWING_FAIRNESS_EMA_ALPHA = 0.02
 WALK_SWING_FAIRNESS_WEIGHT = 1.5
 
+# swing_amplitude_penalty (2026-08-14, multi-agent review w/
+# Antigravity, chatbot.md "proposing a new swing-AMPLITUDE-discrepancy
+# term (front vs back)"). Added AFTER a full revert of the entire
+# swing_fairness/foot_slip saga (`957bb88` through the quality-gated
+# slip-threshold work) back to commit `604a8e5` -- three straight
+# rounds where a targeted fix to that duty-cycle-timing mechanism
+# caused a new, unanticipated side effect never predictable from the
+# reward code alone (gate -> immediate falls, scope -> sliding,
+# threshold -> still dragging). This is a DIFFERENT problem from that
+# whole saga: not about ground-contact TIMING/duty-cycle at all, about
+# swing ANGLE/AMPLITUDE. Measured directly on walk_position_hf_v11/
+# hf_v12 (both --walk-height-fraction 0.7, no swing-fairness-family
+# code active): front legs (a, b) swing through a moderate ~30-50deg
+# range CENTERED around roughly +-40deg from neutral (peak deviation
+# measured 54.6-66.6deg across both checkpoints); back legs (c, d)
+# swing through a SIMILARLY-SIZED range but centered way out at
+# +-100-130deg -- their LEAST extended position is already past the
+# front legs' MOST extended position.
+#
+# User asked whether re-enabling trot_symmetry_reward would help --
+# no: that term judges per-tick contact-state TIMING between diagonal
+# pairs, nothing about angular position, so it wouldn't constrain this
+# at all, and re-enabling it risks the exact "coupled local optima"
+# failure it was originally disabled for (2026-08-11) -- could pull a
+# GOOD front leg's timing toward a BAD back leg's pattern as easily as
+# the reverse, no way to make it prefer one direction.
+#
+# FIRST DESIGN (Claude's own proposal, REJECTED after Antigravity
+# review): a RELATIVE comparison, max(0, back_mean_deviation -
+# front_mean_deviation), penalizing only when back legs deviate from
+# neutral more than front legs. Antigravity flagged the same class of
+# risk as trot_symmetry_reward's own coupling problem: nothing stops
+# PPO from closing that gap by pushing the FRONT legs' deviation UP to
+# match the back legs' broken range, instead of pulling the back legs
+# in -- both directions equally satisfy a relative formula.
+#
+# ADOPTED INSTEAD (Antigravity's proposed fix): an ABSOLUTE, fully
+# per-leg, independent deadzone -- no cross-leg comparison anywhere in
+# this term at all. Each leg is penalized only if ITS OWN deviation
+# from neutral exceeds SWING_AMPLITUDE_MAX_DEVIATION_RAD, derived from
+# the front legs' own currently-working range (not a relative
+# comparison to them). Front legs, already within that threshold,
+# contribute exactly zero and have no incentive to change; only back
+# legs, already far outside it, are penalized -- structurally
+# eliminates the "fix it by breaking the other side" risk rather than
+# hoping PPO picks the intended direction.
+#
+# UNGATED by forward_progress, deliberately (Antigravity, explicit,
+# given this session's own history): gating a postural term by
+# forward_progress is exactly what caused hf_v7's immediate-fall
+# regression the last time it was tried on a related mechanism (see
+# daniel_cl_context.md's swing_fairness_penalty sections, since
+# reverted) -- gating this would let the policy erase the whole
+# penalty just by never walking forward. Needs continuous pressure
+# regardless of current velocity.
+WALK_SWING_AMPLITUDE_PENALTY_WEIGHT = 3.0
+
+# Absolute per-leg deadzone for swing_amplitude_penalty (see that
+# term's own comment/WALK_SWING_AMPLITUDE_PENALTY_WEIGHT above) --
+# thigh deviation from its own neutral/default residual-action baseline
+# (_walk_default_action_rad), ABOVE which it starts costing something.
+# Calibrated directly from hf_v11/hf_v12's own measured front-leg peak
+# deviations (54.6-66.6deg across both checkpoints, the currently-
+# working range) plus headroom, not a relative comparison to them --
+# see WALK_SWING_AMPLITUDE_PENALTY_WEIGHT's comment for why absolute
+# instead of relative.
+SWING_AMPLITUDE_MAX_DEVIATION_RAD = np.radians(70)
+
+# calf_amplitude_penalty (2026-08-14, multi-agent review w/ Antigravity,
+# chatbot.md "calf tuck persists after the thigh-amplitude fix worked").
+# swing_amplitude_penalty above fixed the THIGH version of this problem
+# -- confirmed on walk_position_hf_v13, all 4 legs' thighs now balanced
+# (~42-67deg, none exploding past SWING_AMPLITUDE_MAX_DEVIATION_RAD's
+# 70deg) -- but the user is watching hf_v13 directly and the CALVES are
+# still tucked, a separate joint with its own separate problem.
+# Measured directly (belt-decoupling-corrected ABSOLUTE calf angle,
+# same convention as _get_obs()'s motor_qpos[calf_idx] correction, home
+# =0 same common zero as the thigh version -- NOT _walk_default_
+# action_rad, same reference-frame trap already self-caught on the
+# thigh term above): by 3M, |mean| calf angle -- front(a,b) 18-35deg,
+# back(c,d) 44-54deg, roughly 1.4-2.8x front's magnitude, oscillation
+# RANGE comparable across all 4 (28-63deg) -- same shape as the
+# original thigh problem, the CENTER is shifted, not the amplitude of
+# oscillation itself.
+#
+# DELIBERATELY A SEPARATE TERM/WEIGHT from swing_amplitude_penalty
+# (direct user request), not a shared mechanism across both joints --
+# thigh and calf amplitude may need different weights/thresholds as
+# training progresses (e.g. if the calf version turns out to need much
+# more/less pressure than the thigh version did), and coupling them
+# into one term would make that impossible to tune independently later.
+# SAME absolute per-leg deadzone design as swing_amplitude_penalty
+# (Antigravity, explicit: proceed immediately with this over the
+# alternative "perpendicular foot at touchdown" idea, which is more
+# principled but needs real geometric derivation via body_xmat/
+# site_xmat rather than joint angles, and is more failure-prone given
+# this session's repeated reference-frame bugs -- logged as a
+# documented future direction in daniel_cl_context.md, not built now).
+# UNGATED, same reasoning as swing_amplitude_penalty's own comment
+# (gating a postural term let a related mechanism's penalty get
+# erased entirely by the policy simply not walking, hf_v7's
+# regression).
+#
+# REPLACED ENTIRELY (2026-08-14, same day, multi-agent review w/
+# Antigravity, chatbot.md "calf_amplitude_penalty measured the WRONG
+# physical quantity"). The ABSOLUTE-angle deadzone above was checked
+# against walk_position_hf_v14 and found to be measuring the wrong
+# thing: the belt-decoupled ABSOLUTE calf angle is `raw_hinge +
+# calf_belt_sign*thigh_angle` (see calf_idx's comment), so a THIGH
+# that's swinging normally (already fixed by swing_amplitude_penalty)
+# is enough on its own to make the absolute calf angle look like it
+# has real range, even if the actual knee JOINT never moves at all --
+# measured directly: leg_d's RAW hinge range was 1-8deg (essentially
+# frozen) across 3 seeds while its ABSOLUTE angle showed 29-31deg of
+# range, purely from being passively carried by the thigh's own ~30deg
+# swing. leg_c similarly limited (19-26deg raw vs. front legs' 25-59deg).
+#
+# ALSO STRUCTURALLY WRONG SHAPE, independent of which angle it reads:
+# an absolute POSITION deadzone (`|angle-home| > threshold`) cannot
+# catch a frozen joint AT home -- leg_d's raw hinge MEAN sits at
+# 0.1-0.8deg, so a deviation-from-home penalty (on EITHER the absolute
+# or the raw angle) would score it as perfect regardless of threshold.
+# The real failure is INACTIVITY, not displacement from neutral --
+# needs a mechanism measuring RANGE-OF-MOTION over time, not
+# instantaneous position.
+#
+# Antigravity: confirmed RAW hinge (not absolute) is the correct
+# reference for this specifically because the whole point is to catch
+# a frozen JOINT independent of what the thigh does to the absolute
+# frame. Confirmed a genuine rolling MIN/MAX RANGE metric is needed,
+# NOT a rolling velocity-magnitude EMA (Claude's first instinct) --
+# velocity magnitude can't distinguish genuine large-amplitude flexion
+# from a policy satisfying it with rapid, tiny, high-frequency
+# vibration at a similar average speed; a real range (distance actually
+# traversed) can't be gamed that way. Recommended REPLACING this term
+# entirely rather than adding a third calf-adjacent mechanism alongside
+# the (already-wrong) absolute-angle version, to avoid term bloat and
+# overlapping/competing penalties.
+#
+# WINDOW_TICKS=50 (~0.5s at this sim's 100Hz) matches SWING_FAIRNESS_
+# EMA_ALPHA's own established "~50-tick/one gait cycle" timescale
+# reference elsewhere in this file -- comfortably spans a full stance+
+# swing cycle (FEET_AIR_TIME_TARGET_S=0.1s + FEET_STANCE_TIME_MAX_S=
+# 0.3s implies ~0.4s), so genuine per-cycle flexion shows up as real
+# range even if its timing doesn't align tick-for-tick with the window
+# boundary. TRUE sliding-window min/max (a small fixed-size circular
+# buffer per leg, see self._calf_hinge_window/_update_calf_hinge_
+# activity() in __init__/reset()/_compute_reward_walk()) rather than an
+# EMA-decayed peak-follower approximation -- more state to carry (4
+# legs x 50 ticks, trivial), but directly verifiable correctness rather
+# than tuning decay-rate approximations, given how many subtle
+# reference-frame/shape bugs this specific reward area has produced
+# this session.
+#
+# MIN_RANGE_RAD calibrated from real measured data (not a guess):
+# front legs' raw hinge range floor was ~25deg (leg_a's lowest observed
+# value); back legs' currently-limited range was leg_c's 19-26deg and
+# leg_d's 1-8deg. 20deg sits just below the front-leg floor (won't
+# clip legitimate front-leg motion) while still applying real, partial
+# pressure to leg_c's borderline range and strong pressure to leg_d's
+# near-zero one.
+WALK_CALF_ACTIVITY_PENALTY_WEIGHT = 3.0
+CALF_ACTIVITY_WINDOW_TICKS = 50
+CALF_ACTIVITY_MIN_RANGE_RAD = np.radians(20)
+
 # JOINT_LIMIT_MARGIN_PENALTY_WEIGHT/_joint_limit_margin_penalty() REMOVED
 # 2026-08-12 (multi-agent review w/ Antigravity, chatbot.md "PPO_6000000_
 # jointlimit_probe_v1 real deployment"). Was a TEMPORARY diagnostic term
@@ -1648,6 +1813,18 @@ class DogEnv(gym.Env):
         # WALK_SWING_FAIRNESS_WEIGHT's comment. Updated once per step by
         # _update_swing_duty_cycle(), reset in reset() below.
         self._contact_duty_cycle = np.zeros(4)
+        # True sliding-window buffer of RAW calf hinge angle (rad),
+        # shape (CALF_ACTIVITY_WINDOW_TICKS, 4) -- feeds calf_activity_
+        # penalty's rolling range-of-motion check in _compute_reward_
+        # walk(). See CALF_ACTIVITY_WINDOW_TICKS's comment for why this
+        # is a real circular buffer (verifiable min/max), not an
+        # EMA-decayed approximation. Written by _update_calf_hinge_
+        # activity(), reset in reset() below -- filled with the
+        # reset-time reading there (not zeros) so a fresh episode starts
+        # at a correctly-zero range instead of a bogus signal from
+        # stale/default entries.
+        self._calf_hinge_window = np.zeros((CALF_ACTIVITY_WINDOW_TICKS, 4))
+        self._calf_hinge_window_idx = 0
         # Seconds torso pitch magnitude has stayed continuously above
         # PITCH_TERMINATION_THRESHOLD_RAD -- see that constant's comment
         # / _pitch_diverging_too_long().
@@ -1917,6 +2094,20 @@ class DogEnv(gym.Env):
         # timing reasoning as self._episode_start_y above.
         self._episode_start_yaw = self._torso_yaw_rad()
 
+        # Fill the WHOLE calf-hinge activity window with this episode's
+        # actual reset-time reading (not zeros) -- same timing reasoning
+        # as _belt_target_abs_calf/_episode_start_y above (read AFTER
+        # mj_forward so it reflects the qpos this reset() call just
+        # set). Matters for 'standing'-start episodes specifically
+        # (nonzero raw calf hinge at reset) -- a zero-filled buffer would
+        # register a fake "range" on the very first tick as it jumps
+        # from 0 to the real starting angle, incorrectly reading as
+        # motion. Starting the whole window at the same value correctly
+        # reads as zero range until real per-tick motion accumulates.
+        self._calf_hinge_window[:] = self.data.qpos[
+            self.motor_qpos_adr[self.calf_idx]]
+        self._calf_hinge_window_idx = 0
+
         # Populate initial history (copy the first obs to all history slots)
         initial_obs = self._get_obs()
         for i in range(self.obs_history_len):
@@ -2167,6 +2358,11 @@ class DogEnv(gym.Env):
         # walk(), same off-by-one-tick-lag reasoning as the calls above.
         # See _update_swing_duty_cycle()'s docstring.
         self._update_swing_duty_cycle()
+        # MUST also update before _compute_reward() -- calf_activity_
+        # penalty reads self._calf_hinge_window inside _compute_reward_
+        # walk(), same off-by-one-tick-lag reasoning as the calls above.
+        # See _update_calf_hinge_activity()'s docstring.
+        self._update_calf_hinge_activity()
 
         reward = self._compute_reward(action)
 
@@ -2912,6 +3108,29 @@ class DogEnv(gym.Env):
             SWING_FAIRNESS_EMA_ALPHA * contacted
             + (1.0 - SWING_FAIRNESS_EMA_ALPHA) * self._contact_duty_cycle)
 
+    def _update_calf_hinge_activity(self):
+        """Writes this tick's RAW calf hinge angle (rad, the actual
+        physical knee joint -- NOT the belt-decoupled ABSOLUTE angle
+        _get_obs() uses everywhere else) into self._calf_hinge_window,
+        a true sliding-window circular buffer feeding calf_activity_
+        penalty's rolling range-of-motion check in _compute_reward_
+        walk(). See CALF_ACTIVITY_WINDOW_TICKS/WALK_CALF_ACTIVITY_
+        PENALTY_WEIGHT's comments for the full walk_position_hf_v14
+        frozen-knee derivation -- RAW (not absolute) specifically
+        because the whole point is to catch a knee joint that never
+        moves independent of what the thigh's own swing does to the
+        absolute frame; a real sliding window (not an EMA-decayed
+        approximation) specifically so the range is genuinely
+        verifiable, not a gameable running-average proxy. MUST be
+        called once per step, after mj_step, BEFORE _compute_reward()
+        (same reasoning as _update_swing_duty_cycle() -- this tick's
+        reading must already be in the window when the reward reads
+        it)."""
+        self._calf_hinge_window[self._calf_hinge_window_idx] = (
+            self.data.qpos[self.motor_qpos_adr[self.calf_idx]])
+        self._calf_hinge_window_idx = (
+            (self._calf_hinge_window_idx + 1) % CALF_ACTIVITY_WINDOW_TICKS)
+
     def _update_high_pitch_time(self):
         """Advances self._high_pitch_time -- seconds torso pitch
         magnitude has stayed CONTINUOUSLY above
@@ -3518,6 +3737,60 @@ class DogEnv(gym.Env):
         # same reasoning as trot_symmetry_reward's own stuck-phase branch
         # being left ungated.
         swing_fairness_penalty = -float(np.var(self._contact_duty_cycle))
+        # swing_amplitude_penalty -- see WALK_SWING_AMPLITUDE_PENALTY_
+        # WEIGHT/SWING_AMPLITUDE_MAX_DEVIATION_RAD's comments for the
+        # full hf_v11/hf_v12 back-legs-swinging-too-far-out derivation.
+        # ABSOLUTE per-leg deadzone, deliberately NOT a front-vs-back
+        # comparison (Antigravity: a relative formula can't stop PPO
+        # from "fixing" the gap by pushing front legs' deviation UP
+        # instead of pulling back legs' deviation down). self.
+        # calf_thigh_idx/calf_thigh_qpos_adr already give the 4 thigh
+        # motors in leg_a/b/c/d order (reused, not recomputed -- same
+        # arrays __init__ builds for the belt-compensation math).
+        # Deliberately UNGATED by forward_progress -- see this weight's
+        # own comment for why (gating a postural term let the policy
+        # erase it entirely by not walking, hf_v7's regression).
+        #
+        # MEASURED FROM HOME (raw qpos, self-caught error 2026-08-14,
+        # same round as the rest of this term): originally measured
+        # deviation from _walk_default_action_rad (each leg's own
+        # STANDING-pose residual baseline) instead -- wrong reference.
+        # That baseline differs hugely per leg by design (thigh a=
+        # 107.5deg, b=-98.8deg, c=98.7deg, d=-103.8deg -- the FULL
+        # standing pose, not appropriate as "neutral" at a 0.7-fraction
+        # CROUCH, which requires every leg to carry a substantial
+        # residual just to reach the crouch at all). Checked directly
+        # against it: leg_c's actual ~95-128deg sits CLOSE to its own
+        # 98.7deg standing default (~4-29deg off), while leg_a's actual
+        # ~38-42deg is FAR from its own 107.5deg default (~65-70deg off)
+        # -- exactly backwards from the real problem (back legs visibly
+        # extreme, front legs fine). HOME (qpos=0) is a genuinely
+        # leg-independent common zero, unlike each leg's own standing
+        # angle -- matches what was actually measured/calibrated
+        # (front-leg peak deviation 54.6-66.6deg) and what the user
+        # visually characterized in the first place.
+        thigh_deviation = np.abs(self.data.qpos[self.calf_thigh_qpos_adr])
+        swing_amplitude_excess = np.clip(
+            thigh_deviation - SWING_AMPLITUDE_MAX_DEVIATION_RAD, 0.0, None)
+        swing_amplitude_penalty = -float(np.sum(swing_amplitude_excess ** 2))
+        # calf_activity_penalty -- REPLACES the old calf_amplitude_
+        # penalty entirely (see WALK_CALF_ACTIVITY_PENALTY_WEIGHT's
+        # comment for the full walk_position_hf_v14 frozen-knee
+        # derivation and why an absolute-angle deadzone -- on EITHER
+        # the raw or belt-corrected angle -- was the wrong shape for
+        # this problem). Rolling RANGE (true sliding-window max-min, not
+        # an EMA approximation) of RAW calf hinge angle -- deliberately
+        # NOT the belt-decoupled absolute angle _get_obs() uses
+        # elsewhere, specifically because a swinging THIGH alone can
+        # make the absolute angle show fake range even with a
+        # completely frozen knee joint. Penalizes a SHORTFALL below
+        # CALF_ACTIVITY_MIN_RANGE_RAD, not a position deviation -- this
+        # is an activity/range floor, not a deadzone around neutral.
+        calf_hinge_range = (
+            self._calf_hinge_window.max(axis=0) - self._calf_hinge_window.min(axis=0))
+        calf_activity_deficit = np.clip(
+            CALF_ACTIVITY_MIN_RANGE_RAD - calf_hinge_range, 0.0, None)
+        calf_activity_penalty = -float(np.sum(calf_activity_deficit ** 2))
         # Targets self._walk_target_height_m (walk_height_fraction * full
         # standing height, see __init__/WALK_HEIGHT_FRACTION's comment),
         # not the stand task's full STAND_HEIGHT_M: a crouched walking
@@ -3913,6 +4186,8 @@ class DogEnv(gym.Env):
             # chatbot.md "swing-time-fairness" -- see WALK_SWING_FAIRNESS_
             # WEIGHT's comment for the full derivation/design rationale).
             + WALK_SWING_FAIRNESS_WEIGHT * swing_fairness_penalty
+            + WALK_SWING_AMPLITUDE_PENALTY_WEIGHT * swing_amplitude_penalty
+            + WALK_CALF_ACTIVITY_PENALTY_WEIGHT * calf_activity_penalty
             + 0.02 * calf_swing_motion_reward
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
