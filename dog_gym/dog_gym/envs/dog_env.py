@@ -1144,6 +1144,18 @@ FOOT_CONTACT_RADIUS_M = 0.03
 # demanding an unnaturally high step.
 FOOT_CLEARANCE_TARGET_M = 0.06
 
+# sigma for _foot_clearance_reward()'s Gaussian -- previously just
+# reused FOOT_CLEARANCE_TARGET_M directly (sigma == target), which made
+# the term barely discriminate: a foot dragging at z=0 (0 sigma from
+# target... no, ~1 sigma away) still scored exp(-0.5) = 0.61 out of a
+# max of 1.0, most of the reward, for never lifting at all. NARROWED
+# 2026-08-15 (user-reported: hf_v15_fixed/test_height_v2 dragging/
+# tucking legs, confirmed real not sim-only now that the sim/real
+# export mismatch is fixed) to make the same 0-height drag score ~0.14
+# instead -- a real penalty, not a near-pass -- without moving the
+# target itself or touching the over-lift side of the Gaussian.
+FOOT_CLEARANCE_SIGMA_M = FOOT_CLEARANCE_TARGET_M / 2
+
 # RAISED 0.1 -> 3.0 on 2026-08-02 (user request: "allow the feet to swing
 # for 3 seconds in the air") -- ALSO raised FEET_AIR_TIME_MAX_S (3x this)
 # to 9.0s, close to removing the swing-duration cap's teeth entirely,
@@ -2673,7 +2685,8 @@ class DogEnv(gym.Env):
         legs that never lift AT ALL get no dense per-tick signal telling
         them lifting is good, which is a separate, worse problem once a
         policy isn't lifting its legs at all. Now a Gaussian centered
-        AT the target (sigma=FOOT_CLEARANCE_TARGET_M) penalizes
+        AT the target (sigma=FOOT_CLEARANCE_SIGMA_M, see that constant's
+        own history -- narrowed from an original sigma==target) penalizes
         deviation in EITHER direction -- both dragging (foot_z=0) and
         over-jumping (foot_z=0.2, ~5.7 sigma away) score low, only
         genuine near-target-height swings score close to 1.0."""
@@ -2682,7 +2695,7 @@ class DogEnv(gym.Env):
         if not any(swinging):
             return 0.0  # no leg is swinging right now -- neutral, NOT rewarded (see bug note above)
         total = 0.0
-        sigma = FOOT_CLEARANCE_TARGET_M
+        sigma = FOOT_CLEARANCE_SIGMA_M
         for i, site_id in enumerate(self.foot_site_ids):
             if swinging[i]:
                 foot_z = max(self.data.site_xpos[site_id][2], 0.0)
@@ -4143,7 +4156,14 @@ class DogEnv(gym.Env):
             + WALK_HEIGHT_OVERSHOOT_PENALTY_WEIGHT * height_overshoot_penalty
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
-            + 1.0 * foot_clearance_reward
+            # RAISED 1.0 -> 2.0 (2026-08-15, alongside narrowing
+            # FOOT_CLEARANCE_SIGMA_M -- see that constant's own comment):
+            # sigma==target made this term a weak lever even at weight
+            # 1.0 (dragging still scored 0.61/1.0 per swinging leg); with
+            # sigma narrowed, a real drag/tuck failure now differs enough
+            # from a good swing that this weight actually moves the
+            # gradient, without approaching forward_velocity_reward's 5.0.
+            + 2.0 * foot_clearance_reward
             + 1.0 * foot_slip_penalty
             + 1.0 * touchdown_velocity_penalty
             + 0.5 * feet_air_time_reward
