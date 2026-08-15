@@ -31,7 +31,7 @@ class DeterministicPolicy(torch.nn.Module):
     raises "Cannot insert a Tensor that requires grad as a constant".
     """
 
-    def __init__(self, policy, action_low, action_high):
+    def __init__(self, policy, action_low, action_high, default_action=None):
         super().__init__()
         self.policy = policy
         # SB3's own predict() (stable_baselines3/common/policies.py,
@@ -44,10 +44,23 @@ class DeterministicPolicy(torch.nn.Module):
         # module's state, not baked in as untyped constants.
         self.register_buffer('action_low', torch.as_tensor(action_low, dtype=torch.float32))
         self.register_buffer('action_high', torch.as_tensor(action_high, dtype=torch.float32))
+        # WALK trains a RESIDUAL action around dog_env.py's own
+        # _walk_default_action_rad (see WALK_ACTION_RESIDUAL_RANGE_RAD),
+        # not an absolute joint target -- policy_node.py has no idea
+        # about that baseline, so it has to be baked into the exported
+        # module itself, added back in after the network's own clamp.
+        # None for STAND (whose action already IS the absolute target).
+        if default_action is not None:
+            self.register_buffer('default_action', torch.as_tensor(default_action, dtype=torch.float32))
+        else:
+            self.default_action = None
 
     def forward(self, observation):
         action = self.policy(observation, deterministic=True)[0]
-        return torch.clamp(action, self.action_low, self.action_high)
+        action = torch.clamp(action, self.action_low, self.action_high)
+        if self.default_action is not None:
+            action = action + self.default_action
+        return action
 
 
 def export(model_path, output_path, env_id='Dog-Stand-v0', control_mode='position', model_xml_path=None):
@@ -66,7 +79,12 @@ def export(model_path, output_path, env_id='Dog-Stand-v0', control_mode='positio
     example_obs = torch.zeros(1, obs_dim)
 
     model.policy.set_training_mode(False)
-    wrapped = DeterministicPolicy(model.policy, env.action_space.low, env.action_space.high)
+
+    default_action = None
+    if getattr(env.unwrapped, 'task', None) == 'walk' and getattr(env.unwrapped, 'control_mode', None) == 'position':
+        default_action = env.unwrapped._walk_default_action_rad
+
+    wrapped = DeterministicPolicy(model.policy, env.action_space.low, env.action_space.high, default_action)
 
     with torch.no_grad():
         traced = torch.jit.trace(wrapped, example_obs)
