@@ -38,6 +38,7 @@ import dog_gym  # noqa: F401  (registers Dog-v0)
 import gymnasium as gym
 import numpy as np
 import torch.nn as nn
+import wandb
 from stable_baselines3 import A2C, PPO, SAC
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
@@ -307,7 +308,23 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           position_kd_range_start=None, position_kd_range_end=None,
           gain_curriculum_steps=None, lr_schedule='linear', desired_kl=0.01,
           home_start_prob_start=None, home_start_prob_end=None,
-          home_start_curriculum_steps=None):
+          home_start_curriculum_steps=None, wandb_project='dog-quadruped', wandb_entity=None):
+    # Always on (2026-08-15, direct user request -- "wandb", always-on not
+    # opt-in): locals() grabbed HERE, before any other local variable
+    # exists, so it's exactly this call's own training config -- one
+    # dict, automatically kept in sync with this signature, no separate
+    # by-hand list to fall out of date as params get added/removed.
+    # sync_tensorboard=True piggybacks on the tensorboard_log=log_dir
+    # already passed to PPO()/ALGOS[algo]() below rather than duplicating
+    # metric logging -- every scalar already going to TensorBoard (and
+    # therefore already readable by the dashboard's own graphs.py) gets
+    # mirrored to W&B for free. name=fname matches tb_log_name=fname
+    # below, so a run is trivially cross-referenceable between the two.
+    wandb_config = {k: v for k, v in locals().items() if k not in ('wandb_project', 'wandb_entity')}
+    os.makedirs(log_dir, exist_ok=True)  # wandb.init(dir=...) needs this to already exist
+    wandb.init(project=wandb_project, entity=wandb_entity, name=fname,
+               config=wandb_config, sync_tensorboard=True, dir=log_dir)
+
     print(f'Training {algo} on {env_id} ({env_type}, {num_envs} envs, '
           f'walk_start_pose={walk_start_pose}, walk_height_fraction={walk_height_fraction}, '
           f'control_mode={control_mode}, position_kp={position_kp}, position_kd={position_kd}, '
@@ -715,6 +732,12 @@ def main():
     parser.add_argument('--desired-kl', type=float, default=0.01,
                          help='--lr-schedule adaptive only: target KL divergence per update. Default '
                               'matches rsl_rl\'s own default (and go2_train_walk.py\'s).')
+    parser.add_argument('--wandb-project', default='dog-quadruped',
+                         help='Weights & Biases project every --train run logs to (always on -- '
+                              'run `wandb login` once beforehand, see train.py\'s wandb.init() call).')
+    parser.add_argument('--wandb-entity', default=None,
+                         help='W&B entity (team/user) to log under -- default None uses whatever '
+                              '`wandb login` set as your default entity.')
     parser.add_argument('--n-steps', type=int, default=2048,
                          help='PPO only: rollout length per env before each update '
                               '(buffer size = n_steps * num_envs)')
@@ -796,7 +819,7 @@ def main():
               args.position_kd_range_start, args.position_kd_range_end,
               args.gain_curriculum_steps, args.lr_schedule, args.desired_kl,
               args.home_start_prob_start, args.home_start_prob_end,
-              args.home_start_curriculum_steps)
+              args.home_start_curriculum_steps, args.wandb_project, args.wandb_entity)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
