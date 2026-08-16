@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <ctime>
@@ -7,8 +8,10 @@
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <yaml-cpp/yaml.h>
@@ -220,11 +223,22 @@ public:
 
         serial_ = std::make_unique<SerialPort>(port_.c_str());
 
-        // 100 Hz control loop. With no motors registered yet, this is a no-op —
-        // motors only start being commanded once a service call targets them.
-        timer_ = this->create_wall_timer(
-            std::chrono::milliseconds(10),
-            std::bind(&MotorTestNode::control_loop, this));
+        // Dedicated I/O thread, not a ROS timer (2026-08-16, chatbot.md
+        // "single-threaded executor contention" -- the timer-driven version
+        // ran control_loop() ON the same single-threaded executor that also
+        // dispatches every service call, so a service request arriving
+        // mid-cycle had to wait for 8 sequential blocking real serial
+        // round-trips to finish first -- measured as ~30ms of pure queuing
+        // delay on top of <1ms of genuine handler-internal work. Targets the
+        // same ~100Hz/10ms cadence as before, capped rather than a fixed
+        // sleep (see io_thread_main()) so it never sleeps once real serial
+        // I/O already exceeds 10ms, same reasoning as policy_node.py's own
+        // chaining fix. state_mutex_ protects every access to motors_/
+        // MotorState/the log_* members shared between this thread and the
+        // executor thread's service handlers -- see control_loop()'s own
+        // comment for why the mutex is released before each motor's actual
+        // serial_->sendRecv() call.
+        io_thread_ = std::thread(&MotorTestNode::io_thread_main, this);
 
         velocity_service_ = this->create_service<actuator::srv::SetMotorVelocity>(
             "set_motor_velocity",
@@ -268,7 +282,18 @@ public:
     }
 
     ~MotorTestNode() {
+        // Stop the I/O thread FIRST -- it must not still be calling
+        // serial_->sendRecv() concurrently with the zero-and-shutdown loop
+        // below (two threads touching the same serial port at once).
+        io_thread_running_ = false;
+        if (io_thread_.joinable()) {
+            io_thread_.join();
+        }
+
         // Safely zero out torque on every motor that was ever commanded.
+        // The I/O thread has already stopped, so this lock is defensive
+        // only (no real contention left), not strictly required.
+        std::lock_guard<std::mutex> lock(state_mutex_);
         for (auto &kv : motors_) {
             MotorState &motor = kv.second;
             motor.cmd.kp  = 0.0f;
@@ -281,6 +306,11 @@ public:
     }
 
 private:
+    // Caller must already hold state_mutex_ -- reads/writes motors_ and, on
+    // a motor's first-ever registration, does a one-time blocking
+    // zero-effort serial_->sendRecv() probe (see below). That probe briefly
+    // blocks the I/O thread if it happens to land during another call to
+    // this function, but only once per motor for the lifetime of the node.
     MotorState& get_or_create_motor(int32_t motor_id) {
         auto it = motors_.find(motor_id);
         if (it != motors_.end()) {
@@ -313,19 +343,22 @@ private:
     void handle_set_velocity(
         const std::shared_ptr<actuator::srv::SetMotorVelocity::Request> request,
         std::shared_ptr<actuator::srv::SetMotorVelocity::Response> response) {
-        MotorState &motor = get_or_create_motor(request->motor_id);
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            MotorState &motor = get_or_create_motor(request->motor_id);
 
-        motor.mode = ControlMode::VELOCITY;
+            motor.mode = ControlMode::VELOCITY;
 
-        motor.cmd.q   = 0.0f;       // Position target is ignored when kp is 0
-        motor.cmd.dq  = request->velocity * gear_ratio_; // output rad/s -> rotor rad/s
-        motor.cmd.tau = 0.0f;
-        motor.cmd.kp  = 0.0f;       // ZERO position gain (disables position hold)
-        // kd is used directly (not divided by gear_ratio^2) — this matches the
-        // vendor's own GO_M8010_6 velocity example, which tunes kd as a raw
-        // rotor-side damping term rather than converting it from an
-        // output-side value. The r^2 conversion is a position-mode concern.
-        motor.cmd.kd  = kd_gain_;
+            motor.cmd.q   = 0.0f;       // Position target is ignored when kp is 0
+            motor.cmd.dq  = request->velocity * gear_ratio_; // output rad/s -> rotor rad/s
+            motor.cmd.tau = 0.0f;
+            motor.cmd.kp  = 0.0f;       // ZERO position gain (disables position hold)
+            // kd is used directly (not divided by gear_ratio^2) — this matches the
+            // vendor's own GO_M8010_6 velocity example, which tunes kd as a raw
+            // rotor-side damping term rather than converting it from an
+            // output-side value. The r^2 conversion is a position-mode concern.
+            motor.cmd.kd  = kd_gain_;
+        }
 
         response->success = true;
 
@@ -383,6 +416,7 @@ private:
     // straight to the target. speed_deg_s <= 0 jumps immediately. Shared by
     // handle_adjust_position (relative moves) and handle_go_to_pose
     // (absolute preset poses).
+    // Caller must already hold state_mutex_ (reads/writes motor state).
     void command_absolute_position(MotorState &motor, int32_t motor_id, float target_deg, float speed_deg_s) {
         motor.mode = ControlMode::POSITION;
 
@@ -405,17 +439,21 @@ private:
     void handle_adjust_position(
         const std::shared_ptr<actuator::srv::AdjustMotorPosition::Request> request,
         std::shared_ptr<actuator::srv::AdjustMotorPosition::Response> response) {
-        MotorState &motor = get_or_create_motor(request->motor_id);
+        float new_target_deg;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            MotorState &motor = get_or_create_motor(request->motor_id);
 
-        // Base off the running position-mode target if there is one,
-        // otherwise the motor's current measured position — so a relative
-        // move from a freshly-registered motor starts from reality, not 0.
-        float current_target_deg = (motor.mode == ControlMode::POSITION)
-            ? motor.target_position_rad * 180.0f / static_cast<float>(M_PI)
-            : (motor.data.q / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+            // Base off the running position-mode target if there is one,
+            // otherwise the motor's current measured position — so a relative
+            // move from a freshly-registered motor starts from reality, not 0.
+            float current_target_deg = (motor.mode == ControlMode::POSITION)
+                ? motor.target_position_rad * 180.0f / static_cast<float>(M_PI)
+                : (motor.data.q / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
 
-        float new_target_deg = current_target_deg + request->degrees;
-        command_absolute_position(motor, request->motor_id, new_target_deg, default_pose_speed_deg_s());
+            new_target_deg = current_target_deg + request->degrees;
+            command_absolute_position(motor, request->motor_id, new_target_deg, default_pose_speed_deg_s());
+        }
 
         response->success = true;
         response->resulting_position_deg = new_target_deg;
@@ -431,6 +469,9 @@ private:
     // go_to_pose with log_csv before the first one's move finished) closes
     // the in-progress file first rather than interleaving both moves' rows
     // into it.
+    //
+    // Caller must already hold state_mutex_ -- these log_* members are also
+    // written by control_loop() on the I/O thread.
     void start_csv_log(const std::vector<int32_t>& motor_ids, const std::string& path, float duration_s) {
         if (logging_active_ && log_stream_.is_open()) {
             RCLCPP_WARN(get_logger(),
@@ -496,16 +537,19 @@ private:
 
         std::vector<int32_t> pose_motor_ids;
         float max_ramp_duration_s = 0.0f;
-        for (const auto& [motor_id, offset_deg] : *pose) {
-            float target_deg = home_deg_.at(motor_id) + offset_deg;
-            MotorState &motor = get_or_create_motor(motor_id);
-            command_absolute_position(motor, motor_id, target_deg, speed_deg_s);
-            pose_motor_ids.push_back(motor_id);
-            max_ramp_duration_s = std::max(max_ramp_duration_s, motor.ramp_duration_s);
-            RCLCPP_INFO(get_logger(),
-                "Motor %d: moving to '%s' (home %.2f + offset %.2f = %.2f deg) at %.1f deg/s",
-                motor_id, request->pose_name.c_str(), home_deg_.at(motor_id), offset_deg,
-                target_deg, speed_deg_s);
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            for (const auto& [motor_id, offset_deg] : *pose) {
+                float target_deg = home_deg_.at(motor_id) + offset_deg;
+                MotorState &motor = get_or_create_motor(motor_id);
+                command_absolute_position(motor, motor_id, target_deg, speed_deg_s);
+                pose_motor_ids.push_back(motor_id);
+                max_ramp_duration_s = std::max(max_ramp_duration_s, motor.ramp_duration_s);
+                RCLCPP_INFO(get_logger(),
+                    "Motor %d: moving to '%s' (home %.2f + offset %.2f = %.2f deg) at %.1f deg/s",
+                    motor_id, request->pose_name.c_str(), home_deg_.at(motor_id), offset_deg,
+                    target_deg, speed_deg_s);
+            }
         }
 
         response->success = true;
@@ -517,7 +561,10 @@ private:
             std::string path = request->log_csv_path.empty()
                 ? timestamped_log_path(request->pose_name)
                 : request->log_csv_path;
-            start_csv_log(pose_motor_ids, path, max_ramp_duration_s);
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                start_csv_log(pose_motor_ids, path, max_ramp_duration_s);
+            }
             response->message += " Logging to " + path + ".";
         }
     }
@@ -531,9 +578,12 @@ private:
             // already-active motor reports its latest control-loop reading;
             // a motor seen for the first time gets a one-off zero-effort
             // probe read (can't move it) purely to capture where it is.
-            MotorState &motor = get_or_create_motor(motor_id);
-
-            float current_deg = (motor.data.q / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+            float current_deg;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                MotorState &motor = get_or_create_motor(motor_id);
+                current_deg = (motor.data.q / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+            }
             home_deg_[motor_id] = current_deg;
 
             response->motor_id.push_back(motor_id);
@@ -560,21 +610,25 @@ private:
             // Already-active motors get their latest feedback from the control
             // loop (refreshed every 10ms); a motor seen for the first time
             // gets registered here, which does a one-off zero-effort read.
-            MotorState &motor = get_or_create_motor(motor_id);
+            float position_deg, velocity_deg_s, torque_nm;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                MotorState &motor = get_or_create_motor(motor_id);
 
-            float position_deg    = (motor.data.q  / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
-            float velocity_deg_s  = (motor.data.dq / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
-            // motor.data.tau is ROTOR-side, same convention as data.q/
-            // data.dq (see their own comments) -- but torque converts
-            // the OPPOSITE direction: a reduction gearbox MULTIPLIES
-            // torque going rotor -> output (it DIVIDES q/dq), matching
-            // the inverse of handle_set_motor_torque's output->rotor
-            // conversion (cmd.tau = requested_nm / gear_ratio_) elsewhere
-            // in this file. Real, MEASURED torque -- reported by the
-            // motor's own feedback in every control mode, not just
-            // torque mode (e.g. a position-mode motor holding a pose
-            // against gravity genuinely reports nonzero torque here).
-            float torque_nm = motor.data.tau * gear_ratio_;
+                position_deg   = (motor.data.q  / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+                velocity_deg_s = (motor.data.dq / gear_ratio_) * 180.0f / static_cast<float>(M_PI);
+                // motor.data.tau is ROTOR-side, same convention as data.q/
+                // data.dq (see their own comments) -- but torque converts
+                // the OPPOSITE direction: a reduction gearbox MULTIPLIES
+                // torque going rotor -> output (it DIVIDES q/dq), matching
+                // the inverse of handle_set_motor_torque's output->rotor
+                // conversion (cmd.tau = requested_nm / gear_ratio_) elsewhere
+                // in this file. Real, MEASURED torque -- reported by the
+                // motor's own feedback in every control mode, not just
+                // torque mode (e.g. a position-mode motor holding a pose
+                // against gravity genuinely reports nonzero torque here).
+                torque_nm = motor.data.tau * gear_ratio_;
+            }
             response->motor_id.push_back(motor_id);
             response->position_deg.push_back(position_deg);
             response->velocity_deg_s.push_back(velocity_deg_s);
@@ -603,6 +657,7 @@ private:
         for (size_t i = 0; i < request->motor_id.size(); ++i) {
             int32_t motor_id  = request->motor_id[i];
             float   target_deg = request->position_deg[i];
+            std::lock_guard<std::mutex> lock(state_mutex_);
             MotorState &motor = get_or_create_motor(motor_id);
             command_absolute_position(motor, motor_id, target_deg, /*speed_deg_s=*/0.0f);
         }
@@ -653,6 +708,7 @@ private:
                     motor_id, requested_nm, clamped_nm, motor_id, limit);
             }
 
+            std::lock_guard<std::mutex> lock(state_mutex_);
             MotorState &motor = get_or_create_motor(motor_id);
             if (motor.mode != ControlMode::TORQUE) {
                 motor.mode = ControlMode::TORQUE;
@@ -667,66 +723,120 @@ private:
         response->success = true;
     }
 
+    // Runs on io_thread_ (NOT the ROS executor thread) -- see io_thread_
+    // and the constructor's comment for why. Per motor: lock, compute the
+    // next command from mode/ramp/watchdog state (fast, no I/O), copy it
+    // into a local stack struct, UNLOCK, then do the real blocking serial
+    // round-trip on the local copies only -- the lock is deliberately never
+    // held across serial_->sendRecv() so a service handler on the executor
+    // thread never has to wait behind it (Antigravity-confirmed design,
+    // chatbot.md "single-threaded executor contention"). Re-locks briefly
+    // afterward just to write the result back into the shared MotorState.
     void control_loop() {
-        for (auto &kv : motors_) {
-            int32_t     motor_id = kv.first;
-            MotorState &motor    = kv.second;
+        std::vector<int32_t> motor_ids;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            motor_ids.reserve(motors_.size());
+            for (auto &kv : motors_) {
+                motor_ids.push_back(kv.first);
+            }
+        }
 
-            if (motor.mode == ControlMode::POSITION) {
-                float commanded_rad = motor.target_position_rad;
-                if (motor.ramp_duration_s > 0.0f) {
-                    float elapsed_s = std::chrono::duration<float>(
-                        std::chrono::steady_clock::now() - motor.ramp_start_time).count();
-                    float t = elapsed_s / motor.ramp_duration_s;
-                    if (t < 1.0f) {
-                        commanded_rad = motor.ramp_start_rad +
-                            t * (motor.target_position_rad - motor.ramp_start_rad);
-                    }
-                    // t >= 1: ramp finished, commanded_rad stays at the final target.
+        for (int32_t motor_id : motor_ids) {
+            MotorCmd  local_cmd{};
+            MotorData local_data{};
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                auto it = motors_.find(motor_id);
+                if (it == motors_.end()) {
+                    continue; // can't happen today (nothing erases from
+                              // motors_), but the snapshot above is stale
+                              // by construction, so guard it anyway.
                 }
-                motor.cmd.q  = commanded_rad * gear_ratio_; // output rad -> rotor rad
-                motor.cmd.dq = 0.0f;
-            } else if (motor.mode == ControlMode::TORQUE) {
-                // Watchdog (see MotorState::last_torque_cmd_time's comment
-                // and handle_set_motor_torque()): a stale, un-refreshed
-                // torque command would otherwise keep being blindly resent
-                // by sendRecv() below forever, unlike position mode where
-                // a stale target is at least a bounded, PD-tracked pose.
-                // Only cmd.tau gets zeroed here -- cmd.kd (set in
-                // handle_set_motor_torque, torque_kd_gain's damping) is
-                // deliberately left alone, so a timed-out motor becomes a
-                // pure velocity damper (resists motion, settles to rest)
-                // rather than a fully passive/free-spinning joint.
-                float age_s = std::chrono::duration<float>(
-                    std::chrono::steady_clock::now() - motor.last_torque_cmd_time).count();
-                if (age_s > torque_timeout_s()) {
-                    if (motor.cmd.tau != 0.0f) {
-                        RCLCPP_WARN(get_logger(),
-                            "Motor %d: no set_motor_torque call in %.2fs (> torque_timeout_s=%.2f) "
-                            "-- zeroing torque.", motor_id, age_s, torque_timeout_s());
+                MotorState &motor = it->second;
+
+                if (motor.mode == ControlMode::POSITION) {
+                    float commanded_rad = motor.target_position_rad;
+                    if (motor.ramp_duration_s > 0.0f) {
+                        float elapsed_s = std::chrono::duration<float>(
+                            std::chrono::steady_clock::now() - motor.ramp_start_time).count();
+                        float t = elapsed_s / motor.ramp_duration_s;
+                        if (t < 1.0f) {
+                            commanded_rad = motor.ramp_start_rad +
+                                t * (motor.target_position_rad - motor.ramp_start_rad);
+                        }
+                        // t >= 1: ramp finished, commanded_rad stays at the final target.
                     }
-                    motor.cmd.tau = 0.0f;
+                    motor.cmd.q  = commanded_rad * gear_ratio_; // output rad -> rotor rad
+                    motor.cmd.dq = 0.0f;
+                } else if (motor.mode == ControlMode::TORQUE) {
+                    // Watchdog (see MotorState::last_torque_cmd_time's comment
+                    // and handle_set_motor_torque()): a stale, un-refreshed
+                    // torque command would otherwise keep being blindly resent
+                    // by sendRecv() below forever, unlike position mode where
+                    // a stale target is at least a bounded, PD-tracked pose.
+                    // Only cmd.tau gets zeroed here -- cmd.kd (set in
+                    // handle_set_motor_torque, torque_kd_gain's damping) is
+                    // deliberately left alone, so a timed-out motor becomes a
+                    // pure velocity damper (resists motion, settles to rest)
+                    // rather than a fully passive/free-spinning joint.
+                    float age_s = std::chrono::duration<float>(
+                        std::chrono::steady_clock::now() - motor.last_torque_cmd_time).count();
+                    if (age_s > torque_timeout_s()) {
+                        if (motor.cmd.tau != 0.0f) {
+                            RCLCPP_WARN(get_logger(),
+                                "Motor %d: no set_motor_torque call in %.2fs (> torque_timeout_s=%.2f) "
+                                "-- zeroing torque.", motor_id, age_s, torque_timeout_s());
+                        }
+                        motor.cmd.tau = 0.0f;
+                    }
                 }
+
+                local_cmd  = motor.cmd;
+                // MotorData's default constructor (unitreeMotor.h) is an
+                // EMPTY user-provided body -- {} value-init still calls it,
+                // so a freshly-declared MotorData leaves every field,
+                // including motorType, as INDETERMINATE GARBAGE, not zero.
+                // The original single-object code never hit this because
+                // motor.data was the SAME persistent struct across every
+                // call, with motorType set once in get_or_create_motor()
+                // and never touched again. Must copy it here too, or
+                // sendRecv()'s sendMsg/recvMsg motorType cross-check fails
+                // on garbage data essentially every call.
+                local_data = motor.data;
             }
 
-            // Send command and read state
-            serial_->sendRecv(&motor.cmd, &motor.data);
+            // The real, blocking serial round-trip -- deliberately done with
+            // NO lock held. local_cmd/local_data are private stack copies;
+            // the SDK just reads/fills their fields, it doesn't need them to
+            // BE the live MotorState.
+            serial_->sendRecv(&local_cmd, &local_data);
 
-            // Feedback is rotor-side; convert to output-shaft units for logging.
-            const float output_q  = motor.data.q / gear_ratio_;
-            const float output_dq = motor.data.dq / gear_ratio_;
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                auto it = motors_.find(motor_id);
+                if (it == motors_.end()) {
+                    continue;
+                }
+                it->second.data = local_data;
 
-            // Log the state (Useful for checking if it's hitting the target velocity/position).
-            // DEBUG level so it doesn't spam the terminal at 100 Hz by default.
-            RCLCPP_DEBUG(get_logger(),
-                "ID:%d  q:%.3f rad  dq:%.3f rad/s  tau:%.3f Nm  temp:%d°C  err:%d",
-                motor_id, output_q, output_dq, motor.data.tau, motor.data.temp, motor.data.merror);
+                // Feedback is rotor-side; convert to output-shaft units for logging.
+                const float output_q  = local_data.q / gear_ratio_;
+                const float output_dq = local_data.dq / gear_ratio_;
+
+                // Log the state (Useful for checking if it's hitting the target velocity/position).
+                // DEBUG level so it doesn't spam the terminal at 100 Hz by default.
+                RCLCPP_DEBUG(get_logger(),
+                    "ID:%d  q:%.3f rad  dq:%.3f rad/s  tau:%.3f Nm  temp:%d°C  err:%d",
+                    motor_id, output_q, output_dq, local_data.tau, local_data.temp, local_data.merror);
+            }
         }
 
         // go_to_pose's log_csv (see start_csv_log()): write one row per
         // logged motor for this tick, using the sendRecv feedback the loop
         // above just refreshed. Runs until log_deadline_, then closes itself
         // -- no explicit "stop logging" call needed from the caller.
+        std::lock_guard<std::mutex> lock(state_mutex_);
         if (logging_active_) {
             auto now = std::chrono::steady_clock::now();
             if (now >= log_deadline_) {
@@ -753,10 +863,34 @@ private:
         }
     }
 
+    // io_thread_'s entry point: runs control_loop() back-to-back, capped
+    // (not fixed-delay) at the same ~10ms/100Hz period the old timer used --
+    // same "cap, don't blindly sleep" reasoning as policy_node.py's own
+    // chaining fix, so once real registered-motor serial I/O already
+    // exceeds 10ms (as measured: ~16ms for 8 motors), this simply doesn't
+    // sleep at all rather than adding an artificial extra delay on top.
+    void io_thread_main() {
+        while (io_thread_running_.load(std::memory_order_relaxed)) {
+            auto tick_start = std::chrono::steady_clock::now();
+            control_loop();
+            auto elapsed = std::chrono::steady_clock::now() - tick_start;
+            auto target  = std::chrono::milliseconds(10);
+            if (elapsed < target) {
+                std::this_thread::sleep_for(target - elapsed);
+            }
+        }
+    }
+
     std::string                  port_;
     std::unique_ptr<SerialPort>  serial_;
+    // Guards motors_/every MotorState field/the log_* members below --
+    // shared between the executor thread (service handlers) and io_thread_
+    // (control_loop()). Does NOT guard home_deg_, which only handle_set_home
+    // and handle_go_to_pose touch, both executor-thread-only -- no race.
+    std::mutex                    state_mutex_;
     std::unordered_map<int32_t, MotorState> motors_;
-    rclcpp::TimerBase::SharedPtr timer_;
+    std::thread                   io_thread_;
+    std::atomic<bool>             io_thread_running_{true};
     rclcpp::Service<actuator::srv::SetMotorVelocity>::SharedPtr   velocity_service_;
     rclcpp::Service<actuator::srv::AdjustMotorPosition>::SharedPtr position_service_;
     rclcpp::Service<actuator::srv::ReadMotorPositions>::SharedPtr  read_positions_service_;
