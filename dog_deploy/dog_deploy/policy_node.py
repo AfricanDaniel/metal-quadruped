@@ -75,6 +75,7 @@ actuator's own torque_timeout_s watchdog in basic_control.cpp.
 
 import csv
 import os
+import time
 
 import rclpy
 import torch
@@ -178,7 +179,18 @@ class PolicyNode(Node):
         super().__init__('policy_node')
 
         self.declare_parameter('policy_path', '')
-        self.declare_parameter('control_rate_hz', 20.0)
+        # 50.0 (raised from 20.0, 2026-08-16, chatbot.md "can the Jetson
+        # actually sustain your recommended 50Hz control_rate_hz?" thread):
+        # gated on empirically proving the Jetson could sustain it first --
+        # real hardware measured at 61.4Hz sustained control_rate_hz=100.0
+        # request AFTER fixing the executor-contention bug that had been
+        # capping actual throughput far below any requested rate. Also
+        # directly narrows the sim-to-real slew gap on the deployment side:
+        # effective real ceiling is control_rate_hz * max_delta_deg_per_step,
+        # was 20*5=100 deg/s, now 50*5=250 deg/s -- much closer to the real
+        # measured hardware slew ceiling (~300-340 deg/s, see the empirical
+        # slew characterization test) than the old 100 deg/s was.
+        self.declare_parameter('control_rate_hz', 50.0)
         self.declare_parameter('max_delta_deg_per_step', 5.0)
         self.declare_parameter('imu_timeout_sec', 0.5)
         self.declare_parameter('dry_run_hold_pose', True)
@@ -366,6 +378,7 @@ class PolicyNode(Node):
         self._obs_history = None  # seeded on the first control tick, see _on_positions_read
         self.latest_imu = None
         self.busy = False
+        self._pending_timer = None  # see _schedule_next_tick()
 
         self.imu_sub = self.create_subscription(Imu, 'imu/data', self._on_imu, 10)
         self.read_client = self.create_client(ReadMotorPositions, 'read_motor_positions')
@@ -456,7 +469,12 @@ class PolicyNode(Node):
         self._home_switch_started_logged = False
         self._home_switch_complete_logged = False
 
-        self.timer = self.create_timer(1.0 / self.control_rate_hz, self._control_step)
+        # CHAINED, not a fixed-rate create_timer (2026-08-16, see
+        # _schedule_next_tick()'s own docstring for the full mechanism/
+        # measurement this replaces) -- kicks off the first cycle
+        # directly; every cycle after that reschedules itself from
+        # _on_command_sent() once it actually finishes.
+        self._schedule_next_tick(0.0)
         if self.control_mode == 'torque':
             self.get_logger().warning(
                 f'policy_node ready: control_mode=torque, control_rate_hz={self.control_rate_hz}, '
@@ -507,13 +525,46 @@ class PolicyNode(Node):
     def _on_imu(self, msg):
         self.latest_imu = msg
 
+    def _schedule_next_tick(self, delay_s):
+        """Runs _control_step() again after delay_s seconds -- immediately
+        (delay_s<=0) if the previous cycle already used up its whole
+        period or more, otherwise via a self-canceling one-shot timer for
+        the remainder. Replaces the old fixed-rate `create_timer(1.0 /
+        control_rate_hz, self._control_step)` (2026-08-16, chatbot.md
+        "timer overrun and chaining fix", multi-agent review w/
+        Antigravity): measured directly that a plain fixed-rate timer +
+        busy-flag-skip silently DOUBLES effective latency whenever a
+        cycle's real work (read+inference+write) exceeds one period --
+        the timer's next firing lands while still busy, gets dropped as a
+        no-op, and the tick doesn't actually resume until the NEXT firing
+        after that (measured: ~55-65ms of real work but ~103ms actual
+        spacing at a 50ms/20Hz period, real hardware). Chaining from the
+        previous cycle's own completion instead means a slow cycle is
+        immediately followed by the next one (no double-period stall),
+        while a fast cycle still waits out the rest of its period
+        (Antigravity's explicit requirement: sim trains against a fixed
+        dt, so running unboundedly fast on 'good' ticks would itself
+        become a new sim-to-real timing mismatch) -- control_rate_hz is a
+        rate CAP now, not a guaranteed rate."""
+        if delay_s <= 0.0:
+            self._control_step()
+            return
+        self._pending_timer = self.create_timer(delay_s, self._on_pending_timer_fire)
+
+    def _on_pending_timer_fire(self):
+        self._pending_timer.cancel()
+        self.destroy_timer(self._pending_timer)
+        self._pending_timer = None
+        self._control_step()
+
     def _control_step(self):
         if self.busy:
-            return  # previous cycle's service calls haven't completed yet
+            return  # defensive only -- chaining means this shouldn't ever actually happen
 
         if self.latest_imu is None:
             self.get_logger().warning('No IMU data received yet, skipping control step',
                                        throttle_duration_sec=2.0)
+            self._schedule_next_tick(1.0 / self.control_rate_hz)
             return
 
         imu_age_sec = (
@@ -523,9 +574,11 @@ class PolicyNode(Node):
             self.get_logger().warning(
                 f'IMU data is {imu_age_sec:.2f}s old (> {self.imu_timeout_sec}s timeout), '
                 'skipping control step', throttle_duration_sec=2.0)
+            self._schedule_next_tick(1.0 / self.control_rate_hz)
             return
 
         self.busy = True
+        self._tick_start_time = time.monotonic()
         request = ReadMotorPositions.Request()
         request.motor_id = list(range(1, NUM_MOTORS + 1))
         future = self.read_client.call_async(request)
@@ -537,6 +590,7 @@ class PolicyNode(Node):
         except Exception as e:
             self.get_logger().error(f'read_motor_positions call failed: {e}')
             self.busy = False
+            self._schedule_next_tick(1.0 / self.control_rate_hz)
             return
 
         # Always incremented once per control tick (moved out of the
@@ -807,7 +861,15 @@ class PolicyNode(Node):
         except Exception as e:
             service = 'set_motor_torque' if self.control_mode == 'torque' else 'set_motor_targets'
             self.get_logger().error(f'{service} call failed: {e}')
+        now = time.monotonic()
         self.busy = False
+
+        # See _schedule_next_tick()'s own docstring for the full
+        # mechanism -- chains the next cycle from here instead of relying
+        # on a fixed-rate timer, immediately if this cycle already used a
+        # whole period or more, otherwise waiting out the remainder.
+        elapsed = now - self._tick_start_time
+        self._schedule_next_tick((1.0 / self.control_rate_hz) - elapsed)
 
 
 def main(args=None):
