@@ -35,6 +35,7 @@ import sys
 import time
 
 import dog_gym  # noqa: F401  (registers Dog-v0)
+from dog_gym.envs.dog_env import MAX_SLEW_DEG_PER_S, SLEW_CURRICULUM_TARGET_DEG_PER_S
 import gymnasium as gym
 import numpy as np
 import torch.nn as nn
@@ -252,6 +253,55 @@ class HomeStartCurriculumCallback(BaseCallback):
         return True
 
 
+class SlewCurriculumCallback(BaseCallback):
+    """Tightens DogEnv's per-step slew clamp (see MAX_SLEW_DEG_PER_S/
+    SLEW_CURRICULUM_TARGET_DEG_PER_S's own comments in dog_env.py) from
+    the loose MAX_SLEW_DEG_PER_S (1000, needed for PPO to discover a gait
+    at all) down to SLEW_CURRICULUM_TARGET_DEG_PER_S (250, matching
+    dog_deploy/policy_node.py's real deployment clamp), linearly, over
+    decay_steps cumulative timesteps -- but UNLIKE GainRangeCurriculumCallback/
+    HomeStartCurriculumCallback (which both start widening/relaxing from
+    step 0), this one deliberately stays PINNED at the loose start value
+    until start_step is reached, only beginning to tighten after that
+    (2026-08-16, multi-agent review w/ Antigravity, chatbot.md "sim-side
+    slew-rate curriculum design" -- tightening before a gait has been
+    discovered risks reproducing the exact 2026-08-07 failure that
+    MAX_SLEW_DEG_PER_S's own history documents: PPO's early exploration
+    noise needs that full headroom, or no gait is ever found).
+
+    Pushes the updated value into every parallel sub-environment via
+    VecEnv.env_method('set_max_slew_deg_per_s', ...) -- same
+    DummyVecEnv/SubprocVecEnv-compatible mechanism as
+    GainRangeCurriculumCallback/HomeStartCurriculumCallback, same
+    update_interval_steps throttling reasoning. Effective immediately
+    (not deferred to the next episode) -- see set_max_slew_deg_per_s()'s
+    own comment for why that's safe here."""
+
+    def __init__(self, start_step, decay_steps, start_value=None, end_value=None,
+                 update_interval_steps=2000, verbose=0):
+        super().__init__(verbose)
+        self.start_step = start_step
+        self.decay_steps = decay_steps
+        self.start_value = start_value if start_value is not None else MAX_SLEW_DEG_PER_S
+        self.end_value = end_value if end_value is not None else SLEW_CURRICULUM_TARGET_DEG_PER_S
+        self.update_interval_steps = update_interval_steps
+        self._last_update_step = -update_interval_steps  # forces an update on the very first call
+
+    def _on_step(self):
+        if self.num_timesteps - self._last_update_step < self.update_interval_steps:
+            return True
+        self._last_update_step = self.num_timesteps
+        if self.num_timesteps <= self.start_step:
+            progress = 0.0
+        elif self.decay_steps > 0:
+            progress = min(1.0, (self.num_timesteps - self.start_step) / self.decay_steps)
+        else:
+            progress = 1.0
+        value = self.start_value + (self.end_value - self.start_value) * progress
+        self.training_env.env_method('set_max_slew_deg_per_s', value)
+        return True
+
+
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
              model_path=None, position_kp=None, position_kd=None,
              position_kp_range=None, position_kd_range=None, home_start_prob_start=None):
@@ -308,7 +358,8 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           position_kd_range_start=None, position_kd_range_end=None,
           gain_curriculum_steps=None, lr_schedule='linear', desired_kl=0.01,
           home_start_prob_start=None, home_start_prob_end=None,
-          home_start_curriculum_steps=None, wandb_project='dog-quadruped', wandb_entity=None):
+          home_start_curriculum_steps=None, slew_curriculum_start_step=None,
+          slew_curriculum_decay_steps=None, wandb_project='dog-quadruped', wandb_entity=None):
     # Always on (2026-08-15, direct user request -- "wandb", always-on not
     # opt-in): locals() grabbed HERE, before any other local variable
     # exists, so it's exactly this call's own training config -- one
@@ -330,7 +381,9 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           f'control_mode={control_mode}, position_kp={position_kp}, position_kd={position_kd}, '
           f'position_kp_range_start={position_kp_range_start}, position_kp_range_end={position_kp_range_end}, '
           f'position_kd_range_start={position_kd_range_start}, position_kd_range_end={position_kd_range_end}, '
-          f'home_start_prob_start={home_start_prob_start}, home_start_prob_end={home_start_prob_end})')
+          f'home_start_prob_start={home_start_prob_start}, home_start_prob_end={home_start_prob_end}, '
+          f'slew_curriculum_start_step={slew_curriculum_start_step}, '
+          f'slew_curriculum_decay_steps={slew_curriculum_decay_steps})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
                          control_mode, model_path, position_kp, position_kd,
@@ -471,6 +524,17 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         callbacks.append(HomeStartCurriculumCallback(
             prob_start=home_start_prob_start, prob_end=home_start_prob_end,
             decay_steps=home_start_curriculum_steps if home_start_curriculum_steps is not None
+            else decay_steps))
+    # Opt-in: only constructed if --slew-curriculum-start-step was given --
+    # a run that doesn't pass it behaves exactly as before (DogEnv trains
+    # at the fixed, loose MAX_SLEW_DEG_PER_S the whole time, no
+    # tightening). See SlewCurriculumCallback's own docstring for why this
+    # is pinned at the loose value until start_step, unlike the two
+    # curricula above which both begin moving from step 0.
+    if slew_curriculum_start_step is not None:
+        callbacks.append(SlewCurriculumCallback(
+            start_step=slew_curriculum_start_step,
+            decay_steps=slew_curriculum_decay_steps if slew_curriculum_decay_steps is not None
             else decay_steps))
     callback = CallbackList(callbacks)
 
@@ -717,6 +781,27 @@ def main():
                          help='Cumulative timesteps over which --home-start-prob-start/-end linearly '
                               'ramp, then hold at -end. Defaults to --decay-steps if not set, same '
                               'convention as --gain-curriculum-steps.')
+    parser.add_argument('--slew-curriculum-start-step', type=int, default=None,
+                         help='--train only (2026-08-16): cumulative timesteps to wait before '
+                              'SlewCurriculumCallback starts tightening dog_env.py\'s per-step slew '
+                              'clamp down from MAX_SLEW_DEG_PER_S (1000, loose) toward '
+                              'SLEW_CURRICULUM_TARGET_DEG_PER_S (250, matching dog_deploy/'
+                              'policy_node.py\'s real deployment clamp). Opt-in -- omitting this flag '
+                              'entirely disables the curriculum (trains at the fixed 1000 the whole '
+                              'run, unchanged from before). UNLIKE --gain-curriculum-steps/--home-'
+                              'start-curriculum-steps (which both start ramping from step 0), this '
+                              'stays pinned at 1000 until this step is reached -- tightening before a '
+                              'gait has been discovered risks reproducing the 2026-08-07 MAX_SLEW_DEG_'
+                              'PER_S failure (PPO\'s early exploration noise needs the full 1000 '
+                              'headroom). Multi-agent review (chatbot.md, "sim-side slew-rate '
+                              'curriculum design") recommended 2_000_000 as a confident buffer past '
+                              'gait discovery.')
+    parser.add_argument('--slew-curriculum-decay-steps', type=int, default=None,
+                         help='Cumulative timesteps AFTER --slew-curriculum-start-step over which the '
+                              'slew clamp linearly tightens from 1000 to 250, then holds at 250. '
+                              'Defaults to --decay-steps if not set, same convention as --gain-'
+                              'curriculum-steps. Multi-agent review recommended 3_000_000 (finishing '
+                              'the anneal around 5M total steps with the default 2M start).')
     parser.add_argument('--lr-schedule', default='linear', choices=['linear', 'adaptive'],
                          help='PPO only, --train only (2026-08-06): "linear" (default, unchanged) '
                               'uses --learning-rate/--learning-rate-end/--decay-steps\' linear decay '
@@ -819,7 +904,8 @@ def main():
               args.position_kd_range_start, args.position_kd_range_end,
               args.gain_curriculum_steps, args.lr_schedule, args.desired_kl,
               args.home_start_prob_start, args.home_start_prob_end,
-              args.home_start_curriculum_steps, args.wandb_project, args.wandb_entity)
+              args.home_start_curriculum_steps, args.slew_curriculum_start_step,
+              args.slew_curriculum_decay_steps, args.wandb_project, args.wandb_entity)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,

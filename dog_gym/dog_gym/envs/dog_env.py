@@ -708,7 +708,28 @@ SWING_AMPLITUDE_MAX_DEVIATION_RAD = np.radians(70)
 # near-zero one.
 WALK_CALF_ACTIVITY_PENALTY_WEIGHT = 3.0
 CALF_ACTIVITY_WINDOW_TICKS = 50
-CALF_ACTIVITY_MIN_RANGE_RAD = np.radians(20)
+
+# RAISED 20deg -> 35deg (2026-08-16, multi-agent review w/ Antigravity,
+# chatbot.md "forward_tilt_walk_v1@4M checkpoint check"): measured
+# directly on forward_tilt_walk_v1@4M that leg_d's calf ROM (25.5deg)
+# clears the old 20deg floor cleanly, reading exactly zero penalty,
+# despite being notably smaller than the other three legs' 42-51deg --
+# the floor only stops a FULLY frozen knee, nothing pushes a leg past
+# "just barely moving" once it clears the minimum. Antigravity's
+# explicit recommendation: keep this as a FLOOR, not a target/deadzone
+# (a joint only needs to lift ENOUGH to take a real step, penalizing
+# exact-angle deviation would fight healthy stride-to-stride variation)
+# -- just raise the number, calibrated from the other legs' current
+# measured range (42-51deg) as reference, same as WALK_CALF_ACTIVITY_
+# PENALTY_WEIGHT's own original 20deg calibration note above did against
+# ITS contemporary data. Launched as a parallel comparison run
+# (`forward_tilt_walk_v1` continues unchanged) rather than waiting, per
+# direct user request -- Antigravity's own preference was to wait for
+# swing_fairness_penalty to converge first before changing a second
+# mechanism, so treat this specifically as an A/B test, not a confirmed
+# fix -- compare against the unchanged run's own calf ROM at a matching
+# step count before concluding either way.
+CALF_ACTIVITY_MIN_RANGE_RAD = np.radians(35)
 
 # JOINT_LIMIT_MARGIN_PENALTY_WEIGHT/_joint_limit_margin_penalty() REMOVED
 # 2026-08-12 (multi-agent review w/ Antigravity, chatbot.md "PPO_6000000_
@@ -1037,9 +1058,75 @@ MAX_EPISODE_STEPS = 1000
 NUM_MOTORS = 8
 
 # Per-motor max target slew rate, applied every step() -- see the long
-# comment where it's used. Matches dog_deploy/policy_node.py's real
-# safety clamp (5deg per 20Hz tick = 100deg/s), not a fresh guess.
+# comment where it's used.
+#
+# REVERTED back to 1000.0 (2026-08-15) after briefly, incorrectly,
+# lowering it to 100.0 same day (multi-agent review w/ Antigravity,
+# chatbot.md "sim-to-real slew-rate mismatch") -- that change was made
+# without first checking this project's OWN prior history on this exact
+# constant, which directly contradicts it. This is a KNOWN, ALREADY-
+# INVESTIGATED, DELIBERATE tradeoff, not an unnoticed drift:
+#
+# chatbot.md, 2026-08-07 ("MAX_SLEW_DEG_PER_S was the real root cause
+# all along"): training under the REAL 100deg/s clamp was tested
+# DIRECTLY and found to completely prevent the policy from discovering
+# any gait at all -- replaying identical raw actions through the env at
+# 100 vs 1000: at 100, back-leg thighs never once completed a lift in
+# 300 steps (reward -18.6); at 1000, clean 4-leg diagonal trot (reward
+# 552.2), no other confound changed. Mechanistic explanation (chatbot.md,
+# same date, "mechanistic explanation of the MAX_SLEW_DEG_PER_S
+# finding"): PPO's raw per-tick exploration noise is large and largely
+# uncorrelated tick-to-tick; a loose clamp smooths that noise into
+# coherent motion "for free" during training, which is HOW a policy
+# ever discovers a gait signal to reinforce in the first place. A tight
+# 100deg/s clamp low-pass-filters the SAME noisy signal so hard that
+# coherent motion never emerges for PPO to reinforce at all -- there's a
+# real bandwidth cliff, and 100deg/s sits on the wrong side of it for a
+# policy that hasn't already learned to output smooth actions on its
+# own. An EMA-smoothing alternative was also tried (chatbot.md,
+# `EMA_ALPHA=0.15`) and reverted -- made every metric worse.
+#
+# The team's actual, deliberate resolution (chatbot.md, 2026-08-12,
+# "real GO-M8010-6 motor specs..."): keep training under the loose 1000
+# clamp (required to learn at all), and close the resulting sim-to-real
+# gap via REWARD SHAPING instead -- WALK_ACTION_RATE_PENALTY_WEIGHT
+# (penalizes jerky tick-to-tick actions directly) and WALK_HEIGHT_SAG_
+# PENALTY_WEIGHT (the literal reason this branch is named `sag_fix`)
+# exist specifically to push the policy toward actions smooth enough to
+# survive real hardware's tighter clamp at DEPLOY time, without needing
+# training itself to happen under that clamp. This session's own
+# validated real-hardware walking results (home-reference recalibration,
+# etc.) were achieved WITH this constant at 1000 -- lowering it now would
+# not "fix" a bug, it would break the ability to train a gait at all,
+# reproducing the exact 2026-08-07 failure directly.
+#
+# Real hardware's own max_delta_deg_per_step/control_rate_hz clamp
+# (250deg/s as of 2026-08-16, raised from 100deg/s once the Jetson was
+# confirmed able to sustain 50Hz control_rate_hz -- see chatbot.md, "can
+# the Jetson actually sustain your recommended 50Hz control_rate_hz?") is
+# still tighter than this -- that gap is real, known, and now being
+# closed on TWO fronts: (1) the real-hardware clamp itself was already
+# loosened (100->250deg/s), and (2) SlewCurriculumCallback (train.py)
+# anneals THIS constant's effective value down toward
+# SLEW_CURRICULUM_TARGET_DEG_PER_S over training, once a gait has already
+# been discovered at the full 1000 -- see set_max_slew_deg_per_s()'s
+# comment. This module constant itself stays 1000.0 (the STARTING value
+# every training run begins at, needed for gait discovery) -- it is NOT
+# simply being lowered to match, which is exactly the 2026-08-07 mistake
+# this comment block originally documented.
 MAX_SLEW_DEG_PER_S = 1000.0
+
+# Curriculum end target for SlewCurriculumCallback (train.py) -- matches
+# dog_deploy/policy_node.py's real deployment ceiling exactly
+# (control_rate_hz=50.0 * max_delta_deg_per_step=5.0deg = 250deg/s), so a
+# fully-annealed policy is trained under the SAME slew limit it will
+# actually be deployed under, not some sim-only approximation of it (per
+# Antigravity's explicit reasoning, chatbot.md "sim-side slew-rate
+# curriculum": allowing sim to keep a looser limit than deployment enforces
+# would just preserve a gap where the policy can still learn undeployable
+# behavior). If dog_deploy/policy_node.py's own control_rate_hz/
+# max_delta_deg_per_step defaults change again, update this to match.
+SLEW_CURRICULUM_TARGET_DEG_PER_S = 250.0
 
 # EMA output-smoothing filter TRIED AND REVERTED (2026-08-11, multi-agent
 # review w/ Antigravity, chatbot.md "the alpha=0.3 fix made things worse"
@@ -1545,6 +1632,16 @@ class DogEnv(gym.Env):
         # callback for the curriculum reasoning (mostly 'standing' early,
         # increasing 'home' frequency over training).
         self._home_start_prob = home_start_prob
+        # Per-episode-independent (unlike position_kp_range/home_start_prob
+        # above): step()'s slew clamp reads this fresh every single step,
+        # not just at reset(), so set_max_slew_deg_per_s() below takes
+        # effect immediately, not on the next episode -- see that method's
+        # comment. Defaults to the module constant MAX_SLEW_DEG_PER_S;
+        # normally tightened over training by train.py's
+        # SlewCurriculumCallback -- see MAX_SLEW_DEG_PER_S's own comment
+        # for why this needs to START loose (gait discovery) before any
+        # tightening begins.
+        self._max_slew_deg_per_s = MAX_SLEW_DEG_PER_S
         self.task = task
         # torque_belt only -- see BELT_TARGET_ADAPT_RATE_STAND/_WALK's
         # comment for why these need different timescales. Harmless to set
@@ -2238,6 +2335,19 @@ class DogEnv(gym.Env):
         self._home_start_prob in that case)."""
         self._home_start_prob = prob
 
+    def set_max_slew_deg_per_s(self, value):
+        """Updates the per-step slew clamp step() applies to position-mode
+        actions, effective IMMEDIATELY on the very next step() call --
+        unlike set_position_gain_range()/set_home_start_prob() above, this
+        does NOT wait for the next episode, since tightening how far a
+        target can move per step is a smooth constraint change, not a
+        physics discontinuity the policy would need to have trained under
+        to handle. Meant to be called externally via VecEnv.env_method()
+        from train.py's SlewCurriculumCallback -- see MAX_SLEW_DEG_PER_S's
+        own comment for why training starts at that loose value and only
+        tightens after gait discovery, never the other way around."""
+        self._max_slew_deg_per_s = value
+
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)
         if self.control_mode == 'torque':
@@ -2344,18 +2454,28 @@ class DogEnv(gym.Env):
                 # ctrl, and every reward term still operate on absolute
                 # angles exactly as before.
                 action = self._walk_default_action_rad + action
-            # Rate-limit how far any single motor's target can move per step,
-            # same idea (and same underlying number) as dog_deploy/policy_node.py's
-            # real-hardware safety clamp: that clamps 5deg per 20Hz control tick
-            # = 100deg/s. Sim steps at 100Hz (dog.mjcf.xml's 0.01s timestep, one
-            # physics step per env.step(), no frame-skip), so the equivalent
-            # per-sim-step limit is 100deg/s / 100Hz = 1deg/step -- same overall
-            # speed limit, just expressed at the sim's own step rate. Without
-            # this, a policy is free to snap straight to any target every step
-            # (visibly "stands up too fast"), which also doesn't reflect what
-            # the real, rate-limited deployment path will actually allow --
-            # training under the same limit avoids that train/deploy mismatch.
-            max_delta_rad = np.radians(MAX_SLEW_DEG_PER_S) * self.model.opt.timestep
+            # Rate-limit how far any single motor's target can move per step.
+            # self._max_slew_deg_per_s starts at MAX_SLEW_DEG_PER_S (1000,
+            # loose -- needed for PPO to discover a gait at all, see that
+            # constant's own comment) and is normally tightened over
+            # training by train.py's SlewCurriculumCallback, toward
+            # dog_deploy/policy_node.py's real-hardware clamp: 5deg per
+            # 50Hz control tick = 250deg/s (2026-08-16, raised from 20Hz/
+            # 100deg/s once the Jetson was confirmed able to sustain it --
+            # see chatbot.md, "can the Jetson actually sustain your
+            # recommended 50Hz control_rate_hz?"). Sim steps at 100Hz
+            # (dog.mjcf.xml's 0.01s timestep, one physics step per
+            # env.step(), no frame-skip), so at the END of the curriculum
+            # the equivalent per-sim-step limit is 250deg/s / 100Hz =
+            # 2.5deg/step -- same overall speed limit, just expressed at
+            # the sim's own step rate. Without SOME limit here, a policy is
+            # free to snap straight to any target every step (visibly
+            # "stands up too fast"), which also doesn't reflect what the
+            # real, rate-limited deployment path will actually allow --
+            # training under (eventually) the same limit avoids that
+            # train/deploy mismatch, while still allowing loose exploration
+            # early so a gait gets discovered in the first place.
+            max_delta_rad = np.radians(self._max_slew_deg_per_s) * self.model.opt.timestep
             action = np.clip(action, self.prev_action - max_delta_rad, self.prev_action + max_delta_rad)
 
             # Belt/pulley compensation (see calf_idx's comment in __init__,
