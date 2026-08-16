@@ -118,8 +118,8 @@
 
   <asset>
     <texture builtin="gradient" height="100" rgb1="1 1 1" rgb2="0 0 0" type="skybox" width="100"/>
-    <texture builtin="checker" height="100" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d" width="100"/>
-    <material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
+    <texture builtin="checker" height="100" name="texplane" rgb1="0.9098 0.8157 0.6000" rgb2="0.7608 0.6510 0.3961" type="2d" width="100"/>
+    <material name="MatPlane" reflectance="0" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
 
     <mesh name="motor" file="motor.stl"/>
     <mesh name="shoulder" file="shoulder.stl"/>
@@ -156,8 +156,8 @@
   </asset>
 
   <worldbody>
-    <light cutoff="150" diffuse="1 1 1" dir="0 0 -1" directional="true" exponent="1" pos="0 0 2" specular=".1 .1 .1"/>
-    <geom conaffinity="1" condim="3" material="MatPlane" name="floor" pos="0 0 0" rgba="0.8 0.9 0.8 1" size="40 40 40" type="plane"/>
+    <light castshadow="false" cutoff="150" diffuse="1 1 1" dir="0 0 -1" directional="true" exponent="1" pos="0 0 2" specular=".1 .1 .1"/>
+    <geom conaffinity="1" condim="3" material="MatPlane" name="floor" pos="0 0 0" rgba="1 1 1 1" size="40 40 40" type="plane"/>
 
     <!-- Spawn height chosen only to clear the floor at qpos=0's
          CAD-captured (non-standing) leg pose, not a real measurement --

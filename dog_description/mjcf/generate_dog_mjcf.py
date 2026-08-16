@@ -897,16 +897,22 @@ def main():
 
   <asset>
     <texture builtin="gradient" height="100" rgb1="1 1 1" rgb2="0 0 0" type="skybox" width="100"/>
-    <texture builtin="checker" height="100" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d" width="100"/>
-    <material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
+    <!-- Checker floor, custom colors (2026-08-16, user request -- exact
+         hex E8D099/C2A665 converted to MuJoCo's 0-1 rgb: 0.9098 0.8157
+         0.6000 / 0.7608 0.6510 0.3961). Replaced the original checker's
+         black/light-gray (rgb1="0 0 0" rgb2="0.8 0.8 0.8"), which
+         straddled right through the robot's own body materials (mostly
+         medium gray around rgba 0.6-0.65). -->
+    <texture builtin="checker" height="100" name="texplane" rgb1="0.9098 0.8157 0.6000" rgb2="0.7608 0.6510 0.3961" type="2d" width="100"/>
+    <material name="MatPlane" reflectance="0" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
 
 {mesh_asset_lines}
 {material_asset_lines}
   </asset>
 
   <worldbody>
-    <light cutoff="150" diffuse="1 1 1" dir="0 0 -1" directional="true" exponent="1" pos="0 0 2" specular=".1 .1 .1"/>
-    <geom conaffinity="1" condim="3" material="MatPlane" name="floor" pos="0 0 0" rgba="0.8 0.9 0.8 1" size="40 40 40" type="plane"/>
+    <light castshadow="false" cutoff="150" diffuse="1 1 1" dir="0 0 -1" directional="true" exponent="1" pos="0 0 2" specular=".1 .1 .1"/>
+    <geom conaffinity="1" condim="3" material="MatPlane" name="floor" pos="0 0 0" rgba="1 1 1 1" size="40 40 40" type="plane"/>
 
     <!-- Spawn height chosen only to clear the floor at qpos=0's
          CAD-captured (non-standing) leg pose, not a real measurement --
