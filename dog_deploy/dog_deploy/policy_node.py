@@ -84,6 +84,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
 from actuator.srv import ReadMotorPositions, SetMotorTargets, SetMotorTorque
+from dog_deploy.home_correction import apply_back_leg_correction
 
 NUM_MOTORS = 8
 DEFAULT_MOTOR_MAPPING_PATH = os.path.join(
@@ -279,6 +280,39 @@ class PolicyNode(Node):
         # time, tuned to when you visually observe standing is complete,
         # is simpler and actually works. See _on_positions_read().
         self.declare_parameter('freeze_after_sec', 0.0)
+        # '' (default) disables this entirely -- unchanged behavior, a
+        # single fixed home_position_deg for the whole run, same as
+        # before this parameter existed. When set to a second
+        # ~/.dog_home_cache.yaml-shaped file, the EFFECTIVE home
+        # reference used every tick starts at home_position_deg (above)
+        # and linearly ramps over home_switch_ramp_sec, starting
+        # home_switch_after_sec into the run, to this second cache's
+        # values -- then stays there. Added 2026-08-15 (daniel_cl_
+        # context.md, back-leg home-offset recalibration): the recalibrated
+        # cache gets the back legs' STEADY-STATE walking posture much
+        # closer to sim, but starting a run already anchored to it makes
+        # the robot tip backward during the climb-to-standing phase --
+        # climbing was fine under the ORIGINAL reference. This lets a
+        # deploy start on the original (safe climb) reference and hand off
+        # to the recalibrated one once standing is complete, instead of
+        # forcing one fixed reference for the whole run. The ramp (not an
+        # instant swap) exists so the commanded target doesn't jump by the
+        # full home delta in one control tick -- see _on_positions_read()'s
+        # blend computation.
+        self.declare_parameter('home_switch_cache_path', '')
+        # Simpler alternative to home_switch_cache_path above, for the
+        # specific back-leg (motor 5/8) correction (see home_correction.py):
+        # 0.0 (default) disables this. When nonzero, the switch target is
+        # computed FRESH from whatever home_position_deg was just loaded
+        # (regular, above) + fraction * the known correction, instead of
+        # requiring a second pre-written cache file -- so trying a
+        # different fraction is just a different number on this same
+        # deploy, not a re-calibration. If BOTH this and
+        # home_switch_cache_path are given, home_switch_cache_path wins
+        # (more specific/explicit).
+        self.declare_parameter('home_switch_back_leg_fraction', 0.0)
+        self.declare_parameter('home_switch_after_sec', 3.0)
+        self.declare_parameter('home_switch_ramp_sec', 1.5)
 
         self.control_mode = self.get_parameter('control_mode').value
         if self.control_mode not in ('position', 'torque'):
@@ -386,6 +420,42 @@ class PolicyNode(Node):
             self.home_position_deg = list(response.position_deg)
             self.get_logger().info(f'Captured home_position_deg: {self.home_position_deg}')
 
+        # See home_switch_cache_path's declare_parameter comment above.
+        # None (default, '' param) = feature off, home_position_deg is
+        # used as a fixed constant for the whole run exactly like before
+        # this existed -- _on_positions_read()'s blend is a no-op in that
+        # case (blend stays 0.0 forever).
+        self.home_position_deg_after_switch = None
+        home_switch_cache_path = self.get_parameter('home_switch_cache_path').value
+        home_switch_back_leg_fraction = self.get_parameter('home_switch_back_leg_fraction').value
+        if home_switch_cache_path:
+            switch_cache_path = os.path.expanduser(home_switch_cache_path)
+            self.get_logger().info(
+                f'Loading post-switch home_position_deg from cache: {switch_cache_path}')
+            with open(switch_cache_path) as f:
+                switch_cached = yaml.safe_load(f)['home_position_deg']
+            self.home_position_deg_after_switch = [switch_cached[i] for i in range(1, NUM_MOTORS + 1)]
+            self.get_logger().info(
+                f'Loaded post-switch home_position_deg: {self.home_position_deg_after_switch} -- '
+                f'will start ramping {self.get_parameter("home_switch_after_sec").value}s into the run, '
+                f'over {self.get_parameter("home_switch_ramp_sec").value}s.')
+        elif home_switch_back_leg_fraction != 0.0:
+            # See home_switch_back_leg_fraction's declare_parameter
+            # comment -- computed fresh from home_position_deg (whatever
+            # 'regular' reference was just loaded/captured above), not
+            # read from a second file.
+            self.home_position_deg_after_switch = apply_back_leg_correction(
+                self.home_position_deg, home_switch_back_leg_fraction)
+            self.get_logger().info(
+                f'home_switch_back_leg_fraction={home_switch_back_leg_fraction} -- post-switch '
+                f'home_position_deg computed as {self.home_position_deg_after_switch} -- '
+                f'will start ramping {self.get_parameter("home_switch_after_sec").value}s into the run, '
+                f'over {self.get_parameter("home_switch_ramp_sec").value}s.')
+        self.home_switch_after_sec = self.get_parameter('home_switch_after_sec').value
+        self.home_switch_ramp_sec = self.get_parameter('home_switch_ramp_sec').value
+        self._home_switch_started_logged = False
+        self._home_switch_complete_logged = False
+
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self._control_step)
         if self.control_mode == 'torque':
             self.get_logger().warning(
@@ -469,10 +539,45 @@ class PolicyNode(Node):
             self.busy = False
             return
 
+        # Always incremented once per control tick (moved out of the
+        # freeze_after_sec-only block below so home_switch_cache_path's
+        # blend, which needs elapsed time regardless of whether freezing
+        # is even enabled, can use the same counter) -- freeze_after_sec's
+        # own check further down just READS this, doesn't increment it.
+        self._control_tick_count += 1
+
+        # See home_switch_cache_path's declare_parameter comment: blend
+        # from home_position_deg toward home_position_deg_after_switch,
+        # starting home_switch_after_sec into the run, over
+        # home_switch_ramp_sec. Stays at effective_home ==
+        # home_position_deg (blend=0.0) for the entire run if the feature
+        # is off (home_position_deg_after_switch is None).
+        effective_home_position_deg = self.home_position_deg
+        if self.home_position_deg_after_switch is not None:
+            elapsed_sec = self._control_tick_count / self.control_rate_hz
+            blend = 0.0
+            if elapsed_sec > self.home_switch_after_sec:
+                if self.home_switch_ramp_sec > 0.0:
+                    blend = min(1.0, (elapsed_sec - self.home_switch_after_sec) / self.home_switch_ramp_sec)
+                else:
+                    blend = 1.0
+            if blend > 0.0 and not self._home_switch_started_logged:
+                self._home_switch_started_logged = True
+                self.get_logger().info(f'home_switch_after_sec={self.home_switch_after_sec}s reached -- '
+                                        'starting home reference ramp.')
+            if blend >= 1.0 and not self._home_switch_complete_logged:
+                self._home_switch_complete_logged = True
+                self.get_logger().info('Home reference ramp complete -- now fully on '
+                                        f'{self.home_position_deg_after_switch}.')
+            effective_home_position_deg = [
+                (1.0 - blend) * self.home_position_deg[i] + blend * self.home_position_deg_after_switch[i]
+                for i in range(NUM_MOTORS)
+            ]
+
         # Home-relative, matching sim's own qpos=0-at-tucked-home reference
         # -- see this module's docstring's "Home offset" section.
         motor_qpos_rad = [
-            self.motor_sign[i] * (response.position_deg[i] - self.home_position_deg[i]) * DEG_TO_RAD
+            self.motor_sign[i] * (response.position_deg[i] - effective_home_position_deg[i]) * DEG_TO_RAD
             for i in range(NUM_MOTORS)
         ]
         motor_qvel_rad_s = [
@@ -584,7 +689,6 @@ class PolicyNode(Node):
         # forever -- the policy above still runs every tick (kept for
         # logging/visibility) but its output stops being used once frozen.
         if self.freeze_after_sec > 0.0:
-            self._control_tick_count += 1
             if not self._frozen and (
                     self._control_tick_count / self.control_rate_hz >= self.freeze_after_sec):
                 self._frozen = True
@@ -602,7 +706,7 @@ class PolicyNode(Node):
         # = home + sign*sim_value (sign is +-1, so sign*sign=1 undoes the
         # sign applied when motor_qpos_rad was built).
         target_deg = [
-            self.home_position_deg[i] + self.motor_sign[i] * clamped_action_rad[i] * RAD_TO_DEG
+            effective_home_position_deg[i] + self.motor_sign[i] * clamped_action_rad[i] * RAD_TO_DEG
             for i in range(NUM_MOTORS)
         ]
 
@@ -672,7 +776,6 @@ class PolicyNode(Node):
         # would just keep applying constant, unopposed force (a runaway
         # risk, not a stable hold).
         if self.freeze_after_sec > 0.0:
-            self._control_tick_count += 1
             if not self._frozen and (
                     self._control_tick_count / self.control_rate_hz >= self.freeze_after_sec):
                 self._frozen = True

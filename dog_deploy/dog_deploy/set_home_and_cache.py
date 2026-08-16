@@ -38,9 +38,22 @@ import yaml
 from rclpy.node import Node
 
 from actuator.srv import SetHome
+from dog_deploy.home_correction import apply_back_leg_correction
 
 NUM_MOTORS = 8
 DEFAULT_CACHE_PATH = os.path.expanduser('~/.dog_home_cache.yaml')
+# 'regular' IS DEFAULT_CACHE_PATH above -- unchanged path/meaning, so
+# anything already pointing at ~/.dog_home_cache.yaml keeps working
+# exactly as before. 'edited' is a NEW, second, always-written snapshot
+# (see home_correction.py) -- a reference/inspection copy only; deploy
+# time (policy_node.py's home_switch_back_leg_fraction) recomputes the
+# same correction fresh from whatever 'regular' just captured, it does
+# NOT read this file, so a stale edited snapshot here can't cause a
+# deploy to silently use an out-of-date correction.
+DEFAULT_EDITED_CACHE_PATH = os.path.expanduser('~/.dog_home_cache_edited.yaml')
+# fraction=1.0 reproduces the original correction exactly -- see
+# home_correction.py's docstring.
+DEFAULT_EDITED_FRACTION = 1.0
 
 
 class SetHomeAndCache(Node):
@@ -49,6 +62,10 @@ class SetHomeAndCache(Node):
         super().__init__('set_home_and_cache')
         self.declare_parameter('cache_path', DEFAULT_CACHE_PATH)
         self.cache_path = os.path.expanduser(self.get_parameter('cache_path').value)
+        self.declare_parameter('edited_cache_path', DEFAULT_EDITED_CACHE_PATH)
+        self.edited_cache_path = os.path.expanduser(self.get_parameter('edited_cache_path').value)
+        self.declare_parameter('edited_fraction', DEFAULT_EDITED_FRACTION)
+        self.edited_fraction = self.get_parameter('edited_fraction').value
 
         self.set_home_client = self.create_client(SetHome, 'set_home')
         while not self.set_home_client.wait_for_service(timeout_sec=2.0):
@@ -80,7 +97,18 @@ class SetHomeAndCache(Node):
 
         with open(self.cache_path, 'w') as f:
             yaml.safe_dump({'home_position_deg': home_position_deg}, f, default_flow_style=False)
-        self.get_logger().info(f'set_home succeeded, cached to {self.cache_path}: {home_position_deg}')
+        self.get_logger().info(f'set_home succeeded, cached (regular) to {self.cache_path}: {home_position_deg}')
+
+        # See DEFAULT_EDITED_CACHE_PATH's comment above -- a reference
+        # snapshot only, deploy time doesn't read this file.
+        ordered = [home_position_deg[i] for i in range(1, NUM_MOTORS + 1)]
+        edited_ordered = apply_back_leg_correction(ordered, self.edited_fraction)
+        edited_home_position_deg = {i: edited_ordered[i - 1] for i in range(1, NUM_MOTORS + 1)}
+        with open(self.edited_cache_path, 'w') as f:
+            yaml.safe_dump({'home_position_deg': edited_home_position_deg}, f, default_flow_style=False)
+        self.get_logger().info(
+            f'Also cached (edited, fraction={self.edited_fraction}) to '
+            f'{self.edited_cache_path}: {edited_home_position_deg}')
 
 
 def main(args=None):

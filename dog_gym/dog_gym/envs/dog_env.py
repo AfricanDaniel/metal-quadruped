@@ -391,6 +391,26 @@ WALK_ANGULAR_VEL_PENALTY_WEIGHT = -0.2
 # Placeholder, not a formal sweep.
 WALK_PITCH_PENALTY_WEIGHT = 3.0
 
+# Deliberate forward-lean reward target (2026-08-15, direct user request,
+# multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
+# and forward lean" -- sim-to-real motivation: user wants the trained
+# gait to carry a moderate forward lean rather than level, to better
+# match how the real robot naturally holds itself while walking).
+# pitch_penalty and pitch_gate below are now centered HERE instead of
+# literal 0 -- positive = nose-down/forward, see _torso_pitch_rad()'s
+# own sign convention.
+WALK_TARGET_PITCH_RAD = np.radians(10)
+
+# pitch_gate's sigma (see pitch_penalty's comment/pitch_gate's own
+# comment in _compute_reward_walk() for the full mechanism) --
+# DELIBERATELY its own constant now, decoupled from the termination
+# bounds below (previously shared PITCH_TERMINATION_THRESHOLD_RAD for
+# both, which coupled two conceptually different things: a smooth
+# reward-shaping falloff vs. a hard episode-ending cutoff). Antigravity's
+# own worked margin (+-15deg around the new WALK_TARGET_PITCH_RAD) used
+# directly here.
+WALK_PITCH_GATE_SIGMA_RAD = np.radians(15)
+
 # WALK-only, added 2026-08-09 (user: "robot is moving forward but not
 # straight" + multi-agent review w/ Antigravity, chatbot.md "help WALK
 # walk straight") -- see _body_frame_xy_velocity()'s docstring for the
@@ -485,17 +505,45 @@ WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 # RANGE_NM), which is real adaptive gait strategy, not a bug. This term
 # is deliberately a different mechanism: a SLOW per-leg EMA of ground-
 # contact state (SWING_FAIRNESS_EMA_ALPHA's ~50-tick/0.5s time constant,
-# roughly one gait cycle) tracks each leg's rolling DUTY CYCLE, and the
-# penalty is the VARIANCE across the 4 legs' duty cycles -- see
+# roughly one gait cycle) tracks each leg's rolling DUTY CYCLE -- see
 # _update_swing_duty_cycle()/swing_fairness_penalty in
 # _compute_reward_walk(). A single-tick timing shift barely moves a
 # 0.5s EMA, so recovery reflexes stay free; only a leg that's
 # STRUCTURALLY over-favored as stance for a sustained stretch (like
-# leg_c's measured ~80% share) accumulates a real, growing variance
-# penalty. Untuned placeholder (Antigravity's suggested weight range was
-# 1.0-2.0, picked the middle), not a formal sweep.
+# leg_c's measured ~80% share) accumulates a real penalty.
+#
+# REDESIGNED 2026-08-15 (`foot_clearance_v1` diagnosis, daniel_cl_
+# context.md/chatbot.md "swing_fairness_penalty and forward lean"):
+# measured directly on foot_clearance_v1 that the ORIGINAL formula
+# (-var(duty_cycle), weight 1.5) was ~10-25x smaller than forward_
+# velocity_reward/foot_clearance_reward -- leg_c stayed planted ~90% of
+# the episode because this penalty was too weak to matter at all, not
+# because the mechanism itself was wrong (same root problem the
+# WEIGHT=90 experiment below was trying to fix on 2026-08-14, before
+# being fully reverted after 3 rounds of new failure modes).
+#
+# Brings back that reverted design (per-leg squared deviation from an
+# ABSOLUTE target duty cycle, not a cross-leg VARIANCE -- variance
+# penalizes legs differing from EACH OTHER, which a uniform-stillness
+# collapse satisfies for free; per-leg absolute deviation can't be
+# gamed that way), but with two changes from what backfired last time
+# (multi-agent review w/ Antigravity, chatbot.md, same title):
+# 1. Weight 20.0 -> 5.0 -- competitive with forward_velocity_reward
+#    (5.0) without dominating/crushing it outright.
+# 2. The forward_progress GATE that caused hf_v7's immediate-fall
+#    regression (a direct multiply, unlocking this penalty starting at
+#    forward_progress=0) replaced with a DELAYED ramp: exactly 0.0 until
+#    forward_progress crosses SWING_FAIRNESS_GATE_START, then linearly
+#    ramps to full strength by SWING_FAIRNESS_GATE_FULL (same shape as
+#    WALK_CLIMB_GATE_THRESHOLD's ramp elsewhere in this file) -- lets
+#    the policy establish basic forward locomotion FIRST, before this
+#    constraint activates at all, rather than fighting for gradient
+#    from tick 1 the way a plain multiplicative gate does.
 SWING_FAIRNESS_EMA_ALPHA = 0.02
-WALK_SWING_FAIRNESS_WEIGHT = 1.5
+SWING_FAIRNESS_TARGET_DUTY_CYCLE = 0.75
+SWING_FAIRNESS_GATE_START = 0.2
+SWING_FAIRNESS_GATE_FULL = 0.4
+WALK_SWING_FAIRNESS_WEIGHT = 5.0
 
 # swing_amplitude_penalty (2026-08-14, multi-agent review w/
 # Antigravity, chatbot.md "proposing a new swing-AMPLITUDE-discrepancy
@@ -1318,7 +1366,26 @@ LEG_PHASE_TERMINATION_S = 3.0
 # pattern as _non_tip_contact_time/_leg_phase_time) so a real gait's
 # normal, brief, self-correcting pitch excursions during push-off don't
 # falsely trip this.
-PITCH_TERMINATION_THRESHOLD_RAD = np.radians(10)
+#
+# LOOSENED 10deg -> 15deg SYMMETRIC (2026-08-15, direct user request),
+# then SUPERSEDED same day by an ASYMMETRIC split (multi-agent review
+# w/ Antigravity, chatbot.md "swing_fairness_penalty and forward lean"):
+# a planned ~10deg deliberate forward-lean reward target
+# (WALK_TARGET_PITCH_RAD above) would leave only 5deg of forward
+# headroom under a symmetric 15deg bound before hitting this
+# sustained-divergence cutoff -- Antigravity's own framing, "a cliff
+# that will prevent stable learning". Split into two directional
+# bounds instead, both still well short of WALK_MAX_TILT_RAD's ~20deg
+# hard fall line, giving a genuine +-15deg margin around
+# WALK_TARGET_PITCH_RAD on both sides (25 - 10 = 15deg forward
+# headroom; 10 - (-5) = 15deg backward headroom) rather than a lopsided
+# 5deg/25deg split a single shared constant would produce.
+# PITCH_TERMINATION_DURATION_S requires either bound to be SUSTAINED
+# (same reset-on-recovery pattern as _non_tip_contact_time/
+# _leg_phase_time) so a real gait's normal, brief, self-correcting
+# pitch excursions during push-off don't falsely trip this.
+PITCH_TERMINATION_FORWARD_RAD = np.radians(25)
+PITCH_TERMINATION_BACKWARD_RAD = np.radians(-5)
 PITCH_TERMINATION_DURATION_S = 0.5
 
 # WALK only -- fixed lump-sum penalty applied to the terminal step's
@@ -3145,15 +3212,17 @@ class DogEnv(gym.Env):
             (self._calf_hinge_window_idx + 1) % CALF_ACTIVITY_WINDOW_TICKS)
 
     def _update_high_pitch_time(self):
-        """Advances self._high_pitch_time -- seconds torso pitch
-        magnitude has stayed CONTINUOUSLY above
-        PITCH_TERMINATION_THRESHOLD_RAD, resetting to 0 the instant it
-        dips back below (same reset-on-recovery pattern as
+        """Advances self._high_pitch_time -- seconds torso pitch has
+        stayed CONTINUOUSLY outside [PITCH_TERMINATION_BACKWARD_RAD,
+        PITCH_TERMINATION_FORWARD_RAD] (asymmetric -- see those
+        constants' own comment), resetting to 0 the instant it comes
+        back inside (same reset-on-recovery pattern as
         _update_nontip_contact_time()/_update_leg_phase_time()). MUST be
         called once per step, after mj_step -- see
         _pitch_diverging_too_long()."""
         dt = self.model.opt.timestep
-        if abs(self._torso_pitch_rad()) > PITCH_TERMINATION_THRESHOLD_RAD:
+        pitch_rad = self._torso_pitch_rad()
+        if pitch_rad > PITCH_TERMINATION_FORWARD_RAD or pitch_rad < PITCH_TERMINATION_BACKWARD_RAD:
             self._high_pitch_time += dt
         else:
             self._high_pitch_time = 0.0
@@ -3171,12 +3240,13 @@ class DogEnv(gym.Env):
         return bool(np.any(self._leg_phase_time > LEG_PHASE_TERMINATION_S))
 
     def _pitch_diverging_too_long(self):
-        """WALK only: True if torso pitch has stayed above
-        PITCH_TERMINATION_THRESHOLD_RAD continuously for longer than
-        PITCH_TERMINATION_DURATION_S -- see that constant's comment. A
-        much more sensitive, earlier-triggering signal than
-        _is_fallen()'s ~20deg WALK_MAX_TILT_RAD threshold, specifically
-        for a torso that's leaning and NOT recovering."""
+        """WALK only: True if torso pitch has stayed outside
+        [PITCH_TERMINATION_BACKWARD_RAD, PITCH_TERMINATION_FORWARD_RAD]
+        continuously for longer than PITCH_TERMINATION_DURATION_S -- see
+        those constants' comment. A much more sensitive, earlier-
+        triggering signal than _is_fallen()'s ~20deg WALK_MAX_TILT_RAD
+        threshold, specifically for a torso that's leaning and NOT
+        recovering."""
         if self.task != 'walk':
             return False
         return self._high_pitch_time > PITCH_TERMINATION_DURATION_S
@@ -3595,18 +3665,23 @@ class DogEnv(gym.Env):
         # two additive terms of very different magnitude, gate the
         # reward itself by pitch so speed and tipping can't be traded
         # off -- moving fast while tipping over becomes structurally
-        # incapable of scoring highly. sigma = PITCH_TERMINATION_
-        # THRESHOLD_RAD (10deg): barely touches a normal walking gait's
-        # small pitch oscillation (~5deg -> ~88% credit retained) but
-        # sharply discounts a real dive (13.4deg -> ~41%, all the way to
-        # ~14% at WALK_MAX_TILT_RAD's 20deg hard-fall boundary). Only
-        # applied when forward_velocity_reward is positive -- this is
-        # meant to stop REWARDING fast-while-tipping, not to shrink the
-        # existing penalty for backward drift when pitch also happens to
-        # be off (that's still fully penalized regardless of pitch).
+        # incapable of scoring highly. Only applied when forward_
+        # velocity_reward is positive -- this is meant to stop REWARDING
+        # fast-while-tipping, not to shrink the existing penalty for
+        # off-target pitch when forward velocity is also off (that's
+        # still fully penalized regardless of pitch, via pitch_penalty
+        # below).
+        #
+        # RE-CENTERED on WALK_TARGET_PITCH_RAD, sigma switched to its own
+        # WALK_PITCH_GATE_SIGMA_RAD (2026-08-15, see those constants'
+        # comments) -- previously centered on literal 0 (level) using
+        # PITCH_TERMINATION_THRESHOLD_RAD as sigma; now that pitch=0 is
+        # no longer the target, gating on distance from 0 would actively
+        # fight the deliberate forward lean instead of allowing it.
         if forward_velocity_reward > 0:
             pitch_gate = np.exp(
-                -(self._torso_pitch_rad() ** 2) / (2 * PITCH_TERMINATION_THRESHOLD_RAD ** 2))
+                -((self._torso_pitch_rad() - WALK_TARGET_PITCH_RAD) ** 2)
+                / (2 * WALK_PITCH_GATE_SIGMA_RAD ** 2))
             forward_velocity_reward = forward_velocity_reward * pitch_gate
 
         # ===== STAND+WALK ONLY SECTION (walk_start_pose='random') =====
@@ -3687,6 +3762,26 @@ class DogEnv(gym.Env):
             hold_gate = 1.0 if self._standing_hold_time >= WALK_STAND_HOLD_S else 0.0
             forward_velocity_reward = forward_velocity_reward * climb_gate * hold_gate
 
+        # NOT re-centered on WALK_TARGET_PITCH_RAD (2026-08-15, deliberate
+        # deferral -- multi-agent review w/ Antigravity, chatbot.md
+        # "swing_fairness_penalty and forward lean"): Antigravity flagged
+        # that _torso_up_z()'s cos(tilt) is technically still ~1.5% below
+        # max at a 10deg pitch, so in principle this term mildly fights
+        # the new forward-lean target. But _torso_up_z() = xmat[2,2]
+        # conflates PITCH and ROLL into one cosine (see that method's own
+        # comment) -- there is no separate roll accessor anywhere in this
+        # file, so up_z is the ONLY thing in this reward that penalizes
+        # rolling sideways at all. Naively substituting cos(pitch-target)
+        # here would silently drop all roll-sensitivity (a real
+        # regression), and correctly re-deriving a target-aware upright
+        # metric that still isolates roll needs the exact Euler
+        # convention this xmat was built with, not a guess -- exactly the
+        # class of reference-frame bug this file has hit repeatedly
+        # before. pitch_penalty above (weight 3.0, now correctly
+        # re-centered, MUCH more sensitive than a cosine near its own
+        # peak) is the intended primary lever for the forward-lean target;
+        # revisit this term specifically only if training data shows
+        # pitch_penalty alone isn't enough.
         upright_reward = self._torso_up_z() * forward_progress
 
         # climb_posture_reward (2026-08-09, multi-agent review w/
@@ -3744,12 +3839,32 @@ class DogEnv(gym.Env):
         # See WALK_SWING_FAIRNESS_WEIGHT's comment: replaces
         # trot_symmetry_reward's dropped cross-leg role with a slower,
         # duty-cycle-only signal that doesn't constrain per-tick timing.
-        # Deliberately UNGATED by forward_progress (unlike trot_symmetry_
-        # reward above) -- a leg parked at near-100% stance share while
-        # standing still is exactly the pattern this term exists to catch,
-        # same reasoning as trot_symmetry_reward's own stuck-phase branch
-        # being left ungated.
-        swing_fairness_penalty = -float(np.var(self._contact_duty_cycle))
+        #
+        # REDESIGNED 2026-08-15 (see WALK_SWING_FAIRNESS_WEIGHT/
+        # SWING_FAIRNESS_TARGET_DUTY_CYCLE's own comment for the full
+        # foot_clearance_v1/hf_v5/hf_v6/hf_v7 history): per-leg squared
+        # deviation from an ABSOLUTE target duty cycle, not a cross-leg
+        # VARIANCE -- variance is satisfiable by making every leg
+        # uniformly still, absolute-target deviation isn't.
+        #
+        # NOW GATED by forward_progress, reversing the OLD "deliberately
+        # ungated" reasoning (a leg parked at near-100% stance while
+        # standing still WAS exactly what this term existed to catch,
+        # when its weight was too small to matter either way) -- at the
+        # weight needed to actually be competitive (5.0, was 1.5), fully
+        # ungated crowded out forward walking entirely before the policy
+        # ever established real locomotion (hf_v6, 2026-08-14). DELAYED
+        # ramp (not a plain multiply, which caused a DIFFERENT immediate-
+        # fall regression, hf_v7) -- exactly 0.0 below SWING_FAIRNESS_
+        # GATE_START, linearly ramping to full strength by SWING_
+        # FAIRNESS_GATE_FULL, same shape as WALK_CLIMB_GATE_THRESHOLD's
+        # ramp elsewhere in this file.
+        swing_fairness_gate = np.clip(
+            (forward_progress - SWING_FAIRNESS_GATE_START)
+            / (SWING_FAIRNESS_GATE_FULL - SWING_FAIRNESS_GATE_START),
+            0.0, 1.0)
+        swing_fairness_penalty = -float(np.sum(
+            (self._contact_duty_cycle - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2)) * swing_fairness_gate
         # swing_amplitude_penalty -- see WALK_SWING_AMPLITUDE_PENALTY_
         # WEIGHT/SWING_AMPLITUDE_MAX_DEVIATION_RAD's comments for the
         # full hf_v11/hf_v12 back-legs-swinging-too-far-out derivation.
@@ -4046,12 +4161,19 @@ class DogEnv(gym.Env):
         # term for a reasonable walking pace. Placeholder, not tuned.
         angular_vel_penalty = self._angular_vel_penalty(WALK_ANGULAR_VEL_PENALTY_WEIGHT)
 
-        # -(pitch)^2, already negative -- weight applied externally as a
-        # positive coefficient, same convention as foot_slip_penalty/
-        # touchdown_velocity_penalty. See _torso_pitch_rad()'s docstring
-        # for why up_z's cosine-based upright_reward wasn't sensitive
-        # enough to a sustained forward lean on its own.
-        pitch_penalty = -(self._torso_pitch_rad() ** 2)
+        # -(pitch - target)^2, already negative -- weight applied
+        # externally as a positive coefficient, same convention as
+        # foot_slip_penalty/touchdown_velocity_penalty. See
+        # _torso_pitch_rad()'s docstring for why up_z's cosine-based
+        # upright_reward wasn't sensitive enough to a sustained forward
+        # lean on its own.
+        #
+        # RE-CENTERED on WALK_TARGET_PITCH_RAD (2026-08-15, see that
+        # constant's comment -- deliberate forward-lean target for
+        # sim-to-real, not level anymore). upright_reward below is NOT
+        # re-centered the same way -- deliberately deferred, see its own
+        # comment for why.
+        pitch_penalty = -((self._torso_pitch_rad() - WALK_TARGET_PITCH_RAD) ** 2)
 
         # -(lateral_velocity)^2, -(yaw_rate)^2 -- see WALK_LATERAL_VEL_
         # PENALTY_WEIGHT/WALK_YAW_RATE_PENALTY_WEIGHT's comment above for
