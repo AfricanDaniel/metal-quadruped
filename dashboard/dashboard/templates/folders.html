@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ heading }} - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<h1>{{ heading }}</h1>
+{% if subtitle %}<div class="subtitle">{{ subtitle }}</div>{% endif %}
+
+{% block extra_top %}{% endblock %}
+
+<div class="list">
+  {% for f in folders %}
+    <a class="list-item" href="{{ f.url }}">
+      <span class="name">{{ f.name }}</span>
+      <span class="meta">{{ f.mtime | fmt_dt }}</span>
+    </a>
+  {% else %}
+    <div class="subtitle">Nothing here yet{{ ' (or unreachable)' if tab != 'local' else '' }}.</div>
+  {% endfor %}
+</div>
+{% endblock %}

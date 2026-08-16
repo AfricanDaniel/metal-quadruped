@@ -1,0 +1,272 @@
+:root {
+  --bg: #14161a;
+  --panel: #1c1f26;
+  --border: #2c3038;
+  --text: #e4e6eb;
+  --text-dim: #9aa1ac;
+  --accent: #5b8cff;
+  --accent-dim: #33456e;
+  --danger: #e5544d;
+  --ok: #3fb562;
+  font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+nav.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 20px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  padding: 10px 20px;
+  color: var(--text-dim);
+  text-decoration: none;
+  border-radius: 8px 8px 0 0;
+  font-weight: 600;
+}
+
+.tab.active {
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+}
+
+.sub-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+
+.sub-tab {
+  padding: 6px 14px;
+  border-radius: 999px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+
+.sub-tab.active {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.chart-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.chart-card h3 { margin: 0 0 10px; font-size: 0.9rem; font-weight: 600; }
+.chart-card canvas { width: 100%; height: 180px; display: block; }
+
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 28px 20px 60px;
+}
+
+h1 { font-size: 1.4rem; margin: 0 0 6px; }
+h2 { font-size: 1.1rem; margin: 24px 0 10px; }
+.subtitle { color: var(--text-dim); margin-bottom: 20px; font-size: 0.9rem; }
+
+.breadcrumb {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-bottom: 14px;
+}
+.breadcrumb a { color: var(--text-dim); }
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.list-item:hover { border-color: var(--accent); }
+
+/* Sheep Models sub-tab: flags fnames/checkpoints not yet downloaded
+   locally -- a tinted left edge is legible at a glance across a long
+   list, unlike dimming the "already have it" majority. */
+.list-item.needs-download {
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(90deg, var(--accent-dim) 0%, var(--panel) 40px);
+}
+
+/* Left-side sibling nav -- lets you jump straight to a different group
+   (files.html/policy_files.html: sibling folders/policy groups) or a
+   different checkpoint of the SAME fname (local_detail.html/
+   jetson_deploy_detail.html/policy_detail.html: sibling step counts)
+   without going back up a level first. */
+.sidebar-layout { display: flex; gap: 20px; align-items: flex-start; }
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 190px;
+  max-width: 240px;
+  max-height: 75vh;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.sidebar-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.82rem;
+  border: 1px solid transparent;
+  word-break: break-word;
+}
+.sidebar-item:hover { border-color: var(--border); color: var(--text); }
+.sidebar-item.active {
+  background: var(--accent-dim);
+  color: var(--text);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.sidebar-content { flex: 1; min-width: 0; }
+
+.progress-bar {
+  background: var(--border);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+.progress-bar-fill {
+  background: var(--accent);
+  height: 100%;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+.list-item .name { font-weight: 500; }
+.list-item .meta { color: var(--text-dim); font-size: 0.8rem; }
+
+.list-item .row-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 18px;
+}
+
+/* Trainings tab: a slight color hint per section so Build / Ongoing /
+   Launch read apart from each other at a glance, without straying far
+   from the panel's own dark base tone. */
+.card.tint-blue { background: #1c2130; border-color: #303a54; }
+.card.tint-green { background: #1a2620; border-color: #2c4536; }
+.card.tint-yellow { background: #2a2416; border-color: #4a3f22; }
+
+button, .btn {
+  background: var(--accent-dim);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button:hover, .btn:hover { border-color: var(--accent); }
+
+button.primary, .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+form.inline { display: inline; }
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.field-row label { min-width: 190px; color: var(--text-dim); font-size: 0.85rem; }
+.field-row input[type=text], .field-row input[type=number], .field-row select {
+  background: #10121600;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  flex: 1;
+}
+
+.radio-group { display: flex; gap: 14px; flex: 1; }
+.radio-group label { min-width: auto; color: var(--text); display: flex; align-items: center; gap: 4px; }
+
+pre.log {
+  background: #0b0c0f;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.status-pill.running { background: var(--ok); color: #06210f; }
+.status-pill.stopped { background: var(--border); color: var(--text-dim); }
+
+.connect-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 80px 0;
+}
+
+.flashes { margin-bottom: 16px; }
+.flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 8px; font-size: 0.85rem; }
+.flash-success { background: #163a24; border: 1px solid var(--ok); }
+.flash-error { background: #3a1616; border: 1px solid var(--danger); }

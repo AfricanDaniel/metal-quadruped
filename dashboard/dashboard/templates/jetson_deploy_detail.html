@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}{{ checkpoint.basename }} - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<div class="breadcrumb"><a href="{{ back_url }}">&larr; back</a></div>
+
+<div class="sidebar-layout">
+  {% if sidebar_items %}
+  <aside class="sidebar">
+    {% for item in sidebar_items %}
+      <a class="sidebar-item {{ 'active' if item.active else '' }}" href="{{ item.url }}">{{ item.label }}</a>
+    {% endfor %}
+  </aside>
+  {% endif %}
+  <div class="sidebar-content">
+<h1>{{ checkpoint.basename }}</h1>
+<div class="subtitle">{{ group_name }} / {{ fname }} &middot; {{ checkpoint.mtime | fmt_dt }}</div>
+
+<div class="card">
+  <h2 style="margin-top:0">CSVs</h2>
+  <div class="list">
+    {% for c in csvs %}
+      <div class="list-item {{ 'needs-download' if not c.local else '' }}">
+        <span class="name">{{ c.name }}</span>
+        <span class="row-actions">
+          {% if c.local %}<span class="status-pill stopped">local</span>{% endif %}
+          <span class="meta">{{ c.mtime | fmt_dt }}</span>
+          <form class="inline" method="post" action="{{ c.download_url }}">
+            <button type="submit">Download</button>
+          </form>
+          <form class="inline" method="post" action="{{ c.delete_url }}">
+            <button type="submit" class="danger" onclick="return confirm('Are you sure you want to delete {{ c.name }}?')">Delete</button>
+          </form>
+        </span>
+      </div>
+    {% else %}
+      <div class="subtitle">No CSVs logged for this policy yet.</div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Deploy</h2>
+  <form method="post" action="{{ deploy_toggle_url }}" id="deploy-form">
+    <div class="field-row">
+      <label><input type="checkbox" name="dry_run_hold_pose" {{ 'checked' if last_deploy_form.get('dry_run_hold_pose') }}> dry_run_hold_pose</label>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="max_delta_deg_per_step_enabled" {{ 'checked' if last_deploy_form.get('max_delta_deg_per_step_enabled') }}> max_delta_deg_per_step</label>
+      <input type="number" step="0.1" name="max_delta_deg_per_step" value="{{ last_deploy_form.get('max_delta_deg_per_step', '2') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="freeze_after_sec_enabled" {{ 'checked' if last_deploy_form.get('freeze_after_sec_enabled') }}> freeze_after_sec</label>
+      <input type="number" step="0.5" name="freeze_after_sec" value="{{ last_deploy_form.get('freeze_after_sec', '5') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="control_rate_hz_enabled" {{ 'checked' if last_deploy_form.get('control_rate_hz_enabled') }}> control_rate_hz</label>
+      <input type="number" step="0.1" name="control_rate_hz" value="{{ last_deploy_form.get('control_rate_hz', '100') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="log_csv_enabled" {{ 'checked' if last_deploy_form.get('log_csv_enabled', not last_deploy_form) }}> log_csv</label>
+      <input type="text" name="log_csv" value="{{ last_deploy_form.get('log_csv', checkpoint.basename) }}">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="home_position_deg_cache_path_enabled" {{ 'checked' if last_deploy_form.get('home_position_deg_cache_path_enabled', not last_deploy_form) }}> home_position_deg_cache_path (regular reference -- always used to climb)</label>
+      <input type="text" name="home_position_deg_cache_path" value="{{ last_deploy_form.get('home_position_deg_cache_path', '~/.dog_home_cache.yaml') }}">
+    </div>
+    <div class="field-row">
+      <label><input type="radio" name="home_reference_mode" value="regular" {{ 'checked' if last_deploy_form.get('home_reference_mode', 'regular') == 'regular' }} onchange="toggleHomeEdited()"> Regular home (no switch)</label>
+      <label><input type="radio" name="home_reference_mode" value="edited" {{ 'checked' if last_deploy_form.get('home_reference_mode') == 'edited' }} onchange="toggleHomeEdited()"> Edited home (climb on regular, switch to back-leg-corrected mid-walk)</label>
+    </div>
+    <div id="home-edited-fields" style="display:{{ '' if last_deploy_form.get('home_reference_mode') == 'edited' else 'none' }}">
+      <div class="field-row">
+        <label>back_leg_correction_fraction (1.0 = the correction we set up with)</label>
+        <input type="number" step="0.05" name="home_switch_back_leg_fraction" value="{{ last_deploy_form.get('home_switch_back_leg_fraction', '1.0') }}" style="max-width:100px">
+      </div>
+      <div class="field-row">
+        <label>home_switch_after_sec</label>
+        <input type="number" step="0.5" name="home_switch_after_sec" value="{{ last_deploy_form.get('home_switch_after_sec', '3') }}" style="max-width:100px">
+        <label>home_switch_ramp_sec</label>
+        <input type="number" step="0.5" name="home_switch_ramp_sec" value="{{ last_deploy_form.get('home_switch_ramp_sec', '1.5') }}" style="max-width:100px">
+      </div>
+    </div>
+    <button type="submit" class="{{ 'danger' if deploy_status.running else 'primary' }}" id="deploy-btn">
+      {{ 'Stop Deployment' if deploy_status.running else 'Deploy Policy' }}
+    </button>
+  </form>
+  <pre class="log" id="deploy-log">{{ deploy_status.log_tail }}</pre>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Go to pose</h2>
+  <div class="field-row">
+    <form method="post" action="{{ go_to_pose_url }}"><input type="hidden" name="pose_name" value="standing"><button type="submit">go_to_pose: standing</button></form>
+    <form method="post" action="{{ go_to_pose_url }}"><input type="hidden" name="pose_name" value="home"><button type="submit">go_to_pose: home</button></form>
+  </div>
+</div>
+
+<div class="card">
+  <form method="post" action="{{ delete_url }}">
+    <button type="submit" class="danger" onclick="return confirm('Are you sure you want to delete {{ checkpoint.basename }} and its {{ csvs | length }} associated CSV(s)?')">Delete policy from jetson</button>
+  </form>
+</div>
+  </div>
+</div>
+
+<script>
+async function pollStatus() {
+  try {
+    const r = await fetch("{{ status_poll_url }}");
+    const data = await r.json();
+    document.getElementById('deploy-log').textContent = data.deploy.log_tail;
+  } catch (e) { /* unreachable mid-poll, ignore */ }
+}
+setInterval(pollStatus, 1500);
+
+function toggleHomeEdited() {
+  const edited = document.querySelector('input[name="home_reference_mode"]:checked').value === 'edited';
+  document.getElementById('home-edited-fields').style.display = edited ? '' : 'none';
+}
+</script>
+{% endblock %}

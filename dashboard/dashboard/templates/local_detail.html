@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}{{ checkpoint.basename }} - dashboard{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ back_url }}">&larr; back</a></div>
+
+<div class="sidebar-layout">
+  {% if sidebar_items %}
+  <aside class="sidebar">
+    {% for item in sidebar_items %}
+      <a class="sidebar-item {{ 'active' if item.active else '' }}" href="{{ item.url }}">{{ item.label }}</a>
+    {% endfor %}
+  </aside>
+  {% endif %}
+  <div class="sidebar-content">
+<h1>{{ checkpoint.basename }}</h1>
+<div class="subtitle">{{ folder }} / {{ fname }} &middot; {{ checkpoint.mtime | fmt_dt }}</div>
+
+<div class="card">
+  <form method="post" action="{{ action_url }}" id="detail-form">
+    <div class="field-row">
+      <label for="env_id">env-id</label>
+      <select name="env_id" id="env_id" onchange="toggleWalkFields()">
+        <option value="Dog-Walk-v0" {{ 'selected' if resolved_env_id == 'Dog-Walk-v0' }}>Dog-Walk-v0</option>
+        <option value="Dog-Stand-v0" {{ 'selected' if resolved_env_id == 'Dog-Stand-v0' }}>Dog-Stand-v0</option>
+      </select>
+    </div>
+    <div id="walk-fields">
+      <div class="field-row">
+        <label>start pose</label>
+        <div class="radio-group">
+          <label><input type="radio" name="start_pose" value="home" checked> home</label>
+          <label><input type="radio" name="start_pose" value="standing"> standing</label>
+        </div>
+      </div>
+    </div>
+    <div class="field-row">
+      <label>control mode</label>
+      <div class="radio-group">
+        <label><input type="radio" name="control_mode" value="position" checked> position</label>
+        <label><input type="radio" name="control_mode" value="torque"> torque</label>
+        <label><input type="radio" name="control_mode" value="torque_belt"> torque_belt</label>
+      </div>
+    </div>
+    <div class="field-row">
+      <label for="episodes">episodes (view training only)</label>
+      <input type="number" name="episodes" id="episodes" value="5" min="1" style="max-width:100px">
+    </div>
+    <div style="display:flex; gap:10px; margin-top:16px">
+      <button type="submit" name="action" value="view" class="primary">View Training</button>
+      <button type="submit" name="action" value="export" class="ok">Export Policy</button>
+    </div>
+    <div class="subtitle" style="margin-top:12px">
+      Export target: <code>src/policies_&lt;position|torque&gt;/&lt;stand|walk&gt;/policy/{{ checkpoint.basename }}.pt</code> (control mode + env-id above decide the exact path).
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <form method="post" action="{{ delete_url }}">
+    <button type="submit" class="danger" onclick="return confirm('Are you sure you want to delete {{ checkpoint.basename }}?')">Delete checkpoint</button>
+  </form>
+</div>
+  </div>
+</div>
+
+<script>
+function toggleWalkFields() {
+  const isWalk = document.getElementById('env_id').value === 'Dog-Walk-v0';
+  document.getElementById('walk-fields').style.display = isWalk ? '' : 'none';
+}
+toggleWalkFields();
+</script>
+{% endblock %}

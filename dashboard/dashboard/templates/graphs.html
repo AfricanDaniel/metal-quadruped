@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}{{ fname }} graphs - dashboard{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ back_url }}">&larr; back</a></div>
+{% include "training_tabs.html" %}
+<h1>{{ fname }}</h1>
+<div class="subtitle">
+  {% if running %}<span class="status-pill running">running</span>{% endif %}
+  reward/loss curves from TensorBoard logs
+  {% if sheep %}&middot; downloaded from sheep just now{% endif %}
+</div>
+
+<form method="get" action="{{ request_path }}" style="margin-bottom:16px">
+  <button type="submit" class="btn">Refresh</button>
+</form>
+
+<div id="charts">
+  {% for tag in tags %}
+    <div class="chart-card">
+      <h3>{{ tag }}</h3>
+      <canvas id="chart-{{ loop.index }}" width="800" height="180"></canvas>
+    </div>
+  {% else %}
+    <div class="subtitle">No graphs yet -- either this training hasn't logged anything yet, or (for
+      pre-existing runs from before the per-fname log-naming fix) its logs can't be reliably
+      attributed to this fname. See the training's own stdout log if you need to check on it in
+      the meantime.</div>
+  {% endfor %}
+</div>
+
+<script>
+const SERIES = {{ series_json | safe }};
+const TAGS = {{ tags | tojson }};
+
+function drawLineChart(canvas, points) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const pad = 32;
+  ctx.clearRect(0, 0, w, h);
+  if (!points.length) {
+    ctx.fillStyle = '#9aa1ac';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('no data', pad, h / 2);
+    return;
+  }
+  const steps = points.map(p => p[0]);
+  const values = points.map(p => p[1]);
+  const minX = Math.min(...steps), maxX = Math.max(...steps);
+  const minY = Math.min(...values), maxY = Math.max(...values);
+  const spanX = (maxX - minX) || 1;
+  const spanY = (maxY - minY) || 1;
+
+  const xOf = s => pad + ((s - minX) / spanX) * (w - 2 * pad);
+  const yOf = v => h - pad - ((v - minY) / spanY) * (h - 2 * pad);
+
+  // axes
+  ctx.strokeStyle = '#2c3038';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad, h - pad); ctx.lineTo(w - pad, h - pad);
+  ctx.moveTo(pad, pad); ctx.lineTo(pad, h - pad);
+  ctx.stroke();
+
+  // line
+  ctx.strokeStyle = '#5b8cff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = xOf(p[0]), y = yOf(p[1]);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // labels
+  ctx.fillStyle = '#9aa1ac';
+  ctx.font = '10px sans-serif';
+  ctx.fillText(minX.toLocaleString(), pad, h - pad + 14);
+  ctx.textAlign = 'right';
+  ctx.fillText(maxX.toLocaleString(), w - pad, h - pad + 14);
+  ctx.textAlign = 'left';
+  ctx.fillText(maxY.toFixed(3), 2, pad + 4);
+  ctx.fillText(minY.toFixed(3), 2, h - pad);
+}
+
+TAGS.forEach((tag, i) => {
+  const canvas = document.getElementById('chart-' + (i + 1));
+  drawLineChart(canvas, SERIES[tag] || []);
+});
+</script>
+{% endblock %}

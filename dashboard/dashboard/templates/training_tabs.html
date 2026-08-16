@@ -1,0 +1,10 @@
+{% if tabs_graphs_url or tabs_checkpoints_url %}
+<div class="sub-tabs" style="margin-bottom:14px">
+  {% if tabs_graphs_url %}
+  <a class="sub-tab {{ 'active' if active_training_tab == 'graphs' else '' }}" href="{{ tabs_graphs_url }}">Graphs</a>
+  {% endif %}
+  {% if tabs_checkpoints_url %}
+  <a class="sub-tab {{ 'active' if active_training_tab == 'checkpoints' else '' }}" href="{{ tabs_checkpoints_url }}">Checkpoints</a>
+  {% endif %}
+</div>
+{% endif %}

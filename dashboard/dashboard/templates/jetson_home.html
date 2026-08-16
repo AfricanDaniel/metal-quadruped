@@ -1,0 +1,33 @@
+{% extends "folders.html" %}
+{% block extra_top %}
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <strong>Build</strong>
+      <span class="status-pill {{ 'running' if build.running else 'stopped' }}" id="build-pill">
+        {{ 'running' if build.running else 'idle' }}
+      </span>
+    </div>
+    <form method="post" action="{{ build_url }}">
+      <button type="submit" class="primary" {{ 'disabled' if build.running }}>colcon build &amp; source</button>
+    </form>
+  </div>
+  <pre class="log" id="build-log">{{ build.log_tail }}</pre>
+</div>
+{% endblock %}
+{% block content %}
+{{ super() }}
+<script>
+async function pollBuild() {
+  try {
+    const r = await fetch("{{ build_status_url }}");
+    const data = await r.json();
+    document.getElementById('build-log').textContent = data.log_tail;
+    const pill = document.getElementById('build-pill');
+    pill.textContent = data.running ? 'running' : 'idle';
+    pill.className = 'status-pill ' + (data.running ? 'running' : 'stopped');
+  } catch (e) { /* jetson unreachable mid-poll, ignore */ }
+}
+setInterval(pollBuild, 1500);
+</script>
+{% endblock %}

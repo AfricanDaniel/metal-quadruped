@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}{{ fname }} - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<div class="breadcrumb"><a href="{{ back_url }}">&larr; back</a></div>
+{% include "training_tabs.html" %}
+<h1 style="margin-bottom:2px">{{ fname }}</h1>
+<div class="subtitle">{{ folder }} &middot; {{ checkpoints | length }} checkpoint(s), highest step count first</div>
+
+{% if tab == 'sheep' %}
+<div class="card" id="download-progress-card" style="display:none">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <strong>Downloading checkpoints</strong>
+    <span id="download-progress-text" class="meta"></span>
+  </div>
+  <div class="progress-bar"><div class="progress-bar-fill" id="download-progress-fill"></div></div>
+</div>
+{% endif %}
+
+<div class="list">
+  {% for c in checkpoints %}
+    <div class="list-item {{ 'needs-download' if c.local is defined and not c.local else '' }}">
+      <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ c.url }}">
+        {{ c.basename }}
+      </a>
+      <span class="row-actions">
+        {% if c.local is defined and c.local %}<span class="status-pill stopped">local</span>{% endif %}
+        <span class="meta">{{ c.mtime | fmt_dt }}</span>
+        {% if tab == 'sheep' %}
+        <form class="inline" method="post" action="{{ c.download_url }}">
+          <button type="submit">Download</button>
+        </form>
+        <form class="inline" method="post" action="{{ c.view_url }}">
+          <button type="submit" class="primary">View Training</button>
+        </form>
+        {% endif %}
+        {% if c.delete_url %}
+        <form class="inline" method="post" action="{{ c.delete_url }}">
+          <button type="submit" class="danger" onclick="return confirm('Are you sure you want to delete {{ c.basename }}{{ ' and any associated CSVs' if tab == 'jetson' else '' }}?')">Delete</button>
+        </form>
+        {% endif %}
+      </span>
+    </div>
+  {% else %}
+    <div class="subtitle">Nothing here yet{{ ' (or unreachable)' if tab != 'local' else '' }}.</div>
+  {% endfor %}
+</div>
+
+{% if tab == 'sheep' %}
+<script>
+let _downloadPoll;
+async function pollDownload() {
+  try {
+    const r = await fetch("{{ download_status_url }}");
+    const data = await r.json();
+    const card = document.getElementById('download-progress-card');
+    if (!data.total) return;
+    card.style.display = '';
+    const fill = document.getElementById('download-progress-fill');
+    const text = document.getElementById('download-progress-text');
+    const pct = Math.round(100 * data.done / data.total);
+    fill.style.width = pct + '%';
+    let msg = data.done + '/' + data.total + ' (' + data.ok + ' ok';
+    const failed = data.done - data.ok;
+    if (failed > 0) msg += ', ' + failed + ' failed';
+    msg += ')';
+    if (data.current) msg += ' -- ' + data.current;
+    if (data.finished) {
+      msg += ' -- done';
+      clearInterval(_downloadPoll);
+      if (data.ok > 0 && confirm('Go to download?')) {
+        window.location.href = {{ local_folder_url | tojson }};
+      } else {
+        setTimeout(() => location.reload(), 1200);
+      }
+    }
+    text.textContent = msg;
+  } catch (e) { /* sheep unreachable mid-poll, ignore */ }
+}
+_downloadPoll = setInterval(pollDownload, 1000);
+pollDownload();
+</script>
+{% endif %}
+{% endblock %}

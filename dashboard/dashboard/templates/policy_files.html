@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ group_name }} - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<div class="breadcrumb"><a href="{{ back_url }}">&larr; back</a></div>
+
+<div class="sidebar-layout">
+  {% if sidebar_items %}
+  <aside class="sidebar">
+    {% for item in sidebar_items %}
+      <a class="sidebar-item {{ 'active' if item.active else '' }}" href="{{ item.url }}">{{ item.label }}</a>
+    {% endfor %}
+  </aside>
+  {% endif %}
+  <div class="sidebar-content">
+<h1>{{ group_name }}</h1>
+<div class="subtitle">{{ fnames | length }} polic{{ 'y' if fnames | length == 1 else 'ies' }}, most recently updated first</div>
+
+<div class="list">
+  {% for item in fnames %}
+    <div class="list-item {{ 'needs-download' if item.jetson_count < item.count else '' }}">
+      <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ item.url }}">
+        {{ item.fname }}
+        <span class="meta">({{ item.count }} checkpoint{{ 's' if item.count != 1 else '' }})</span>
+        <span class="meta">&middot; {{ item.jetson_count }}/{{ item.count }} on jetson</span>
+      </a>
+      <span class="meta">{{ item.mtime | fmt_dt }}</span>
+    </div>
+  {% else %}
+    <div class="subtitle">Nothing here yet.</div>
+  {% endfor %}
+</div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block title %}Trainings - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<h1>Trainings</h1>
+
+<div class="card tint-blue">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <strong>Build</strong>
+      <span class="status-pill {{ 'running' if build.running else 'stopped' }}" id="build-pill">
+        {{ 'running' if build.running else 'idle' }}
+      </span>
+    </div>
+    <form method="post" action="{{ build_url }}">
+      <button type="submit" class="primary" {{ 'disabled' if build.running }}>colcon build &amp; source install/setup.bash</button>
+    </form>
+  </div>
+  <div class="subtitle" style="margin:6px 0 10px">Pick up code changes (e.g. to dog_gym) before launching a new training.</div>
+  <pre class="log" id="build-log">{{ build.log_tail }}</pre>
+</div>
+
+<div class="card tint-green">
+  <h2 style="margin-top:0">Ongoing trainings</h2>
+  <div class="list" id="running-list">
+    {% for r in running %}
+      <div class="list-item">
+        <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ r.graphs_url }}">
+          {{ r.fname }} <span class="status-pill running">running</span>
+          <span class="meta">{{ r.checkpoint_count }} checkpoint{{ 's' if r.checkpoint_count != 1 else '' }}
+            &middot; pid {{ r.pid }}{% if r.started_at %} &middot; started {{ r.started_at | fmt_dt }}{% endif %}</span>
+        </a>
+        <form class="inline" method="post" action="{{ r.stop_url }}">
+          <button type="submit" class="danger">Stop training</button>
+        </form>
+      </div>
+    {% else %}
+      <div class="subtitle">Nothing currently running.</div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card tint-yellow">
+  <h2 style="margin-top:0">Launch new training</h2>
+  <form method="post" action="{{ launch_url }}">
+    <div class="field-row">
+      <label for="env_id">env-id</label>
+      <select name="env_id" id="env_id" onchange="toggleWalkFields()">
+        <option value="Dog-Walk-v0" selected>Dog-Walk-v0</option>
+        <option value="Dog-Stand-v0">Dog-Stand-v0</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label for="algo">algo</label>
+      <select name="algo" id="algo">
+        <option value="PPO" selected>PPO</option>
+        <option value="SAC">SAC</option>
+        <option value="A2C">A2C</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label>control mode</label>
+      <div class="radio-group">
+        <label><input type="radio" name="control_mode" value="position" checked> position</label>
+        <label><input type="radio" name="control_mode" value="torque"> torque</label>
+        <label><input type="radio" name="control_mode" value="torque_belt"> torque_belt</label>
+      </div>
+    </div>
+
+    <div id="walk-fields">
+      <div class="field-row">
+        <label>walk-start-pose</label>
+        <div class="radio-group">
+          <label><input type="radio" name="start_pose" value="home" checked> home</label>
+          <label><input type="radio" name="start_pose" value="standing"> standing</label>
+          <label><input type="radio" name="start_pose" value="random"> random</label>
+        </div>
+      </div>
+      <div class="field-row">
+        <label><input type="checkbox" name="walk_height_fraction_enabled"> walk-height-fraction</label>
+        <input type="number" step="0.01" name="walk_height_fraction" value="0.9" style="max-width:100px">
+      </div>
+    </div>
+
+    <div class="field-row">
+      <label for="fname">fname</label>
+      <input type="text" name="fname" id="fname" required placeholder="e.g. walk_position_hf_v17">
+    </div>
+    <div class="field-row">
+      <label for="model_dir">model-dir (models/&hellip;)</label>
+      <select name="model_dir" id="model_dir">
+        {% for folder in model_folders %}
+          <option value="{{ folder }}" {{ 'selected' if folder == 'walk' }}>{{ folder }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field-row">
+      <label for="num_envs">num-envs</label>
+      <input type="number" name="num_envs" id="num_envs" value="32" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="domain_randomization" checked> domain-randomization</label>
+    </div>
+
+    <h3>Position gains</h3>
+    <div class="field-row">
+      <label>mode</label>
+      <div class="radio-group">
+        <label><input type="radio" name="gain_mode" value="range" checked onchange="toggleGainMode()"> range (curriculum)</label>
+        <label><input type="radio" name="gain_mode" value="fixed" onchange="toggleGainMode()"> fixed value</label>
+      </div>
+    </div>
+    <div id="gain-range-fields">
+      <div class="field-row">
+        <label>kp-range-start (low high)</label>
+        <input type="number" step="0.1" name="kp_start_low" value="60" style="max-width:90px">
+        <input type="number" step="0.1" name="kp_start_high" value="65" style="max-width:90px">
+      </div>
+      <div class="field-row">
+        <label>kp-range-end (low high)</label>
+        <input type="number" step="0.1" name="kp_end_low" value="65" style="max-width:90px">
+        <input type="number" step="0.1" name="kp_end_high" value="100" style="max-width:90px">
+      </div>
+      <div class="field-row">
+        <label>kd-range-start (low high)</label>
+        <input type="number" step="0.1" name="kd_start_low" value="5" style="max-width:90px">
+        <input type="number" step="0.1" name="kd_start_high" value="6" style="max-width:90px">
+      </div>
+      <div class="field-row">
+        <label>kd-range-end (low high)</label>
+        <input type="number" step="0.1" name="kd_end_low" value="8" style="max-width:90px">
+        <input type="number" step="0.1" name="kd_end_high" value="10" style="max-width:90px">
+      </div>
+    </div>
+    <div id="gain-fixed-fields" style="display:none">
+      <div class="field-row">
+        <label>position-kp</label>
+        <input type="number" step="0.1" name="position_kp" style="max-width:100px">
+      </div>
+      <div class="field-row">
+        <label>position-kd</label>
+        <input type="number" step="0.1" name="position_kd" style="max-width:100px">
+      </div>
+    </div>
+
+    <h3>Learning rate schedule</h3>
+    <div class="field-row">
+      <label><input type="checkbox" name="lr_schedule_enabled" onchange="toggleLrFields()" id="lr_schedule_enabled"> lr-schedule</label>
+      <select name="lr_schedule" id="lr_schedule" onchange="toggleLrFields()">
+        <option value="linear">linear</option>
+        <option value="adaptive" selected>adaptive</option>
+      </select>
+    </div>
+    <div class="field-row" id="desired-kl-row">
+      <label>desired-kl</label>
+      <input type="number" step="0.001" name="desired_kl" value="0.01" style="max-width:100px">
+    </div>
+
+    <details style="margin-top:16px">
+      <summary style="cursor:pointer;color:var(--text-dim)">Advanced (n-steps, batch size, learning rate, entropy, init-from, &hellip;)</summary>
+      <div style="margin-top:12px">
+        {% for field, label, default in [
+          ('n_steps', 'n-steps', '2048'), ('batch_size', 'batch-size', '64'), ('n_epochs', 'n-epochs', '10'),
+          ('learning_rate', 'learning-rate', '3e-4'), ('learning_rate_end', 'learning-rate-end', ''),
+          ('ent_coef', 'ent-coef', '0.01'), ('ent_coef_end', 'ent-coef-end', ''),
+          ('decay_steps', 'decay-steps', '20000000'), ('timesteps_per_iter', 'timesteps-per-iter', '1000000'),
+        ] %}
+        <div class="field-row">
+          <label><input type="checkbox" name="{{ field }}_enabled"> {{ label }}</label>
+          <input type="text" name="{{ field }}" value="{{ default }}">
+        </div>
+        {% endfor %}
+        <div class="field-row">
+          <label><input type="checkbox" name="env_type_enabled"> env-type</label>
+          <select name="env_type"><option value="subproc" selected>subproc</option><option value="dummy">dummy</option></select>
+        </div>
+        <div class="field-row">
+          <label><input type="checkbox" name="init_from_enabled"> init-from</label>
+          <input type="text" name="init_from" placeholder="path to a .zip checkpoint">
+        </div>
+      </div>
+    </details>
+
+    <button type="submit" class="primary" style="margin-top:16px">Execute</button>
+  </form>
+</div>
+
+<script>
+function toggleWalkFields() {
+  document.getElementById('walk-fields').style.display =
+    document.getElementById('env_id').value === 'Dog-Walk-v0' ? '' : 'none';
+}
+function toggleGainMode() {
+  const range = document.querySelector('input[name=gain_mode][value=range]').checked;
+  document.getElementById('gain-range-fields').style.display = range ? '' : 'none';
+  document.getElementById('gain-fixed-fields').style.display = range ? 'none' : '';
+}
+function toggleLrFields() {
+  const on = document.getElementById('lr_schedule_enabled').checked;
+  const adaptive = document.getElementById('lr_schedule').value === 'adaptive';
+  document.getElementById('desired-kl-row').style.display = (on && adaptive) ? '' : 'none';
+}
+toggleWalkFields(); toggleGainMode(); toggleLrFields();
+
+async function pollBuild() {
+  try {
+    const r = await fetch("{{ build_status_url }}");
+    const data = await r.json();
+    document.getElementById('build-log').textContent = data.log_tail;
+    const pill = document.getElementById('build-pill');
+    pill.textContent = data.running ? 'running' : 'idle';
+    pill.className = 'status-pill ' + (data.running ? 'running' : 'stopped');
+  } catch (e) { /* unreachable mid-poll, ignore */ }
+}
+setInterval(pollBuild, 1500);
+</script>
+{% endblock %}

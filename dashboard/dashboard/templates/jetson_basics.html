@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Jetson basics - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<h1>Basics</h1>
+<div class="subtitle">{{ JETSON_HOST }}:{{ JETSON_WS_ROOT }}</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div>
+      <strong>Build</strong>
+      <span class="status-pill {{ 'running' if build.running else 'stopped' }}" id="build-pill">
+        {{ 'running' if build.running else 'idle' }}
+      </span>
+    </div>
+    <form method="post" action="{{ build_url }}">
+      <button type="submit" class="primary" {{ 'disabled' if build.running }}>colcon build &amp; source</button>
+    </form>
+  </div>
+  <pre class="log" id="build-log">{{ build.log_tail }}</pre>
+</div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <strong>Hardware bringup</strong>
+    <span class="status-pill {{ 'running' if hw_status.running else 'stopped' }}" id="hw-pill">
+      {{ 'running' if hw_status.running else 'stopped' }}
+    </span>
+  </div>
+  <div class="subtitle">actuator + dog_imu -- required before set_home, go_to_pose, motors, or deploying</div>
+  <form method="post" action="{{ hw_toggle_url }}">
+    <button type="submit" class="{{ 'danger' if hw_status.running else 'primary' }}">
+      {{ 'Stop Hardware Bringup' if hw_status.running else 'Start Hardware Bringup' }}
+    </button>
+  </form>
+  <pre class="log" id="hw-log">{{ hw_status.log_tail }}</pre>
+</div>
+
+<div class="card">
+  <div class="field-row">
+    <form method="post" action="{{ set_home_url }}"><button type="submit">set_home</button></form>
+  </div>
+
+  <h3>Go to pose</h3>
+  <div class="field-row">
+    <form method="post" action="{{ go_to_pose_url }}"><input type="hidden" name="pose_name" value="standing"><button type="submit">go_to_pose: standing</button></form>
+    <form method="post" action="{{ go_to_pose_url }}"><input type="hidden" name="pose_name" value="home"><button type="submit">go_to_pose: home</button></form>
+  </div>
+
+  <h3>Motors</h3>
+  <form method="post" action="{{ read_motor_url }}" class="field-row">
+    <label>read_motor_positions (motor ids, blank = all)</label>
+    <input type="text" name="motor_ids" placeholder="e.g. 1,2">
+    <button type="submit">Read</button>
+  </form>
+  <form method="post" action="{{ adjust_motor_url }}" class="field-row">
+    <label>adjust_motor_position</label>
+    <input type="number" name="motor_id" placeholder="motor_id" style="max-width:100px">
+    <input type="number" step="0.1" name="degrees" placeholder="degrees" style="max-width:100px">
+    <button type="submit">Adjust</button>
+  </form>
+  {% if last_service_output %}
+  <pre class="log">{{ last_service_output }}</pre>
+  {% endif %}
+
+  <h3>Unresponsive motors</h3>
+  <div class="subtitle">
+    A stuck motor almost always means the actuator node's own serial
+    connection is wedged, not the motor itself. This kills and restarts
+    just the actuator (basic_control) process -- dog_imu keeps running --
+    which re-opens that connection fresh.
+  </div>
+  <form method="post" action="{{ reset_motors_url }}">
+    <button type="submit" class="danger">Reset motors</button>
+  </form>
+</div>
+
+<script>
+async function pollStatus() {
+  try {
+    const r = await fetch("{{ status_poll_url }}");
+    const data = await r.json();
+    document.getElementById('hw-log').textContent = data.hw.log_tail;
+    const pill = document.getElementById('hw-pill');
+    pill.textContent = data.hw.running ? 'running' : 'stopped';
+    pill.className = 'status-pill ' + (data.hw.running ? 'running' : 'stopped');
+  } catch (e) { /* unreachable mid-poll, ignore */ }
+}
+setInterval(pollStatus, 1500);
+
+async function pollBuild() {
+  try {
+    const r = await fetch("{{ build_status_url }}");
+    const data = await r.json();
+    document.getElementById('build-log').textContent = data.log_tail;
+    const pill = document.getElementById('build-pill');
+    pill.textContent = data.running ? 'running' : 'idle';
+    pill.className = 'status-pill ' + (data.running ? 'running' : 'stopped');
+  } catch (e) { /* jetson unreachable mid-poll, ignore */ }
+}
+setInterval(pollBuild, 1500);
+</script>
+{% endblock %}

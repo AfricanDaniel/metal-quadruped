@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ checkpoint.basename }} - dashboard{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ back_url }}">&larr; back</a></div>
+
+<div class="sidebar-layout">
+  {% if sidebar_items %}
+  <aside class="sidebar">
+    {% for item in sidebar_items %}
+      <a class="sidebar-item {{ 'active' if item.active else '' }}" href="{{ item.url }}">{{ item.label }}</a>
+    {% endfor %}
+  </aside>
+  {% endif %}
+  <div class="sidebar-content">
+<h1>{{ checkpoint.basename }}</h1>
+<div class="subtitle">{{ group_name }} / {{ fname }} &middot; {{ checkpoint.mtime | fmt_dt }}</div>
+
+<div style="display:flex; gap:20px; flex-wrap:wrap">
+  <div class="card" style="flex:1; min-width:260px">
+    <h2 style="margin-top:0">Policy {% if on_jetson %}<span class="status-pill stopped">on jetson</span>{% endif %}</h2>
+    <div class="subtitle" style="word-break:break-all">{{ group_name }}/policy/{{ checkpoint.basename }}.pt</div>
+    <form method="post" action="{{ upload_url }}" style="margin-top:14px">
+      <button type="submit" class="primary">Upload to jetson</button>
+    </form>
+    <form method="post" action="{{ delete_url }}" style="margin-top:8px">
+      <button type="submit" class="danger" onclick="return confirm('Are you sure you want to delete {{ checkpoint.basename }} and its {{ csvs | length }} associated CSV(s)?')">Delete policy</button>
+    </form>
+  </div>
+
+  <div class="card" style="flex:2; min-width:320px">
+    <h2 style="margin-top:0">CSVs</h2>
+    <div class="list">
+      {% for c in csvs %}
+        <div class="list-item">
+          <span class="name">{{ c.name }}</span>
+          <span class="row-actions">
+            <span class="meta">{{ c.mtime | fmt_dt }}</span>
+            <form class="inline" method="post" action="{{ c.delete_url }}">
+              <button type="submit" class="danger" onclick="return confirm('Are you sure you want to delete {{ c.name }}?')">Delete</button>
+            </form>
+          </span>
+        </div>
+      {% else %}
+        <div class="subtitle">No CSVs logged for this policy yet.</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Sheep - dashboard{% endblock %}
+{% block content %}
+<div class="connect-screen">
+  <h1>Sheep</h1>
+  {% if failed %}
+    <div class="flash flash-error">failed to connect</div>
+  {% endif %}
+  <form method="post" action="{{ connect_url }}">
+    <button type="submit" class="primary" style="padding:14px 28px;font-size:1rem">Click to connect</button>
+  </form>
+</div>
+{% endblock %}

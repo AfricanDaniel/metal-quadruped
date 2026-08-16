@@ -1,0 +1,14 @@
+{% if tab in ('local', 'sheep') %}
+<div class="sub-tabs">
+  <a class="sub-tab {{ 'active' if sub_tab == 'models' else '' }}" href="{{ sub_models_url }}">Models</a>
+  <a class="sub-tab {{ 'active' if sub_tab == 'trainings' else '' }}" href="{{ sub_trainings_url }}">Trainings</a>
+  {% if tab == 'local' %}
+  <a class="sub-tab {{ 'active' if sub_tab == 'policies' else '' }}" href="{{ sub_policies_url }}">Policies</a>
+  {% endif %}
+</div>
+{% elif tab == 'jetson' %}
+<div class="sub-tabs">
+  <a class="sub-tab {{ 'active' if sub_tab != 'basics' else '' }}" href="{{ sub_jetson_policies_url }}">Policies</a>
+  <a class="sub-tab {{ 'active' if sub_tab == 'basics' else '' }}" href="{{ sub_jetson_basics_url }}">Basics</a>
+</div>
+{% endif %}

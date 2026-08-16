@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ folder }} - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<div class="breadcrumb"><a href="{{ back_url }}">&larr; back</a></div>
+
+<div class="sidebar-layout">
+  {% if sidebar_items %}
+  <aside class="sidebar">
+    {% for item in sidebar_items %}
+      <a class="sidebar-item {{ 'active' if item.active else '' }}" href="{{ item.url }}">{{ item.label }}</a>
+    {% endfor %}
+  </aside>
+  {% endif %}
+  <div class="sidebar-content">
+<h1>{{ folder }}</h1>
+<div class="subtitle">{{ fnames | length }} training(s), most recently updated first</div>
+
+<div class="list">
+  {% for item in fnames %}
+    <div class="list-item {{ 'needs-download' if item.local_count is defined and item.local_count < item.count else '' }}">
+      <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ item.url }}">
+        {{ item.fname }}
+        <span class="meta">({{ item.count }} checkpoint{{ 's' if item.count != 1 else '' }})</span>
+        {% if item.local_count is defined %}
+        <span class="meta">&middot; {{ item.local_count }}/{{ item.count }} local</span>
+        {% endif %}
+      </a>
+      <span class="row-actions">
+        <span class="meta">{{ item.mtime | fmt_dt }}</span>
+        {% if item.graphs_url %}
+        <a class="btn" href="{{ item.graphs_url }}" title="Reward/loss graphs for this training">Graphs</a>
+        {% endif %}
+        {% if tab == 'sheep' %}
+        <form class="inline" method="post" action="{{ item.download_url }}">
+          <button type="submit" title="Download all checkpoints in this group">Download</button>
+        </form>
+        {% endif %}
+      </span>
+    </div>
+  {% else %}
+    <div class="subtitle">Nothing here yet{{ ' (or unreachable)' if tab != 'local' else '' }}.</div>
+  {% endfor %}
+</div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}dog dashboard{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <nav class="tabs">
+    <a class="tab {{ 'active' if active_tab == 'local' else '' }}" href="{{ nav_local_url }}">Local</a>
+    <a class="tab {{ 'active' if active_tab == 'jetson' else '' }}" href="{{ nav_jetson_url }}">Jetson</a>
+    <a class="tab {{ 'active' if active_tab == 'sheep' else '' }}" href="{{ nav_sheep_url }}">Sheep</a>
+  </nav>
+  <main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashes">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">
+              {{ message }}
+              {% if action_suggestion and loop.last %}
+              <form method="post" action="{{ action_suggestion.url }}" class="inline" style="margin-left:10px">
+                <button type="submit" class="danger">{{ action_suggestion.label }}</button>
+              </form>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  {% if redirect_suggestion %}
+  <script>
+    if (confirm({{ redirect_suggestion.label | tojson }} + '?')) {
+      window.location.href = {{ redirect_suggestion.url | tojson }};
+    }
+  </script>
+  {% endif %}
+</body>
+</html>
