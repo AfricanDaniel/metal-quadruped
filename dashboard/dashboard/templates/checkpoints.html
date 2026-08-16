@@ -33,6 +33,10 @@
         <form class="inline" method="post" action="{{ c.view_url }}">
           <button type="submit" class="primary">View Training</button>
         </form>
+        {% elif tab == 'local' and c.view_url %}
+        <form class="inline" method="post" action="{{ c.view_url }}">
+          <button type="submit" class="primary">View Training</button>
+        </form>
         {% endif %}
         {% if c.delete_url %}
         <form class="inline" method="post" action="{{ c.delete_url }}">

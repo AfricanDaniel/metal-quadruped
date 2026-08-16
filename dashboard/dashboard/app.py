@@ -14,8 +14,8 @@ import webbrowser
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from dashboard import (
-    build_actions, download_actions, graphs, local_fs, policy_actions, procs, remote_fs, ros_actions, ssh,
-    training_actions,
+    build_actions, download_actions, graphs, local_fs, local_tools_actions, policy_actions, procs, remote_fs,
+    ros_actions, ssh, training_actions,
 )
 from dashboard.config import (
     JETSON_HOST, JETSON_WS_ROOT, MODELS_DIR, SHEEP_HOST, SHEEP_WS_ROOT,
@@ -111,6 +111,7 @@ def _inject_sub_tab_urls():
             'sub_models_url': url_for('local_folders'),
             'sub_trainings_url': url_for('local_trainings'),
             'sub_policies_url': url_for('local_policies'),
+            'sub_tools_url': url_for('local_tools'),
         }
     if request.path.startswith('/sheep'):
         return {'sub_models_url': url_for('sheep_home'), 'sub_trainings_url': url_for('sheep_trainings')}
@@ -211,6 +212,7 @@ def local_files(folder):
 def local_checkpoints(folder, fname):
     checkpoints = [
         {**c, 'url': url_for('local_detail', folder=folder, fname=fname, basename=c['basename']),
+         'view_url': url_for('local_view_training', folder=folder, fname=fname, basename=c['basename']),
          'delete_url': url_for('local_delete_checkpoint', folder=folder, fname=fname, basename=c['basename'])}
         for c in local_fs.list_checkpoints(folder, fname)
     ]
@@ -250,6 +252,28 @@ def local_detail(folder, fname, basename):
 def local_delete_checkpoint(folder, fname, basename):
     ok = local_fs.delete_local_file(local_fs.checkpoint_zip_path(folder, basename))
     flash(f'Deleted {basename}.' if ok else f'Failed to delete {basename}.', 'success' if ok else 'error')
+    return redirect(url_for('local_checkpoints', folder=folder, fname=fname))
+
+
+@app.route('/local/<folder>/<fname>/<basename>/view', methods=['POST'])
+def local_view_training(folder, fname, basename):
+    """One-click viewer launch straight from the checkpoints list (2026-08-16,
+    user request -- mirrors sheep_view_training's own one-click shape, minus
+    the download step since a local checkpoint is already local), so seeing
+    a checkpoint run doesn't require clicking into local_detail's own form
+    first. Same fixed defaults sheep_view_training already uses (episodes=5,
+    start_pose='home' for Dog-Walk-v0, control_mode='position') -- for
+    anything else (a different env/episodes/control_mode), local_detail's
+    own form is still there, reachable via the checkpoint's name link."""
+    zip_path = local_fs.checkpoint_zip_path(folder, basename)
+    env_id = local_fs.resolve_env_id(folder)
+    ok, info = policy_actions.launch_view_training(
+        zip_path, env_id, episodes=5,
+        start_pose='home' if env_id == 'Dog-Walk-v0' else None,
+        control_mode='position',
+    )
+    flash('Launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
+          'success' if ok else 'error')
     return redirect(url_for('local_checkpoints', folder=folder, fname=fname))
 
 
@@ -468,6 +492,57 @@ def local_policy_delete_csv(policies_dir, task, fname, basename, csv_name):
     flash(f'Deleted {csv_name}.' if ok else f'Failed to delete {csv_name}.', 'success' if ok else 'error')
     return redirect(url_for('local_policy_detail', policies_dir=policies_dir, task=task,
                              fname=fname, basename=basename))
+
+
+@app.route('/local/tools')
+def local_tools():
+    return render_template(
+        'tools.html', tab='local', active_tab='local', sub_tab='tools',
+        mjcf_choices=local_tools_actions.MJCF_CHOICES,
+        last_save_pose_form=procs.get_last_tool_form('save_pose'),
+        last_mmc_form=procs.get_last_tool_form('manual_motor_control'),
+        last_vbd_form=procs.get_last_tool_form('verify_belt_decoupling'),
+        last_half_dog_view_form=procs.get_last_tool_form('half_dog_view'),
+    )
+
+
+@app.route('/local/tools/save_pose', methods=['POST'])
+def local_tools_save_pose():
+    procs.set_last_tool_form('save_pose', request.form)
+    ok, info = local_tools_actions.launch_save_pose(request.form)
+    flash('Launched save_pose.py.' if ok else f'Failed to launch: {info}', 'success' if ok else 'error')
+    return redirect(url_for('local_tools'))
+
+
+@app.route('/local/tools/manual_motor_control', methods=['POST'])
+def local_tools_manual_motor_control():
+    procs.set_last_tool_form('manual_motor_control', request.form)
+    ok, info = local_tools_actions.launch_manual_motor_control(request.form)
+    flash('Launched manual_motor_control.' if ok else f'Failed to launch: {info}', 'success' if ok else 'error')
+    return redirect(url_for('local_tools'))
+
+
+@app.route('/local/tools/verify_belt_decoupling', methods=['POST'])
+def local_tools_verify_belt_decoupling():
+    procs.set_last_tool_form('verify_belt_decoupling', request.form)
+    ok, info = local_tools_actions.launch_verify_belt_decoupling(request.form)
+    flash('Launched verify_belt_decoupling.' if ok else f'Failed to launch: {info}', 'success' if ok else 'error')
+    return redirect(url_for('local_tools'))
+
+
+@app.route('/local/tools/dog_view', methods=['POST'])
+def local_tools_dog_view():
+    ok, info = local_tools_actions.launch_dog_view()
+    flash('Launched dog_view.launch.py.' if ok else f'Failed to launch: {info}', 'success' if ok else 'error')
+    return redirect(url_for('local_tools'))
+
+
+@app.route('/local/tools/half_dog_view', methods=['POST'])
+def local_tools_half_dog_view():
+    procs.set_last_tool_form('half_dog_view', request.form)
+    ok, info = local_tools_actions.launch_half_dog_view(request.form)
+    flash('Launched half_dog_view.launch.py.' if ok else f'Failed to launch: {info}', 'success' if ok else 'error')
+    return redirect(url_for('local_tools'))
 
 
 # ======================================================================

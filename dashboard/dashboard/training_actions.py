@@ -42,6 +42,13 @@ _ADVANCED_FIELDS = [
     ('timesteps_per_iter', '--timesteps-per-iter', int),
     ('init_from', '--init-from', str),
     ('env_type', '--env-type', str),
+    # Slew-rate curriculum (2026-08-16, dog_gym/dog_gym/train.py's
+    # SlewCurriculumCallback -- see MAX_SLEW_DEG_PER_S/
+    # SLEW_CURRICULUM_TARGET_DEG_PER_S in dog_env.py): opt-in, same as
+    # every other advanced field here -- omitting start-step leaves
+    # train.py's own default (no curriculum, fixed at 1000 the whole run).
+    ('slew_curriculum_start_step', '--slew-curriculum-start-step', int),
+    ('slew_curriculum_decay_steps', '--slew-curriculum-decay-steps', int),
 ]
 
 

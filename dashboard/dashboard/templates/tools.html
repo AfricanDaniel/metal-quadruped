@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Tools - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<h1>Tools</h1>
+<div class="subtitle">Local dev/diagnostic scripts -- each opens its own window (MuJoCo viewer or RViz) and keeps running independently of the dashboard once launched. Fields you set are remembered between visits.</div>
+
+<div class="card tint-blue">
+  <h2 style="margin-top:0">save_pose.py</h2>
+  <div class="subtitle" style="margin-bottom:10px">Interactively pose the dog in the MuJoCo viewer, then save the final joint angles to a .txt file for reference. Drag joints / let it settle under gravity, then close the window -- qpos at that moment gets saved.</div>
+  <form method="post" action="{{ url_for('local_tools_save_pose') }}">
+    <div class="field-row">
+      <label><input type="checkbox" name="mjcf_enabled" {{ 'checked' if last_save_pose_form.get('mjcf_enabled') }}> mjcf</label>
+      <select name="mjcf">
+        {% for m in mjcf_choices %}
+          <option value="{{ m }}" {{ 'selected' if last_save_pose_form.get('mjcf', mjcf_choices[0]) == m }}>{{ m }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="out_enabled" {{ 'checked' if last_save_pose_form.get('out_enabled') }}> out</label>
+      <input type="text" name="out" value="{{ last_save_pose_form.get('out', '') }}" placeholder="pose.txt">
+    </div>
+    <button type="submit" class="primary" style="margin-top:8px">Launch</button>
+  </form>
+</div>
+
+<div class="card tint-green">
+  <h2 style="margin-top:0">manual_motor_control</h2>
+  <div class="subtitle" style="margin-bottom:10px">Drive each motor's target by hand through the real DogEnv.step() path (not the raw MuJoCo Control tab). Keys: 1-8 select motor, Up/Down nudge by step-deg, R reset, Space pause.</div>
+  <form method="post" action="{{ url_for('local_tools_manual_motor_control') }}">
+    <div class="field-row">
+      <label><input type="checkbox" name="step_deg_enabled" {{ 'checked' if last_mmc_form.get('step_deg_enabled') }}> step-deg</label>
+      <input type="number" step="0.5" name="step_deg" value="{{ last_mmc_form.get('step_deg', '10') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="orientation_enabled" {{ 'checked' if last_mmc_form.get('orientation_enabled') }}> orientation</label>
+      <select name="orientation">
+        {% for o in ['upside-down', 'sideways', 'normal'] %}
+          <option value="{{ o }}" {{ 'selected' if last_mmc_form.get('orientation', 'upside-down') == o }}>{{ o }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="mmc_pin_height_m_enabled" {{ 'checked' if last_mmc_form.get('mmc_pin_height_m_enabled') }}> pin-height-m</label>
+      <input type="number" step="0.05" name="mmc_pin_height_m" value="{{ last_mmc_form.get('mmc_pin_height_m', '0.6') }}" style="max-width:100px">
+    </div>
+    <button type="submit" class="primary" style="margin-top:8px">Launch</button>
+  </form>
+</div>
+
+<div class="card tint-yellow">
+  <h2 style="margin-top:0">verify_belt_decoupling</h2>
+  <div class="subtitle" style="margin-bottom:10px">Sweeps one leg's thigh back and forth while holding its calf fixed at an absolute target -- if the belt/pulley decoupling fix is working, the calf stays pointing the same direction the whole time.</div>
+  <form method="post" action="{{ url_for('local_tools_verify_belt_decoupling') }}">
+    <div class="field-row">
+      <label><input type="checkbox" name="leg_enabled" {{ 'checked' if last_vbd_form.get('leg_enabled') }}> leg</label>
+      <select name="leg">
+        {% for l in ['a', 'b', 'c', 'd'] %}
+          <option value="{{ l }}" {{ 'selected' if last_vbd_form.get('leg', 'a') == l }}>{{ l }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="amplitude_deg_enabled" {{ 'checked' if last_vbd_form.get('amplitude_deg_enabled') }}> amplitude-deg</label>
+      <input type="number" step="1" name="amplitude_deg" value="{{ last_vbd_form.get('amplitude_deg', '30') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="full_range" {{ 'checked' if last_vbd_form.get('full_range') }}> full-range (sweep the thigh's entire joint range instead of +-amplitude-deg)</label>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="period_s_enabled" {{ 'checked' if last_vbd_form.get('period_s_enabled') }}> period-s</label>
+      <input type="number" step="0.5" name="period_s" value="{{ last_vbd_form.get('period_s', '4') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="duration_s_enabled" {{ 'checked' if last_vbd_form.get('duration_s_enabled') }}> duration-s</label>
+      <input type="number" step="1" name="duration_s" value="{{ last_vbd_form.get('duration_s', '0') }}" style="max-width:100px">
+      <span class="meta">0 = run until the viewer window is closed</span>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="upside_down" {{ 'checked' if last_vbd_form.get('upside_down', not last_vbd_form) }}> upside-down (pin torso upside-down, clear of the floor -- unchecked = --no-upside-down)</label>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="vbd_pin_height_m_enabled" {{ 'checked' if last_vbd_form.get('vbd_pin_height_m_enabled') }}> pin-height-m</label>
+      <input type="number" step="0.05" name="vbd_pin_height_m" value="{{ last_vbd_form.get('vbd_pin_height_m', '0.6') }}" style="max-width:100px">
+    </div>
+    <button type="submit" class="primary" style="margin-top:8px">Launch</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">dog_view.launch.py</h2>
+  <div class="subtitle" style="margin-bottom:10px">Full 4-leg dog in RViz with slider-controlled joints. No configurable arguments.</div>
+  <form method="post" action="{{ url_for('local_tools_dog_view') }}">
+    <button type="submit" class="primary">Launch</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">half_dog_view.launch.py</h2>
+  <div class="subtitle" style="margin-bottom:10px">Single-leg RViz view. belt_multiplier is the lower-pulley angle per upper-pulley angle -- change sign to flip belt direction.</div>
+  <form method="post" action="{{ url_for('local_tools_half_dog_view') }}">
+    <div class="field-row">
+      <label><input type="checkbox" name="belt_multiplier_enabled" {{ 'checked' if last_half_dog_view_form.get('belt_multiplier_enabled') }}> belt_multiplier</label>
+      <input type="number" step="0.1" name="belt_multiplier" value="{{ last_half_dog_view_form.get('belt_multiplier', '1.0') }}" style="max-width:100px">
+    </div>
+    <button type="submit" class="primary" style="margin-top:8px">Launch</button>
+  </form>
+</div>
+{% endblock %}

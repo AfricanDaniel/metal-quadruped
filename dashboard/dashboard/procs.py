@@ -42,6 +42,14 @@ _state = {
     'hardware_bringup': {'pid': None, 'log': None},
     'deploy': {'pid': None, 'log': None, 'policy': None},
     'last_deploy_form': {},
+    # Local Tools sub-tab (2026-08-16): {tool_key: {field: value}} -- one
+    # entry PER TOOL, not a single shared dict like last_deploy_form,
+    # since that page has 5 independent forms all posting to different
+    # routes. A single shared dict would use dict-replace semantics (see
+    # set_last_deploy_form's own docstring) -- submitting any ONE tool's
+    # form would wipe every OTHER tool's remembered values, since each
+    # POST's request.form only ever contains that one form's own fields.
+    'last_tools_forms': {},
     'build': {'pid': None, 'log': None},
     # Last GET page visited within each tab, so the tab bar itself can
     # jump back to wherever you left off (e.g. a specific fname's
@@ -282,6 +290,19 @@ def set_last_deploy_form(form):
 def get_last_deploy_form():
     with _lock:
         return dict(_state['last_deploy_form'])
+
+
+def set_last_tool_form(tool_key, form):
+    """Same 'remember the raw submitted form' purpose as
+    set_last_deploy_form(), just keyed per-tool -- see last_tools_forms'
+    own comment in _state for why a single shared dict doesn't work here."""
+    with _lock:
+        _state['last_tools_forms'][tool_key] = dict(form)
+
+
+def get_last_tool_form(tool_key):
+    with _lock:
+        return dict(_state['last_tools_forms'].get(tool_key, {}))
 
 
 def deploy_status():

@@ -24,15 +24,23 @@
   <h2 style="margin-top:0">Ongoing trainings</h2>
   <div class="list" id="running-list">
     {% for r in running %}
-      <div class="list-item">
-        <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ r.graphs_url }}">
-          {{ r.fname }} <span class="status-pill running">running</span>
-          <span class="meta">{{ r.checkpoint_count }} checkpoint{{ 's' if r.checkpoint_count != 1 else '' }}
-            &middot; pid {{ r.pid }}{% if r.started_at %} &middot; started {{ r.started_at | fmt_dt }}{% endif %}</span>
-        </a>
-        <form class="inline" method="post" action="{{ r.stop_url }}">
-          <button type="submit" class="danger">Stop training</button>
-        </form>
+      <div class="list-item" style="flex-direction:column;align-items:stretch">
+        <div style="display:flex;align-items:center">
+          <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ r.graphs_url }}">
+            {{ r.fname }} <span class="status-pill running">running</span>
+            <span class="meta">{{ r.checkpoint_count }} checkpoint{{ 's' if r.checkpoint_count != 1 else '' }}
+              &middot; pid {{ r.pid }}{% if r.started_at %} &middot; started {{ r.started_at | fmt_dt }}{% endif %}</span>
+          </a>
+          <form class="inline" method="post" action="{{ r.stop_url }}">
+            <button type="submit" class="danger">Stop training</button>
+          </form>
+        </div>
+        {% if r.cmd %}
+        <details style="margin-top:6px">
+          <summary style="cursor:pointer;color:var(--text-dim)">Launch command (check which flags this run actually used)</summary>
+          <pre class="log" style="margin-top:6px">{{ r.cmd }}</pre>
+        </details>
+        {% endif %}
       </div>
     {% else %}
       <div class="subtitle">Nothing currently running.</div>
@@ -177,6 +185,14 @@
         <div class="field-row">
           <label><input type="checkbox" name="init_from_enabled"> init-from</label>
           <input type="text" name="init_from" placeholder="path to a .zip checkpoint">
+        </div>
+        <div class="field-row">
+          <label><input type="checkbox" name="slew_curriculum_start_step_enabled"> slew-curriculum-start-step</label>
+          <input type="text" name="slew_curriculum_start_step" value="2000000" placeholder="e.g. 2000000">
+        </div>
+        <div class="field-row">
+          <label><input type="checkbox" name="slew_curriculum_decay_steps_enabled"> slew-curriculum-decay-steps</label>
+          <input type="text" name="slew_curriculum_decay_steps" value="3000000" placeholder="e.g. 3000000">
         </div>
       </div>
     </details>
