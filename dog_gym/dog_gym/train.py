@@ -304,7 +304,8 @@ class SlewCurriculumCallback(BaseCallback):
 
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
              model_path=None, position_kp=None, position_kd=None,
-             position_kp_range=None, position_kd_range=None, home_start_prob_start=None):
+             position_kp_range=None, position_kd_range=None, home_start_prob_start=None,
+             max_slew_deg_per_s=None):
     kwargs = dict(domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose,
                   walk_height_fraction=walk_height_fraction,
@@ -346,6 +347,13 @@ def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction
     # 'standing'/'home').
     if home_start_prob_start is not None:
         kwargs['home_start_prob'] = home_start_prob_start
+    # --max-slew-deg-per-s (2026-08-16, user request): runtime override of
+    # dog_env.py's MAX_SLEW_DEG_PER_S starting ceiling -- see DogEnv.__init__'s
+    # max_slew_deg_per_s comment. Independent of --slew-curriculum-start-step/
+    # -decay-steps, which control whether/how this starting value later
+    # tightens, not what it starts at.
+    if max_slew_deg_per_s is not None:
+        kwargs['max_slew_deg_per_s'] = max_slew_deg_per_s
     return lambda: gym.make(env_id, **kwargs)
 
 
@@ -359,7 +367,8 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           gain_curriculum_steps=None, lr_schedule='linear', desired_kl=0.01,
           home_start_prob_start=None, home_start_prob_end=None,
           home_start_curriculum_steps=None, slew_curriculum_start_step=None,
-          slew_curriculum_decay_steps=None, wandb_project='dog-quadruped', wandb_entity=None):
+          slew_curriculum_decay_steps=None, max_slew_deg_per_s=None,
+          wandb_project='dog-quadruped', wandb_entity=None):
     # Always on (2026-08-15, direct user request -- "wandb", always-on not
     # opt-in): locals() grabbed HERE, before any other local variable
     # exists, so it's exactly this call's own training config -- one
@@ -383,11 +392,13 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           f'position_kd_range_start={position_kd_range_start}, position_kd_range_end={position_kd_range_end}, '
           f'home_start_prob_start={home_start_prob_start}, home_start_prob_end={home_start_prob_end}, '
           f'slew_curriculum_start_step={slew_curriculum_start_step}, '
-          f'slew_curriculum_decay_steps={slew_curriculum_decay_steps})')
+          f'slew_curriculum_decay_steps={slew_curriculum_decay_steps}, '
+          f'max_slew_deg_per_s={max_slew_deg_per_s})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
                          control_mode, model_path, position_kp, position_kd,
-                         position_kp_range_start, position_kd_range_start, home_start_prob_start)
+                         position_kp_range_start, position_kd_range_start, home_start_prob_start,
+                         max_slew_deg_per_s)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -572,7 +583,8 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
          walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position',
-         model_path=None, position_kp=None, position_kd=None, home_start_prob=None):
+         model_path=None, position_kp=None, position_kd=None, home_start_prob=None,
+         max_slew_deg_per_s=None):
     kwargs = dict(render_mode='human', domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
                   control_mode=control_mode)
@@ -588,6 +600,8 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
     # --home-start-prob-start's value; harmless to pass otherwise.
     if home_start_prob is not None:
         kwargs['home_start_prob'] = home_start_prob
+    if max_slew_deg_per_s is not None:
+        kwargs['max_slew_deg_per_s'] = max_slew_deg_per_s
     env = gym.make(env_id, **kwargs)
 
     if algo not in ALGOS:
@@ -802,6 +816,17 @@ def main():
                               'Defaults to --decay-steps if not set, same convention as --gain-'
                               'curriculum-steps. Multi-agent review recommended 3_000_000 (finishing '
                               'the anneal around 5M total steps with the default 2M start).')
+    parser.add_argument('--max-slew-deg-per-s', type=float, default=None,
+                         help='--train and --test (2026-08-16, user request): runtime override of '
+                              "dog_env.py's MAX_SLEW_DEG_PER_S starting ceiling (module default 1000, "
+                              'chosen for PPO gait-discovery headroom -- see that constant\'s own long '
+                              'comment for the full history of why it needs to start this loose). '
+                              'Independent of --slew-curriculum-start-step/-decay-steps, which control '
+                              'whether/how this starting value tightens over training, not what it '
+                              'starts at. Default None leaves the module constant untouched. Exposed '
+                              'so different starting ceilings can be tried directly (e.g. investigating '
+                              'whether a tighter start changes early-training stability) without '
+                              'editing dog_env.py.')
     parser.add_argument('--lr-schedule', default='linear', choices=['linear', 'adaptive'],
                          help='PPO only, --train only (2026-08-06): "linear" (default, unchanged) '
                               'uses --learning-rate/--learning-rate-end/--decay-steps\' linear decay '
@@ -905,11 +930,12 @@ def main():
               args.gain_curriculum_steps, args.lr_schedule, args.desired_kl,
               args.home_start_prob_start, args.home_start_prob_end,
               args.home_start_curriculum_steps, args.slew_curriculum_start_step,
-              args.slew_curriculum_decay_steps, args.wandb_project, args.wandb_entity)
+              args.slew_curriculum_decay_steps, args.max_slew_deg_per_s,
+              args.wandb_project, args.wandb_entity)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
-             args.position_kp, args.position_kd, args.home_start_prob_start)
+             args.position_kp, args.position_kd, args.home_start_prob_start, args.max_slew_deg_per_s)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 

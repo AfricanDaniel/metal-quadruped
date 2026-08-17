@@ -1529,7 +1529,8 @@ class DogEnv(gym.Env):
                  render_mode=None, domain_randomization=False, task='stand',
                  walk_start_pose='standing', walk_height_fraction=WALK_HEIGHT_FRACTION,
                  control_mode='position', position_kp=None, position_kd=None,
-                 position_kp_range=None, position_kd_range=None, home_start_prob=0.0):
+                 position_kp_range=None, position_kd_range=None, home_start_prob=0.0,
+                 max_slew_deg_per_s=None):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
@@ -1641,7 +1642,15 @@ class DogEnv(gym.Env):
         # SlewCurriculumCallback -- see MAX_SLEW_DEG_PER_S's own comment
         # for why this needs to START loose (gait discovery) before any
         # tightening begins.
-        self._max_slew_deg_per_s = MAX_SLEW_DEG_PER_S
+        #
+        # max_slew_deg_per_s (2026-08-16, user request -- "have
+        # MAX_SLEW_DEG_PER_S be a parameter I can change with a flag"):
+        # optional runtime override of the STARTING ceiling itself (train.py's
+        # --max-slew-deg-per-s), independent of whether/how the curriculum
+        # later tightens it. None (default) keeps the existing behavior
+        # exactly -- the module constant, unchanged.
+        self._max_slew_deg_per_s = (
+            max_slew_deg_per_s if max_slew_deg_per_s is not None else MAX_SLEW_DEG_PER_S)
         self.task = task
         # torque_belt only -- see BELT_TARGET_ADAPT_RATE_STAND/_WALK's
         # comment for why these need different timescales. Harmless to set
