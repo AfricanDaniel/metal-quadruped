@@ -25,6 +25,7 @@ setup(
             'leg_isolation_test = dog_deploy.leg_isolation_test:main',
             'set_home_and_cache = dog_deploy.set_home_and_cache:main',
             'log_static_observation = dog_deploy.log_static_observation:main',
+            'motor_sweep_test = dog_deploy.motor_sweep_test:main',
         ],
     },
 )
