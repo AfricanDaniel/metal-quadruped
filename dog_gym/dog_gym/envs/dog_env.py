@@ -424,6 +424,23 @@ WALK_TARGET_PITCH_RAD = np.radians(10)
 # re-measure before assuming 8 is the right number.
 HOME_START_FORWARD_LEAN_RAD = np.radians(8)
 
+# Height offset paired with HOME_START_FORWARD_LEAN_RAD above (2026-08-16,
+# bug found the same day the lean was added -- chatbot.md "HOME_START_
+# FORWARD_LEAN_RAD broke home start entirely"): SIT_HEIGHT_M was measured
+# for a LEVEL torso only -- applying the tilt at that same height, with
+# qpos[2] untouched, drove torso_body/leg_a-b_calf up to 5cm into the
+# floor (vs. the level pose's own normal ~3-7mm overlap), a violent
+# enough penetration that a single physics step's contact impulse alone
+# threw the whole episode into instant "knee-walking" termination and
+# separately, even ignoring termination, snapped the lean itself back to
+# ~level within ~0.3s under passive dynamics (measured directly). +0.05m
+# confirmed empirically (bisected: 0.0->-0.050m penetration, 0.05->
+# -0.0003m) to bring max penetration back down to the level pose's own
+# normal scale at this specific tilt angle -- re-measure if
+# HOME_START_FORWARD_LEAN_RAD's own value ever changes, this isn't a
+# generic formula.
+HOME_START_LEAN_HEIGHT_OFFSET_M = 0.05
+
 # Weight for rise_backward_pitch_penalty in _compute_reward_walk() --
 # Antigravity's option (b), layered on top of HOME_START_FORWARD_LEAN_RAD
 # above (see that constant's comment and the term's own comment at its
@@ -1073,7 +1090,52 @@ NONTIP_TERMINATION_ENABLED = True
 # non-tip time on two legs (before an unrelated fall ended that episode
 # first) -- 0.5s catches contact durations in that range instead of
 # only much longer, fully-settled knee-walking.
-NONTIP_TERMINATION_S = 0.0
+#
+# ACTUALLY FIXED 2026-08-16 (this comment described 0.5 since the day
+# this constant was introduced, but `git log -L` on this exact line
+# shows the VALUE has been 0.0 since that same first commit -- the 0.5
+# fix this comment describes, and that chatbot.md's 2026-08-06 "Instant
+# Death on Knee Scuff" entry claimed was applied, never actually landed
+# in the code. Rarely mattered before now since normal gaits/falls rarely
+# produce non-tip contact at all -- only surfaced as a real, 100%-of-
+# episodes problem once HOME_START_FORWARD_LEAN_RAD's own (separately
+# fixed) penetration bug started producing non-tip contact on literally
+# every single reset. This value now finally matches its own comment.
+# Sits UNDERNEATH _get_rise_progress()'s gate in _knee_walking_too_long()
+# (see that method) -- the two serve different purposes: the gate skips
+# this check entirely while still genuinely in the sitting posture
+# (contact there is expected, not a failure), this duration threshold
+# gives room for a momentary clumsy knee-scuff AFTER genuinely
+# standing/walking, per Antigravity's explicit read (chatbot.md, same
+# title) that a height gate doesn't make this redundant.
+#
+# RAISED 0.5 -> 2.0 (2026-08-16, direct user request, same round as
+# removing HOME_START_LEAN_HEIGHT_OFFSET_M's height bump above) --
+# explicitly "to make up for" reverting that height fix: without it, the
+# original ~5cm penetration at the tilted 'home' reset is back, so this
+# needs enough room for that initial violent contact to actually resolve
+# before counting against the episode, not just enough for an ordinary
+# mid-gait knee scuff. Underneath NONTIP_TERMINATION_MIN_RISE_PROGRESS's
+# gate as before -- the two mechanisms now both cover the 'home'-start
+# penetration case (the gate more completely, this raised duration as a
+# second layer), not just the original "clumsy scuff after standing"
+# purpose alone.
+NONTIP_TERMINATION_S = 2.0
+
+# Hard cutoff for _knee_walking_too_long()'s gate (2026-08-16, multi-agent
+# review w/ Antigravity, chatbot.md same title as NONTIP_TERMINATION_S's
+# fix above -- her explicit recommendation, "a hard height cutoff rather
+# than a continuous scale-up... the mechanics of knee contact are
+# effectively binary: it is required/expected while sitting, but invalid
+# once the robot has committed to standing or walking. A smooth fade
+# would implicitly endorse knee-walking for shorter durations midway
+# up"). Below this _get_rise_progress() threshold, _knee_walking_too_long()
+# skips its check entirely -- non-tip contact while still genuinely in
+# the sitting posture (progress~0) is the expected, real-hardware-matching
+# resting state (see HOME_START_FORWARD_LEAN_RAD's own bug for exactly
+# what this is protecting against), not a failure. 0.2 is Antigravity's
+# own suggested value, not swept.
+NONTIP_TERMINATION_MIN_RISE_PROGRESS = 0.2
 
 # STAND only -- grace period for _not_all_feet_grounded() (2026-08-07,
 # user request: measured directly that the instant/zero-grace version
@@ -2101,6 +2163,17 @@ class DogEnv(gym.Env):
         self._contact_duty_cycle = np.zeros(4)
         self._high_pitch_time = 0.0
         self._step_count = 0
+        # _climb_progress()/_get_rise_progress() reference (2026-08-16,
+        # see HOME_START_LEAN_HEIGHT_OFFSET_M's own comment) -- 0 unless
+        # the 'home'+lean branch below sets it. Subtracted from
+        # _torso_height() before the SIT_HEIGHT_M-anchored progress
+        # calculation, so the geometric height bump that fix needed
+        # doesn't ALSO read as free climb progress (it did, before this
+        # was added: rise_progress started at ~0.32 instead of ~0 at a
+        # fresh 'home' reset, defeating NONTIP_TERMINATION_MIN_RISE_
+        # PROGRESS's whole purpose -- caught by testing the gate directly
+        # right after implementing it, not assumed correct).
+        self._rise_progress_height_offset = 0.0
 
         if self.task == 'walk':
             # 'random' (see walk_start_pose's __init__ comment): sample
@@ -2194,6 +2267,22 @@ class DogEnv(gym.Env):
                 # free-fall entirely instead of requiring the policy to
                 # survive falling through it while already being scored/
                 # trained on its actions.
+                # HOME_START_LEAN_HEIGHT_OFFSET_M's own height bump
+                # REMOVED again (2026-08-16, direct user request -- "I
+                # don't like the robot starting in the air, remove that
+                # change and let it start back in the home pose on the
+                # ground"): visibly starting ~5cm above the real resting
+                # height read as wrong even though it fixed the
+                # penetration/instant-termination bug. Reverted to plain
+                # SIT_HEIGHT_M -- the penetration this was protecting
+                # against is now instead absorbed by NONTIP_TERMINATION_S
+                # being raised to 2.0s (see that constant's own comment)
+                # plus NONTIP_TERMINATION_MIN_RISE_PROGRESS's height gate,
+                # rather than by avoiding the penetration itself.
+                # HOME_START_LEAN_HEIGHT_OFFSET_M/_rise_progress_height_
+                # offset are left in place (both now permanently 0 in
+                # practice) rather than deleted, in case a future lean
+                # angle needs the same compensation again.
                 self.data.qpos[2] = SIT_HEIGHT_M
                 # HOME_START_FORWARD_LEAN_RAD (2026-08-16): bias the free
                 # joint's own orientation, not just height -- see that
@@ -2711,10 +2800,36 @@ class DogEnv(gym.Env):
         (STAND doesn't use _walk_target_height_m), but harmless to call
         for any task. Factored out (2026-08-10) so _update_standing_hold_
         time() and _compute_reward_walk()'s STAND+WALK ONLY SECTION share
-        one formula instead of two copies drifting apart."""
+        one formula instead of two copies drifting apart.
+
+        Subtracts self._rise_progress_height_offset (2026-08-16, see
+        HOME_START_LEAN_HEIGHT_OFFSET_M's comment) -- 0 except right after
+        a 'home'+lean reset, where it cancels out the height bump that fix
+        needed so THAT doesn't also read as free climb progress."""
+        adjusted_height = self._torso_height() - self._rise_progress_height_offset
         return np.clip(
-            (self._torso_height() - SIT_HEIGHT_M) / (self._walk_target_height_m - SIT_HEIGHT_M),
+            (adjusted_height - SIT_HEIGHT_M) / (self._walk_target_height_m - SIT_HEIGHT_M),
             0.0, 1.0)
+
+    def _get_rise_progress(self):
+        """0 at SIT_HEIGHT_M ('home' start height), 1 at the task's own
+        target standing height -- task-agnostic version of _climb_progress()
+        (2026-08-16, multi-agent review w/ Antigravity, chatbot.md "HOME_
+        START_FORWARD_LEAN_RAD broke home start entirely" -- her answer to
+        "should STAND's _knee_walking_too_long() gate use its own signal":
+        yes, extract a shared helper rather than reusing WALK's own
+        _climb_progress() directly, since that's built on
+        _walk_target_height_m specifically). WALK reuses _climb_progress()
+        unchanged (same formula, just called through this name now too);
+        STAND uses its own existing height_progress formula (0 at
+        SIT_HEIGHT_M, 1 at STAND_HEIGHT_M -- see upright_reward's
+        computation in _compute_reward_stand() for where this same
+        formula was already inline before being factored out here)."""
+        if self.task == 'walk':
+            return self._climb_progress()
+        adjusted_height = self._torso_height() - self._rise_progress_height_offset
+        return np.clip(
+            (adjusted_height - SIT_HEIGHT_M) / (STAND_HEIGHT_M - SIT_HEIGHT_M), 0.0, 1.0)
 
     def _stand_progress(self):
         """0 at SIT_HEIGHT_M, 1 at FULL STAND_HEIGHT_M -- unlike
@@ -3448,8 +3563,16 @@ class DogEnv(gym.Env):
         grounded_reward, but had no analogous "give up and end the
         episode" termination until the user asked for one, matching
         WALK's existing mechanism). No-ops entirely (always False) if
-        NONTIP_TERMINATION_ENABLED is off."""
+        NONTIP_TERMINATION_ENABLED is off.
+
+        GATED by _get_rise_progress() (2026-08-16, see
+        NONTIP_TERMINATION_MIN_RISE_PROGRESS's own comment) -- skips this
+        check entirely while still below that threshold, since non-tip
+        contact while genuinely still in the sitting posture is expected
+        (matches the real robot), not a walking failure."""
         if not NONTIP_TERMINATION_ENABLED:
+            return False
+        if self._get_rise_progress() < NONTIP_TERMINATION_MIN_RISE_PROGRESS:
             return False
         return bool(np.any(self._non_tip_contact_time > NONTIP_TERMINATION_S))
 
@@ -3634,8 +3757,12 @@ class DogEnv(gym.Env):
         # sit-still-forever estimate almost exactly), removing any real
         # pressure to actually climb to standing height. Now sitting
         # level scores near zero on this term instead of the max.
-        height_progress = np.clip(
-            (self._torso_height() - SIT_HEIGHT_M) / (STAND_HEIGHT_M - SIT_HEIGHT_M), 0.0, 1.0)
+        # Same formula _get_rise_progress() now uses for STAND (factored
+        # out 2026-08-16, see that method's docstring) -- calling it here
+        # too instead of keeping this inline copy, so the two can't drift
+        # apart the way _climb_progress() was originally factored out to
+        # prevent for its own two call sites.
+        height_progress = self._get_rise_progress()
         upright_reward = self._torso_up_z() * height_progress  # 1.0 = perfectly level AND at height
 
         motor_qpos = self.data.qpos[self.motor_qpos_adr]
