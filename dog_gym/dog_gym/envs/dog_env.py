@@ -968,6 +968,29 @@ WALK_TROT_SYMMETRY_WEIGHT = 2.5
 # ~3-4x smaller than the full absolute per-motor range (~220-370deg) --
 # preserving the intended exploration-efficiency benefit.
 WALK_ACTION_RESIDUAL_RANGE_RAD = np.radians(150)
+
+# Interpolate the WALK residual-action baseline from 'home' (all-zero, in
+# this belt-compensated absolute-action space) to the full standing
+# target (_walk_default_action_rad) smoothly over this many seconds at
+# the START of a 'home'-start episode, instead of the baseline being
+# _walk_default_action_rad from tick 0 (2026-08-17, multi-agent review w/
+# Antigravity, chatbot.md "Analysis of Issue.md" -- her "Rise Asymmetry
+# Fix"). Root problem this addresses: STANDING_QPOS_DEG's per-leg
+# magnitudes are NOT uniform (front thighs ~107.5deg vs back ~98.7deg --
+# see that constant's own values) -- with a FIXED baseline from tick 0,
+# every joint chases its own, differently-sized gap to target under the
+# SAME shared deg/s slew ceiling, so the front legs (bigger gap) are
+# still actively pushing after the back legs (smaller gap) have already
+# arrived -- a real, asymmetric push that was one contributor to the
+# backward-tip-during-rise problem chased separately via
+# HOME_START_FORWARD_LEAN_RAD/rise_backward_pitch_penalty above. Ramping
+# ALL 8 joints' baseline together, at the same shared fraction of
+# completion at every instant, removes this specific asymmetry at its
+# source instead of only compensating for its symptom. 'standing'-start
+# episodes are UNAFFECTED (already at the target, no rise to interpolate
+# -- see step()'s use of this). Placeholder duration (midpoint of
+# Antigravity's suggested 0.5-1.0s range), not swept.
+HOME_RISE_INTERPOLATION_DURATION_S = 0.75
 # Sitting/home height (see FALL_HEIGHT_M's comment) -- used below as the
 # "0% standing progress" reference point for gating the uprightness
 # reward, so it can't be collected just by sitting still and level.
@@ -2187,6 +2210,11 @@ class DogEnv(gym.Env):
                     'home' if self.np_random.uniform() < self._home_start_prob else 'standing')
             else:
                 episode_start_pose = self.walk_start_pose
+            # Stored for step() -- see HOME_RISE_INTERPOLATION_DURATION_S's
+            # comment for why step() needs to know THIS episode's actual
+            # sampled start pose, not just self.walk_start_pose (which is
+            # ambiguous for 'random').
+            self._episode_start_pose = episode_start_pose
             if episode_start_pose == 'standing':
                 # Start already standing -- see module docstring: composing
                 # a stand policy + a walk policy is the plan, not one
@@ -2595,7 +2623,27 @@ class DogEnv(gym.Env):
                 # unchanged from the pre-residual behavior -- prev_action,
                 # ctrl, and every reward term still operate on absolute
                 # angles exactly as before.
-                action = self._walk_default_action_rad + action
+                #
+                # BASELINE now interpolated, not fixed, for 'home'-start
+                # episodes (2026-08-17, see HOME_RISE_INTERPOLATION_DURATION_S's
+                # comment) -- ramps from all-zero (home) to
+                # _walk_default_action_rad (standing) over that many
+                # seconds, cosine-eased for a smooth start/end (no
+                # velocity discontinuity at either boundary). 'standing'-
+                # start episodes get the unchanged, immediate full
+                # baseline (alpha=1 always) -- there's no rise to smooth
+                # there. self._step_count hasn't been incremented for
+                # THIS tick yet (happens later in step()), so elapsed_s=0
+                # on the very first call, matching _no_forward_progress()'s
+                # own identical elapsed_s computation.
+                if self._episode_start_pose == 'home':
+                    elapsed_s = self._step_count * self.model.opt.timestep
+                    alpha = np.clip(elapsed_s / HOME_RISE_INTERPOLATION_DURATION_S, 0.0, 1.0)
+                    alpha_eased = (1.0 - np.cos(np.pi * alpha)) / 2.0
+                    walk_baseline = alpha_eased * self._walk_default_action_rad
+                else:
+                    walk_baseline = self._walk_default_action_rad
+                action = walk_baseline + action
             # Rate-limit how far any single motor's target can move per step.
             # self._max_slew_deg_per_s starts at MAX_SLEW_DEG_PER_S (1000,
             # loose -- needed for PPO to discover a gait at all, see that

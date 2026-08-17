@@ -54,6 +54,10 @@ _ADVANCED_FIELDS = [
     # independent of the two curriculum fields above (those control
     # whether/how it tightens, not what it starts at).
     ('max_slew_deg_per_s', '--max-slew-deg-per-s', float),
+    # --use-sde only (2026-08-17, gSDE exploration -- see dog_gym/train.py's
+    # own --sde-sample-freq help): harmless to pass even if --use-sde isn't
+    # checked, train.py's argparse accepts it unconditionally.
+    ('sde_sample_freq', '--sde-sample-freq', int),
 ]
 
 
@@ -77,6 +81,13 @@ def build_train_args(form):
 
     if form.get('domain_randomization'):
         args.append('--domain-randomization')
+
+    # gSDE (2026-08-17, chatbot.md "Analysis of Issue.md" -- Antigravity's
+    # exploration-noise recommendation): plain boolean, same pattern as
+    # domain_randomization above. --sde-sample-freq (Advanced) is harmless
+    # to also pass even when this is unchecked.
+    if form.get('use_sde'):
+        args.append('--use-sde')
 
     if is_walk:
         args += ['--walk-start-pose', form.get('start_pose', 'home')]

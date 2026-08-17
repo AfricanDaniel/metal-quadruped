@@ -109,6 +109,9 @@
     <div class="field-row">
       <label><input type="checkbox" name="domain_randomization" checked> domain-randomization</label>
     </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="use_sde"> use-sde (gSDE exploration)</label>
+    </div>
 
     {% if tab == 'sheep' %}
     <div class="field-row">
@@ -204,7 +207,8 @@
           ('n_steps', 'n-steps', '2048'), ('batch_size', 'batch-size', '64'), ('n_epochs', 'n-epochs', '10'),
           ('learning_rate', 'learning-rate', '3e-4'), ('learning_rate_end', 'learning-rate-end', ''),
           ('ent_coef', 'ent-coef', '0.01'), ('ent_coef_end', 'ent-coef-end', ''),
-          ('decay_steps', 'decay-steps', '20000000'), ('timesteps_per_iter', 'timesteps-per-iter', '1000000'),
+          ('decay_steps', 'decay-steps', '20000000'), ('timesteps_per_iter', 'timesteps-per-iter', '500000'),
+          ('sde_sample_freq', 'sde-sample-freq', '4'),
         ] %}
         <div class="field-row">
           <label><input type="checkbox" name="{{ field }}_enabled"> {{ label }}</label>
@@ -221,7 +225,7 @@
         </div>
         <div class="field-row">
           <label><input type="checkbox" name="max_slew_deg_per_s_enabled"> max-slew-deg-per-s</label>
-          <input type="text" name="max_slew_deg_per_s" value="1000" placeholder="e.g. 1000">
+          <input type="text" name="max_slew_deg_per_s" value="100" placeholder="e.g. 100">
         </div>
         <div class="field-row">
           <label><input type="checkbox" name="slew_curriculum_start_step_enabled"> slew-curriculum-start-step</label>

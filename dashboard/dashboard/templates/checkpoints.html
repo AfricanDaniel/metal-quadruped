@@ -23,6 +23,7 @@
       <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ c.url }}">
         {{ c.basename }}
       </a>
+      <button type="button" class="copy-btn" title="Copy checkpoint name" onclick='copyCheckpointName(event, {{ c.basename | tojson }})'>&#10697;</button>
       <span class="row-actions">
         {% if c.local is defined and c.local %}<span class="status-pill stopped">local</span>{% endif %}
         <span class="meta">{{ c.mtime | fmt_dt }}</span>
@@ -49,6 +50,19 @@
     <div class="subtitle">Nothing here yet{{ ' (or unreachable)' if tab != 'local' else '' }}.</div>
   {% endfor %}
 </div>
+
+<script>
+function copyCheckpointName(event, name) {
+  event.preventDefault();
+  event.stopPropagation();
+  const btn = event.currentTarget;
+  navigator.clipboard.writeText(name).then(() => {
+    const original = btn.innerHTML;
+    btn.innerHTML = '&check;';
+    setTimeout(() => { btn.innerHTML = original; }, 1000);
+  });
+}
+</script>
 
 {% if tab == 'sheep' %}
 <script>

@@ -212,6 +212,19 @@ button.primary, .btn.primary {
 button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
 button.ok { background: var(--ok); border-color: var(--ok); color: #fff; }
 
+/* Icon-only copy button (checkpoints list -- copy the policy name without
+   clicking through to the checkpoint's own page). Small/square, distinct
+   from the full-size action buttons it sits next to. */
+button.copy-btn {
+  padding: 4px 7px;
+  font-size: 0.9rem;
+  line-height: 1;
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+button.copy-btn:hover { color: var(--text); border-color: var(--accent); }
+
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 form.inline { display: inline; }

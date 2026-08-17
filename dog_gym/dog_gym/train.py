@@ -368,6 +368,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           home_start_prob_start=None, home_start_prob_end=None,
           home_start_curriculum_steps=None, slew_curriculum_start_step=None,
           slew_curriculum_decay_steps=None, max_slew_deg_per_s=None,
+          use_sde=False, sde_sample_freq=-1,
           wandb_project='dog-quadruped', wandb_entity=None):
     # Always on (2026-08-15, direct user request -- "wandb", always-on not
     # opt-in): locals() grabbed HERE, before any other local variable
@@ -490,6 +491,25 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
                                  # DecayScheduleCallback for optional decay over training.
             vf_coef=0.5,
             max_grad_norm=0.5,
+            # use_sde (2026-08-17, multi-agent review w/ Antigravity,
+            # chatbot.md "Analysis of Issue.md: The Secret 'Auto-Retract'
+            # Bungee Cord"): gSDE replaces PPO's default per-tick
+            # INDEPENDENT Gaussian action noise with noise sampled once
+            # per sde_sample_freq steps and held smoothly correlated in
+            # between (State-Dependent Exploration, Raffin et al. 2021).
+            # Directly targets a mechanism confirmed this session: at a
+            # tight slew clamp, a single tick's actual physical
+            # consequence is nearly identical regardless of how
+            # aggressive the commanded residual is (verified via a clean
+            # env deepcopy comparison -- reward and actuator ctrl came
+            # back byte-identical for a tiny action vs a drastic one), so
+            # independent per-tick noise can never accidentally produce
+            # the SUSTAINED multi-tick commitment a real leg swing needs
+            # -- gSDE's temporally-correlated noise can. Opt-in (default
+            # False, old behavior unchanged) -- see --use-sde/
+            # --sde-sample-freq.
+            use_sde=use_sde,
+            sde_sample_freq=sde_sample_freq,
             tensorboard_log=log_dir,
             policy_kwargs=policy_kwargs,
             verbose=1,
@@ -842,6 +862,22 @@ def main():
     parser.add_argument('--desired-kl', type=float, default=0.01,
                          help='--lr-schedule adaptive only: target KL divergence per update. Default '
                               'matches rsl_rl\'s own default (and go2_train_walk.py\'s).')
+    parser.add_argument('--use-sde', action='store_true',
+                         help='PPO only, --train only (2026-08-17): use gSDE (generalized State-'
+                              'Dependent Exploration) instead of PPO\'s default per-tick independent '
+                              'Gaussian action noise. gSDE samples noise once per --sde-sample-freq '
+                              'steps and holds it smoothly correlated in between, instead of '
+                              'redrawing independently every tick -- directly targets a confirmed '
+                              'mechanism where, under a tight slew clamp, a single tick\'s ACTUAL '
+                              'physical consequence is nearly identical regardless of how aggressive '
+                              'the commanded action is, so independent per-tick noise never '
+                              'accidentally produces the sustained multi-tick commitment a real leg '
+                              'swing needs. Default False -- old behavior (independent per-tick '
+                              'noise) unchanged unless passed.')
+    parser.add_argument('--sde-sample-freq', type=int, default=-1,
+                         help='--use-sde only: resample gSDE noise every N steps (-1 = SB3\'s own '
+                              'default, sample once per rollout collection instead of periodically '
+                              'mid-rollout).')
     parser.add_argument('--wandb-project', default='dog-quadruped',
                          help='Weights & Biases project every --train run logs to (always on -- '
                               'run `wandb login` once beforehand, see train.py\'s wandb.init() call).')
@@ -931,6 +967,7 @@ def main():
               args.home_start_prob_start, args.home_start_prob_end,
               args.home_start_curriculum_steps, args.slew_curriculum_start_step,
               args.slew_curriculum_decay_steps, args.max_slew_deg_per_s,
+              args.use_sde, args.sde_sample_freq,
               args.wandb_project, args.wandb_entity)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
