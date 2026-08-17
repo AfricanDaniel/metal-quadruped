@@ -879,7 +879,25 @@ def main():
   -->
   <compiler angle="degree" coordinate="local" inertiafromgeom="false" meshdir="{meshdir_rel}"/>
   <default>
-    <joint armature=".05" damping="1.5" limited="true" solimplimit="0 .8 .03" solreflimit=".02 1" stiffness="10"/>
+    <!-- stiffness="0" (2026-08-16, real-vs-sim torque investigation --
+         chatbot.md "why did a full-range sweep need 20N*m in sim but only
+         ~1.3N*m on real hardware"): the previous stiffness="10" here was
+         an UNREVIEWED leftover from this file's very first commit -- no
+         comment, no tuning, never touched since -- and creates a PASSIVE
+         SPRING pulling every leg joint back toward qpos=0 (torque =
+         -stiffness * qpos_rad, confirmed exactly via qfrc_passive: -20N*m
+         at qpos=114.6deg/2.0rad, -45N*m at 260deg). Real motors have no
+         such centering spring -- any "return to center" only comes from
+         ACTIVE PD position control, never a passive mechanical one.
+         Invisible during normal walking/standing (small qpos excursions
+         there keep this spring's contribution tiny next to the 20N*m
+         actuator ceiling) but dominates completely once a joint is asked
+         to move far from qpos=0, exactly what this diagnostic tool does.
+         The torso's own root joint already explicitly sets stiffness="0"
+         a few lines below -- this makes every leg joint consistent with
+         that same, correct choice instead of silently inheriting a
+         template default that was never meant for this robot. -->
+    <joint armature=".05" damping="1.5" limited="true" solimplimit="0 .8 .03" solreflimit=".02 1" stiffness="0"/>
     <geom conaffinity="0" condim="3" contype="1" friction=".4 .1 .1" rgba="0.8 0.6 .4 1" solimp="0.0 0.8 0.01" solref="0.02 1"/>
     <!-- rgba="0.5 0.5 0.5 1" here is MuJoCo's own compiled-in geom default,
          set explicitly (not left unset) so it doesn't inherit the parent

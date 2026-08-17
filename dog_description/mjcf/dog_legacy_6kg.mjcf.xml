@@ -100,7 +100,8 @@
   -->
   <compiler angle="degree" coordinate="local" inertiafromgeom="false" meshdir="../onshape_folders/robot_dog/assets"/>
   <default>
-    <joint armature=".05" damping="1.5" limited="true" solimplimit="0 .8 .03" solreflimit=".02 1" stiffness="10"/>
+    <!-- stiffness=0 (2026-08-16, real-vs-sim torque investigation -- see generate_dog_mjcf.py's own comment for the full story: the previous stiffness="10" was an unreviewed leftover creating a passive spring pulling every leg joint back toward qpos=0, invisible during normal walking/standing but dominating any large-excursion test). -->
+    <joint armature=".05" damping="1.5" limited="true" solimplimit="0 .8 .03" solreflimit=".02 1" stiffness="0"/>
     <geom conaffinity="0" condim="3" contype="1" friction=".4 .1 .1" rgba="0.8 0.6 .4 1" solimp="0.0 0.8 0.01" solref="0.02 1"/>
     <!-- rgba="0.5 0.5 0.5 1" here is MuJoCo's own compiled-in geom default,
          set explicitly (not left unset) so it doesn't inherit the parent
