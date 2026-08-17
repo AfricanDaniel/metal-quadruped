@@ -110,6 +110,39 @@
       <label><input type="checkbox" name="domain_randomization" checked> domain-randomization</label>
     </div>
 
+    {% if tab == 'sheep' %}
+    <div class="field-row">
+      <label style="display:flex;align-items:center;gap:6px">
+        GPU
+        <details class="info-tip">
+          <summary title="What does this mean?">i</summary>
+          <div class="info-tip-content">
+            Sets CUDA_VISIBLE_DEVICES so this run only sees the GPU you pick, instead of
+            sharing whichever one PyTorch defaults to. <strong>Lower utilization %</strong> means
+            that GPU currently has less other work running on it -- picking it gives your training
+            more uncontested compute, likely faster iteration. <strong>Higher utilization</strong>
+            means other users' jobs are already competing for that GPU's time, which can slow
+            your training down even though it's still technically running. This is a live reading
+            (refreshes each time you load this page), not a guarantee it'll stay that way for the
+            whole run.
+          </div>
+        </details>
+      </label>
+      <div class="radio-group">
+        <label><input type="radio" name="cuda_device" value="" checked> Any (no restriction)</label>
+        {% for g in gpu_status %}
+          <label>
+            <input type="radio" name="cuda_device" value="{{ g.index }}">
+            GPU {{ g.index }} &mdash; {{ g.util_percent }}% util, {{ (g.mem_used_mb / 1024) | round(1) }}/{{ (g.mem_total_mb / 1024) | round(1) }} GB
+          </label>
+        {% else %}
+          <label><input type="radio" name="cuda_device" value="0"> GPU 0 (status unavailable)</label>
+          <label><input type="radio" name="cuda_device" value="1"> GPU 1 (status unavailable)</label>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
     <h3>Position gains</h3>
     <div class="field-row">
       <label>mode</label>
@@ -185,6 +218,10 @@
         <div class="field-row">
           <label><input type="checkbox" name="init_from_enabled"> init-from</label>
           <input type="text" name="init_from" placeholder="path to a .zip checkpoint">
+        </div>
+        <div class="field-row">
+          <label><input type="checkbox" name="max_slew_deg_per_s_enabled"> max-slew-deg-per-s</label>
+          <input type="text" name="max_slew_deg_per_s" value="1000" placeholder="e.g. 1000">
         </div>
         <div class="field-row">
           <label><input type="checkbox" name="slew_curriculum_start_step_enabled"> slew-curriculum-start-step</label>

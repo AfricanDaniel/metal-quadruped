@@ -95,16 +95,4 @@
     <button type="submit" class="primary">Launch</button>
   </form>
 </div>
-
-<div class="card">
-  <h2 style="margin-top:0">half_dog_view.launch.py</h2>
-  <div class="subtitle" style="margin-bottom:10px">Single-leg RViz view. belt_multiplier is the lower-pulley angle per upper-pulley angle -- change sign to flip belt direction.</div>
-  <form method="post" action="{{ url_for('local_tools_half_dog_view') }}">
-    <div class="field-row">
-      <label><input type="checkbox" name="belt_multiplier_enabled" {{ 'checked' if last_half_dog_view_form.get('belt_multiplier_enabled') }}> belt_multiplier</label>
-      <input type="number" step="0.1" name="belt_multiplier" value="{{ last_half_dog_view_form.get('belt_multiplier', '1.0') }}" style="max-width:100px">
-    </div>
-    <button type="submit" class="primary" style="margin-top:8px">Launch</button>
-  </form>
-</div>
 {% endblock %}

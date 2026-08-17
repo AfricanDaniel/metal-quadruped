@@ -1,9 +1,11 @@
-"""Wraps five local dev/diagnostic tools this project's own workflow
+"""Wraps four local dev/diagnostic tools this project's own workflow
 already runs by hand from a terminal -- save_pose.py,
 dog_gym.manual_motor_control, dog_gym.verify_belt_decoupling, and the
-dog_view.launch.py/half_dog_view.launch.py RViz launch files (2026-08-16,
-user request: "add another section on the local tab ... some of them are
-almost the same just with different settings").
+dog_view.launch.py RViz launch file (2026-08-16, user request: "add
+another section on the local tab ... some of them are almost the same
+just with different settings"). half_dog_view.launch.py was dropped
+(2026-08-16) -- it depends on onshape_folders/urdf_half_dog_1/half_dog/
+urdf/half_dog.urdf, which doesn't exist in this checkout.
 
 Each is spawned as a DETACHED subprocess -- same fire-and-forget pattern
 as policy_actions.launch_view_training: these all open their own GUI
@@ -108,15 +110,3 @@ def launch_dog_view():
     """No configurable launch arguments -- DeclareLaunchArgument-free,
     confirmed directly against dog_view.launch.py."""
     return _launch(['ros2', 'launch', 'dog_description', 'dog_view.launch.py'])
-
-
-def launch_half_dog_view(form):
-    """ROS launch arguments use `arg:=value` (a single shell token), NOT
-    `--ros-args -p arg:=value` (that syntax is for ros2 run NODE
-    parameters) -- half_dog_view.launch.py declares belt_multiplier via
-    DeclareLaunchArgument, so `belt_multiplier:=<value>` is the correct
-    form here."""
-    cmd_parts = ['ros2', 'launch', 'dog_description', 'half_dog_view.launch.py']
-    if form.get('belt_multiplier_enabled') and form.get('belt_multiplier'):
-        cmd_parts += [f"belt_multiplier:={form['belt_multiplier']}"]
-    return _launch(cmd_parts)

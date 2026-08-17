@@ -257,3 +257,43 @@ def list_remote_running_trainings(host):
             continue
         trainings.append({'pid': int(pid_str), 'fname': m.group(1), 'cmd': cmdline})
     return trainings
+
+
+# --- sheep: GPU status (2026-08-16, user request -- "one gpu might have
+# less people using it, can you check if this is true") -----------------
+
+def list_sheep_gpu_status(host):
+    """[{index, util_percent, mem_used_mb, mem_total_mb}, ...] -- live
+    `nvidia-smi` read, one row per physical GPU, so the Trainings launch
+    form can show current load next to the CUDA_VISIBLE_DEVICES picker
+    (see training_actions.py's CUDA_VISIBLE_DEVICES comment for why GPU
+    selection is an env var prefix, not a train.py --flag). Always a
+    fresh live query, never cached -- utilization changes constantly as
+    other users' jobs come and go, a stale reading would defeat the whole
+    point of picking the less-loaded GPU. Empty list (not an error) if
+    nvidia-smi isn't reachable -- callers show "unknown" rather than fail
+    the whole Trainings page over it."""
+    cmd = 'nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits'
+    result = ssh.run(host, cmd, timeout_s=15)
+    gpus = []
+    if not result.ok:
+        return gpus
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) != 4:
+            continue
+        index, util, mem_used, mem_total = parts
+        try:
+            gpus.append({
+                'index': int(index),
+                'util_percent': int(util),
+                'mem_used_mb': int(mem_used),
+                'mem_total_mb': int(mem_total),
+            })
+        except ValueError:
+            continue
+    gpus.sort(key=lambda g: g['index'])
+    return gpus

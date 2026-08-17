@@ -233,8 +233,49 @@ form.inline { display: inline; }
   flex: 1;
 }
 
-.radio-group { display: flex; gap: 14px; flex: 1; }
+.radio-group { display: flex; gap: 14px; flex: 1; align-items: center; }
 .radio-group label { min-width: auto; color: var(--text); display: flex; align-items: center; gap: 4px; }
+
+/* Small click-to-reveal (i) icon -- <details>/<summary> so it needs no JS,
+   same disclosure mechanism this page already uses for "Advanced"/"Launch
+   command", just icon-sized instead of a full-width section. Closed by
+   default; the explanation text only takes up space once clicked. */
+.info-tip { position: relative; display: inline-block; }
+.info-tip summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--text-dim);
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  font-style: italic;
+  font-family: Georgia, serif;
+  user-select: none;
+}
+.info-tip summary::-webkit-details-marker { display: none; }
+.info-tip summary:hover { color: var(--text); border-color: var(--text); }
+.info-tip[open] summary { color: var(--text); border-color: var(--text); }
+.info-tip .info-tip-content {
+  position: absolute;
+  z-index: 10;
+  top: 22px;
+  left: 0;
+  width: 340px;
+  max-width: 60vw;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
 
 pre.log {
   background: #0b0c0f;

@@ -49,6 +49,11 @@ _ADVANCED_FIELDS = [
     # train.py's own default (no curriculum, fixed at 1000 the whole run).
     ('slew_curriculum_start_step', '--slew-curriculum-start-step', int),
     ('slew_curriculum_decay_steps', '--slew-curriculum-decay-steps', int),
+    # Starting slew ceiling itself (2026-08-16, user request -- "have
+    # MAX_SLEW_DEG_PER_S be a parameter I can change with a flag"),
+    # independent of the two curriculum fields above (those control
+    # whether/how it tightens, not what it starts at).
+    ('max_slew_deg_per_s', '--max-slew-deg-per-s', float),
 ]
 
 
@@ -285,6 +290,21 @@ _SHEEP_PREFIX = (f'cd {SHEEP_WS_ROOT} && source /opt/ros/*/setup.bash && '
 _SHEEP_LOG_DIR = f'{SHEEP_WS_ROOT}/.dashboard_logs'
 
 
+def _cuda_device_prefix(form):
+    """'' or 'CUDA_VISIBLE_DEVICES=<n> ' (2026-08-16, user request --
+    "one gpu might have less people using it, can you check if this is
+    true" -- confirmed true, sheep has 2 physical GPUs, load varies a
+    lot between them). This is a shell ENV VAR prefix on the command,
+    NOT a train.py --flag -- CUDA_VISIBLE_DEVICES has to be set before
+    the python process (and therefore torch/CUDA) even starts, train.py
+    itself has no hook to set it from inside, so it can't go through
+    build_train_args()/argparse the way every other field here does.
+    form['cuda_device'] is '', '0', or '1' ('' / missing = no
+    restriction, whatever the process's default visibility is)."""
+    device = form.get('cuda_device', '').strip()
+    return f'CUDA_VISIBLE_DEVICES={device} ' if device != '' else ''
+
+
 def launch_remote_training(form):
     fname = form.get('fname', '').strip()
     if not fname:
@@ -295,7 +315,7 @@ def launch_remote_training(form):
     ssh.run(SHEEP_HOST, f'mkdir -p {_SHEEP_LOG_DIR}', timeout_s=10)
     train_args = build_train_args(form)
     cmd_parts = [SHEEP_VENV_PYTHON, '-m', 'dog_gym.train'] + train_args
-    cmd = _SHEEP_PREFIX + ' '.join(cmd_parts)
+    cmd = _SHEEP_PREFIX + _cuda_device_prefix(form) + ' '.join(cmd_parts)
     log_path = f'{_SHEEP_LOG_DIR}/{fname}.stdout.log'
 
     pid = ssh.run_background(SHEEP_HOST, cmd, log_path)

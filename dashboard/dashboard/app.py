@@ -502,7 +502,6 @@ def local_tools():
         last_save_pose_form=procs.get_last_tool_form('save_pose'),
         last_mmc_form=procs.get_last_tool_form('manual_motor_control'),
         last_vbd_form=procs.get_last_tool_form('verify_belt_decoupling'),
-        last_half_dog_view_form=procs.get_last_tool_form('half_dog_view'),
     )
 
 
@@ -534,14 +533,6 @@ def local_tools_verify_belt_decoupling():
 def local_tools_dog_view():
     ok, info = local_tools_actions.launch_dog_view()
     flash('Launched dog_view.launch.py.' if ok else f'Failed to launch: {info}', 'success' if ok else 'error')
-    return redirect(url_for('local_tools'))
-
-
-@app.route('/local/tools/half_dog_view', methods=['POST'])
-def local_tools_half_dog_view():
-    procs.set_last_tool_form('half_dog_view', request.form)
-    ok, info = local_tools_actions.launch_half_dog_view(request.form)
-    flash('Launched half_dog_view.launch.py.' if ok else f'Failed to launch: {info}', 'success' if ok else 'error')
     return redirect(url_for('local_tools'))
 
 
@@ -1070,6 +1061,7 @@ def sheep_trainings():
         build=build_actions.sheep_build_status(),
         build_url=url_for('sheep_trainings_build'),
         build_status_url=url_for('sheep_trainings_build_status'),
+        gpu_status=remote_fs.list_sheep_gpu_status(SHEEP_HOST),
     )
 
 
