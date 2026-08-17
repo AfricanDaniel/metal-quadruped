@@ -96,6 +96,8 @@ def launch_verify_belt_decoupling(form):
         cmd_parts += ['--amplitude-deg', form['amplitude_deg']]
     if form.get('full_range'):
         cmd_parts += ['--full-range']
+    if form.get('no_coupling'):
+        cmd_parts += ['--no-coupling']
     if form.get('period_s_enabled') and form.get('period_s'):
         cmd_parts += ['--period-s', form['period_s']]
     if form.get('duration_s_enabled') and form.get('duration_s'):

@@ -18,6 +18,11 @@ real fix.
 Usage:
     python3 -m dog_gym.verify_belt_decoupling [--leg a] [--amplitude-deg 30] [--period-s 4] [--duration-s 30]
     python3 -m dog_gym.verify_belt_decoupling --leg a --full-range   # sweep the thigh's whole joint range
+    python3 -m dog_gym.verify_belt_decoupling --leg a --no-coupling  # illustrate the OPPOSITE
+                                                                      # case for comparison --
+                                                                      # calf swings WITH the
+                                                                      # thigh, like a normal
+                                                                      # non-decoupled elbow
 
 Needs a display (mujoco.viewer.launch_passive) -- run this on your dev
 machine, not the headless training VM.
@@ -62,6 +67,30 @@ def parse_args():
                          "still applies normally to the swinging leg itself.")
     p.add_argument('--pin-height-m', type=float, default=0.6,
                     help='--upside-down only: world z height the torso is held at')
+    p.add_argument('--no-coupling', action='store_true',
+                    help="illustrate the OPPOSITE case, for comparison (2026-08-17, user "
+                         "request -- 'show what the robot would look like if it was not "
+                         "coupled and the thigh was swinging'): instead of holding the calf's "
+                         "ABSOLUTE world orientation fixed (the real, working belt-decoupled "
+                         "behavior this tool normally verifies), holds its RAW thigh-relative "
+                         "hinge angle fixed instead -- exactly what a normal, non-decoupled "
+                         "elbow joint would do, so the calf visibly swings along WITH the "
+                         "thigh the whole time. Implemented by zeroing calf_belt_sign for this "
+                         "one leg (in-memory on this process's own env instance only, never "
+                         "touching the model file) so DogEnv's own ctrl_calf = action_calf + "
+                         "calf_belt_sign*thigh_qpos formula reduces to plain ctrl_calf = "
+                         "action_calf -- an EARLIER version instead tried to feed action_calf a "
+                         "value that CANCELS the unmodified formula every tick, which needed "
+                         "action_calf to swing from +11.6 to -230.6deg across a --full-range "
+                         "sweep, but the calf's action_space is bounded to [0, 206.1]deg -- "
+                         "step()'s own np.clip(action, action_space.low, action_space.high), "
+                         "its very first line, silently clamped that and broke the "
+                         "illustration specifically during large excursions (caught via user "
+                         "report: 'the calf does not stay tucked in like it's supposed to' "
+                         "when combined with --full-range). Zeroing the coefficient instead "
+                         "keeps the fed value small/bounded (just the calf's own starting "
+                         "angle) so it never needs clipping, regardless of how far the thigh "
+                         "sweeps.")
     return p.parse_args()
 
 
@@ -104,6 +133,30 @@ def main():
     calf_hold_target = action[calf_idx]  # ...this is the one being checked
     R0 = calf_world_rotmat()
 
+    if args.no_coupling:
+        # calf_idx/calf_belt_sign are built by DogEnv iterating over its
+        # OWN calf_idx array in the same order (see that constant's own
+        # comment in dog_env.py) -- this position lookup finds where
+        # THIS script's chosen leg lands in that order.
+        belt_pos = list(env.calf_idx).index(calf_idx)
+        # Read the calf's CURRENT raw (thigh-relative) hinge angle
+        # directly off qpos -- unambiguous, doesn't depend on
+        # calf_belt_sign at all (unlike calf_hold_target above, which
+        # was captured through the STILL-ACTIVE belt compensation).
+        raw_calf_hold_target = env.data.qpos[env.motor_qpos_adr[calf_idx]]
+        # Zero the compensation coefficient itself (in-memory, this
+        # process's own env instance only -- never touches the model
+        # file) so DogEnv's own ctrl_calf = action_calf +
+        # calf_belt_sign*thigh_qpos formula reduces to plain ctrl_calf =
+        # action_calf. See this flag's own --help for why this replaced
+        # an earlier, more complex "feed action_calf a cancelling value"
+        # approach that broke under --full-range (action_space clipping).
+        env.calf_belt_sign[belt_pos] = 0.0
+        print(f"--no-coupling: illustrating the OPPOSITE of the fix -- holding leg_{args.leg}'s "
+              f"calf's RAW thigh-relative hinge fixed (like a normal, non-decoupled elbow) "
+              f"instead of its absolute world orientation. The calf SHOULD visibly swing "
+              f"along with the thigh now.")
+
     period_s = args.period_s
     if args.full_range:
         jid = env.model.joint(f'leg_{args.leg}_thigh').id
@@ -137,7 +190,11 @@ def main():
         print(f"Sweeping leg_{args.leg}'s thigh +-{args.amplitude_deg:.0f}deg around "
               f"{np.degrees(action[thigh_idx]):.1f}deg, holding leg_{args.leg}'s calf fixed at "
               f"{np.degrees(calf_hold_target):.1f}deg (absolute).")
-    print('Watch the calf in the viewer -- it should barely move while the thigh swings.')
+    if args.no_coupling:
+        print('Watch the calf in the viewer -- it should visibly swing WITH the thigh now '
+              '(the illustration, not the real fix).')
+    else:
+        print('Watch the calf in the viewer -- it should barely move while the thigh swings.')
     print('Close the viewer window to stop.' if args.duration_s <= 0
           else f'Running for {args.duration_s:.0f}s (or close the viewer window to stop early).')
 
@@ -149,7 +206,12 @@ def main():
         if args.duration_s > 0 and time.time() - start > args.duration_s:
             break
         action[thigh_idx] = thigh_target(t)
-        action[calf_idx] = calf_hold_target
+        # --no-coupling: calf_belt_sign was zeroed above, so this same
+        # simple fixed-target assignment (identical to the normal/coupled
+        # branch) now produces ctrl_calf = raw_calf_hold_target directly,
+        # with no cancellation math and no risk of the calf's own bounded
+        # action_space clipping it during a wide --full-range sweep.
+        action[calf_idx] = raw_calf_hold_target if args.no_coupling else calf_hold_target
         # terminated/truncated are ignored here on purpose -- this tool
         # manually drives the pose every step rather than running a real
         # RL episode, and (when --upside-down) the robot is permanently
