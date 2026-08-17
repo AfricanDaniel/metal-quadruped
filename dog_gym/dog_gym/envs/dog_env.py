@@ -401,6 +401,38 @@ WALK_PITCH_PENALTY_WEIGHT = 3.0
 # own sign convention.
 WALK_TARGET_PITCH_RAD = np.radians(10)
 
+# Built-in forward lean for the 'home' reset pose itself (2026-08-16,
+# multi-agent review w/ Antigravity, chatbot.md "no_stiffness_slew_100/
+# _200: still falling backward despite WALK_TARGET_PITCH_RAD" -- her
+# option (c), implemented first per her recommendation): live-rollout
+# measurement on no_stiffness_slew_100/_200 checkpoints found pitch
+# consistently and exclusively NEGATIVE (backward) through the entire
+# 'home'->standing RISE phase (worst excursions -8 to -12deg, always
+# during the climb specifically, occasionally self-correcting once
+# height stabilizes) despite WALK_TARGET_PITCH_RAD already targeting
+# +10deg the whole time -- the reward gradient alone wasn't enough to
+# overcome whatever rigid-body dynamics make a fast rise from a LEVEL
+# crouch tip backward. Antigravity's framing: give the rise a mechanical
+# head start instead of asking PPO to fight all the way from level to
+# +10deg under an adverse transient. 8deg chosen to roughly cancel the
+# median observed backward excursion (so the rise starts near-level
+# instead of needing to travel the full 0->+10deg gap while already
+# fighting a ~-8deg tendency), not itself the +10deg target -- reset()
+# applies this via the free joint's own quaternion (qpos[3:7]), 'home'
+# start only ('standing' start doesn't have a rise phase, see reset()'s
+# own comment for why). Placeholder magnitude, not swept -- retrain and
+# re-measure before assuming 8 is the right number.
+HOME_START_FORWARD_LEAN_RAD = np.radians(8)
+
+# Weight for rise_backward_pitch_penalty in _compute_reward_walk() --
+# Antigravity's option (b), layered on top of HOME_START_FORWARD_LEAN_RAD
+# above (see that constant's comment and the term's own comment at its
+# computation site). Deliberately higher than WALK_PITCH_PENALTY_WEIGHT
+# (3.0) -- a more decisive, asymmetric deterrent for backward pitch
+# specifically during the rise, not a general pitch-tracking term.
+# Placeholder, not swept.
+WALK_RISE_BACKWARD_PITCH_PENALTY_WEIGHT = 5.0
+
 # pitch_gate's sigma (see pitch_penalty's comment/pitch_gate's own
 # comment in _compute_reward_walk() for the full mechanism) --
 # DELIBERATELY its own constant now, decoupled from the termination
@@ -2163,6 +2195,18 @@ class DogEnv(gym.Env):
                 # survive falling through it while already being scored/
                 # trained on its actions.
                 self.data.qpos[2] = SIT_HEIGHT_M
+                # HOME_START_FORWARD_LEAN_RAD (2026-08-16): bias the free
+                # joint's own orientation, not just height -- see that
+                # constant's comment for why. MuJoCo free-joint quat is
+                # qpos[3:7] in (w, x, y, z) order; confirmed empirically
+                # (not assumed) that a NEGATIVE angle about the local/
+                # world X axis produces POSITIVE (forward) _torso_pitch_
+                # rad() in this model's frame, matching the sign that
+                # formula's own docstring documents. 'standing' start
+                # (branch above) doesn't get this -- it starts already at
+                # target height with no rise phase to bias.
+                half = HOME_START_FORWARD_LEAN_RAD / 2.0
+                self.data.qpos[3:7] = [np.cos(-half), np.sin(-half), 0.0, 0.0]
         elif self.task == 'stand':
             # FIXED 2026-08-04 (user question: "this is a policy to stand
             # up from a sitting position ON THE GROUND, will this still
@@ -4304,6 +4348,32 @@ class DogEnv(gym.Env):
         # comment for why.
         pitch_penalty = -((self._torso_pitch_rad() - WALK_TARGET_PITCH_RAD) ** 2)
 
+        # Phase-gated EXTRA penalty for backward pitch specifically DURING
+        # the 'home'->standing rise (2026-08-16, Antigravity's option (b),
+        # chatbot.md same title as HOME_START_FORWARD_LEAN_RAD above --
+        # layered on top of that reset-pose bias, not instead of it, per
+        # her explicit recommendation to combine both). pitch_penalty
+        # above already targets WALK_TARGET_PITCH_RAD everywhere, but
+        # measured too weak on its own during the rise specifically
+        # (-0.16/tick mean weighted contribution, not obviously starved
+        # the way swing_fairness_penalty was, but not winning against the
+        # rise's backward-tipping dynamics either). This term ONLY fires
+        # for pitch on the WRONG (backward, i.e. negative) side of level
+        # -- min(0, pitch_rad) is 0 for any forward lean, so a policy
+        # already leaning forward pays nothing extra here -- scaled by
+        # (1 - climb_progress) so it's strongest at climb_progress=0
+        # (fresh 'home' reset) and fades to exactly 0 once
+        # _walk_target_height_m is reached, leaving steady-state
+        # standing/walking reward completely untouched (Antigravity's
+        # explicit "leave steady-state behavior undistorted" condition).
+        # Weight deliberately higher than WALK_PITCH_PENALTY_WEIGHT
+        # (3.0) -- this is meant to be a more decisive, asymmetric
+        # deterrent for exactly the observed failure mode, not a general
+        # pitch-tracking term. Placeholder, not swept -- retrain and
+        # re-measure (same live-rollout methodology used to find this
+        # problem) before assuming 5.0 is the right number.
+        rise_backward_pitch_penalty = -(1.0 - climb_progress) * (min(0.0, self._torso_pitch_rad()) ** 2)
+
         # -(lateral_velocity)^2, -(yaw_rate)^2 -- see WALK_LATERAL_VEL_
         # PENALTY_WEIGHT/WALK_YAW_RATE_PENALTY_WEIGHT's comment above for
         # the full "help WALK walk straight" reasoning. lateral_velocity
@@ -4433,6 +4503,7 @@ class DogEnv(gym.Env):
             # nothing else in this reward currently provides that densely.
             + 1.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
+            + 1.0 * WALK_RISE_BACKWARD_PITCH_PENALTY_WEIGHT * rise_backward_pitch_penalty
             + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
             + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty
             + 1.0 * WALK_HEADING_DEVIATION_PENALTY_WEIGHT * heading_deviation_penalty
