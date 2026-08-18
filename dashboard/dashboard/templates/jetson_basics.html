@@ -36,16 +36,19 @@
   <pre class="log" id="hw-log">{{ hw_status.log_tail }}</pre>
 </div>
 
+{% include "_actuator_params_card.html" %}
+
 <div class="card">
   <div class="field-row">
     <form method="post" action="{{ set_home_url }}"><button type="submit">set_home</button></form>
   </div>
 
   <h3>Go to pose</h3>
-  <div class="field-row">
-    <form method="post" action="{{ go_to_pose_url }}"><input type="hidden" name="pose_name" value="standing"><button type="submit">go_to_pose: standing</button></form>
-    <form method="post" action="{{ go_to_pose_url }}"><input type="hidden" name="pose_name" value="home"><button type="submit">go_to_pose: home</button></form>
-  </div>
+  <form method="post" action="{{ go_to_pose_url }}" class="field-row">
+    <input type="number" step="any" name="pose_speed_deg_s" placeholder="speed deg/s (blank = default)" style="max-width:170px">
+    <button type="submit" name="pose_name" value="standing">go_to_pose: standing</button>
+    <button type="submit" name="pose_name" value="home">go_to_pose: home</button>
+  </form>
 
   <h3>Motors</h3>
   <form method="post" action="{{ read_motor_url }}" class="field-row">

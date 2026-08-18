@@ -391,6 +391,49 @@ WALK_ANGULAR_VEL_PENALTY_WEIGHT = -0.2
 # Placeholder, not a formal sweep.
 WALK_PITCH_PENALTY_WEIGHT = 3.0
 
+# Weight for -( _torso_roll_rad() )**2 in the WALK task only -- mirrors
+# WALK_PITCH_PENALTY_WEIGHT's exact shape and reasoning (2026-08-17,
+# multi-agent review w/ Antigravity, chatbot.md "Why the reward
+# plateaus" -- her explicit recommendation, "add a roll_penalty
+# mirroring pitch_penalty's exact shape"). No target offset (unlike
+# WALK_TARGET_PITCH_RAD's deliberate forward lean) -- roll has no
+# preferred non-zero direction, just penalized for any deviation from
+# level.
+#
+# RAISED 3.0 -> 5.0 (2026-08-17, same chatbot.md thread, "roll_penalty
+# tuning" round): direct rollout measurement of PPO_28500000_
+# roll_fix_standing_v1 (a checkpoint trained with this penalty live for
+# its entire 28.5M steps) found it still dying to a roll-triggered
+# _is_fallen() (roll=20.05deg, pitch=-0.01deg at the exact terminating
+# tick) -- confirms the additive penalty alone wasn't decisive. Matches
+# WALK_RISE_BACKWARD_PITCH_PENALTY_WEIGHT's own precedent (5.0,
+# "deliberately higher... more decisive asymmetric deterrent") rather
+# than an arbitrary bump. Paired with roll_gate below (the PRIMARY fix,
+# mirroring pitch_gate's own already-proven mechanism for the identical
+# "additive penalty too weak against forward_velocity_reward" failure
+# mode) -- this weight increase is the secondary, additive half of the
+# fix, not relied on alone. Placeholder, not independently swept.
+WALK_ROLL_PENALTY_WEIGHT = 5.0
+
+# Sigma for roll_gate in _compute_reward_walk() (2026-08-17, same
+# "roll_penalty tuning" round) -- mirrors WALK_PITCH_GATE_SIGMA_RAD's
+# mechanism exactly (see pitch_gate's own PITCH-GATED comment for the
+# full rationale: an additive penalty was structurally unable to
+# outweigh forward_velocity_reward's dominant weight-5.0 term during a
+# genuine tip, so the fix gates the reward ITSELF rather than relying on
+# a competing additive term to win a tug-of-war). TIGHTER than
+# WALK_PITCH_GATE_SIGMA_RAD (15deg) -- unlike pitch, roll has no
+# legitimate non-zero target (WALK_TARGET_PITCH_RAD's deliberate lean
+# has no roll equivalent), so there's no reason to tolerate as wide a
+# window before the gate starts biting. 10deg chosen so the gate is
+# already meaningfully suppressing forward credit across Antigravity's
+# named 15-20deg "danger zone" (chatbot.md "roll_penalty tuning"):
+# exp(-(15/10)**2/2)=0.32, exp(-(20/10)**2/2)=0.135 at those two points
+# -- a real, steep falloff exactly where she flagged it, vs pitch_gate's
+# own much gentler falloff at the same offsets (its sigma is 50% wider).
+# Placeholder, not independently swept.
+WALK_ROLL_GATE_SIGMA_RAD = np.radians(10)
+
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
 # multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
 # and forward lean" -- sim-to-real motivation: user wants the trained
@@ -593,6 +636,42 @@ SWING_FAIRNESS_TARGET_DUTY_CYCLE = 0.75
 SWING_FAIRNESS_GATE_START = 0.2
 SWING_FAIRNESS_GATE_FULL = 0.4
 WALK_SWING_FAIRNESS_WEIGHT = 5.0
+
+# front_clearance_reward/back_clearance_reward (2026-08-17, multi-agent
+# review w/ Antigravity, chatbot.md "three follow-up asks... back-leg
+# dragging") -- replaces the single foot_clearance_reward's all-4-leg
+# average with two separate per-group scores, since the aggregate let a
+# well-swinging front leg's near-1.0 score hide a poorly-swinging back
+# leg's near-0 score in the mean (measured directly on PPO_11000000_
+# init_from_hf_v17_v1: front legs ~4.5cm mean swing height, back legs
+# only ~2.0cm -- roughly half). Weight parity (both 2.0, matching the
+# ORIGINAL pre-split foot_clearance_reward weight exactly) per
+# Antigravity's explicit (b) answer -- "start with equal weight...
+# artificially higher risks over-correcting into an exaggerated,
+# inefficient gallop." front_clearance_reward keeps the exact PRE-split
+# behavior (same 0.5+0.5*forward_progress outer gate at its call site,
+# unchanged) since it was already working; only back_clearance_reward is
+# NEW and gets its own gate below.
+WALK_FRONT_CLEARANCE_WEIGHT = 2.0
+WALK_BACK_CLEARANCE_WEIGHT = 2.0
+
+# Gate for back_clearance_reward specifically (2026-08-17, same round)
+# -- Antigravity's explicit (c) answer: introducing a stark new penalty
+# on a policy that's already settled into an asymmetric front-leg-
+# dominant gait risks a "massive value function shock" and could
+# collapse a currently-working gait, needs a RAMPED introduction rather
+# than live immediately. Mirrors SWING_FAIRNESS_GATE_START/_FULL's exact
+# shape/reasoning (own separate constants, not reused directly, so this
+# term's introduction pace stays independently tunable) -- 0.0 below
+# START, linearly ramping to full strength by FULL, gated on
+# forward_progress rather than raw step count (same rationale as
+# swing_fairness's own gate: self-paced against actual demonstrated
+# competence, not a blind wall-clock schedule, and needs no new
+# training-step-count curriculum/CLI plumbing the way a step-gated
+# version would). Same literal 0.2/0.4 values as swing_fairness's own
+# already-validated pace, as a starting point -- not independently swept.
+WALK_BACK_CLEARANCE_GATE_START = 0.2
+WALK_BACK_CLEARANCE_GATE_FULL = 0.4
 
 # swing_amplitude_penalty (2026-08-14, multi-agent review w/
 # Antigravity, chatbot.md "proposing a new swing-AMPLITUDE-discrepancy
@@ -2926,6 +3005,27 @@ class DogEnv(gym.Env):
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         return np.arcsin(np.clip(-xmat[2, 1], -1.0, 1.0))
 
+    def _torso_roll_rad(self):
+        """Side-to-side tilt (radians): 0 = level, positive = right side
+        down. World-z component of the torso's local RIGHT (x) axis --
+        same xmat layout convention as _torso_up_z()/_torso_pitch_rad()
+        (columns = local axes in world coords). Mirrors
+        _torso_pitch_rad()'s own reasoning exactly (2026-08-17,
+        multi-agent review w/ Antigravity, chatbot.md "Why the reward
+        plateaus" -- confirmed via direct measurement that up_z's
+        cosine-based upright_reward is equally insensitive to a
+        sustained ROLL as it was already known to be for pitch, but
+        unlike pitch, roll had NO dedicated penalty term at all until
+        now. Measured roll growing 0->~20deg, completely unopposed, on
+        two separate training runs' checkpoints (no_stiffness_gsde_
+        interp_kp35, test_new_walk_v1), BOTH dying via this exact axis
+        while pitch stayed comparatively well-controlled by that point
+        -- roll had become the dominant, structurally-unaddressed
+        failure mode once pitch's own fixes (HOME_START_FORWARD_LEAN_RAD,
+        rise_backward_pitch_penalty) started working)."""
+        xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
+        return np.arcsin(np.clip(xmat[2, 0], -1.0, 1.0))
+
     def _torso_yaw_rad(self):
         """Heading angle (radians) about the world z-axis: 0 = facing the
         model's native forward (+y) direction, matching atan2's standard
@@ -3041,7 +3141,7 @@ class DogEnv(gym.Env):
         pairs_offset = 1.0 if a != b else -1.0
         return (pair_ad_synced + pair_bc_synced + pairs_offset) / 3.0
 
-    def _foot_clearance_reward(self):
+    def _foot_clearance_reward(self, leg_indices=None):
         """Rewards a SWINGING (non-contacting) foot for actually being
         elevated, not dragged along the ground -- adapted from the
         standard feet_air_time/foot_clearance pattern used in quadruped
@@ -3092,18 +3192,34 @@ class DogEnv(gym.Env):
         own history -- narrowed from an original sigma==target) penalizes
         deviation in EITHER direction -- both dragging (foot_z=0) and
         over-jumping (foot_z=0.2, ~5.7 sigma away) score low, only
-        genuine near-target-height swings score close to 1.0."""
+        genuine near-target-height swings score close to 1.0.
+
+        leg_indices (2026-08-17, multi-agent review w/ Antigravity,
+        chatbot.md "three follow-up asks... back-leg dragging"): optional
+        subset of self.foot_site_ids indices to score, default None =
+        all 4 (original, unchanged behavior). Added because the plain
+        all-4-leg average lets a well-swinging front leg's near-1.0 score
+        hide a poorly-swinging back leg's near-0 score in the mean --
+        confirmed directly on PPO_11000000_init_from_hf_v17_v1: front
+        legs (a,b) swung to ~4.5cm mean height (61/51 of 150 ticks spent
+        swinging), back legs (c,d) only ~2.0cm (25/16 of 150 ticks) --
+        exactly the dilution this parameter exists to let a caller work
+        around, by scoring front/back as two SEPARATE calls (see
+        front_clearance_reward/back_clearance_reward in
+        _compute_reward_walk()) instead of one pre-averaged blend."""
         contacted = self._foot_contact_per_leg()
         swinging = [not c for c in contacted]
-        if not any(swinging):
-            return 0.0  # no leg is swinging right now -- neutral, NOT rewarded (see bug note above)
+        indices = leg_indices if leg_indices is not None else range(len(self.foot_site_ids))
+        swinging_indices = [i for i in indices if swinging[i]]
+        if not swinging_indices:
+            return 0.0  # no (selected) leg is swinging right now -- neutral, NOT rewarded (see bug note above)
         total = 0.0
         sigma = FOOT_CLEARANCE_SIGMA_M
-        for i, site_id in enumerate(self.foot_site_ids):
-            if swinging[i]:
-                foot_z = max(self.data.site_xpos[site_id][2], 0.0)
-                total += float(np.exp(-((foot_z - FOOT_CLEARANCE_TARGET_M) ** 2) / (2 * sigma ** 2)))
-        return total / sum(swinging)
+        for i in swinging_indices:
+            site_id = self.foot_site_ids[i]
+            foot_z = max(self.data.site_xpos[site_id][2], 0.0)
+            total += float(np.exp(-((foot_z - FOOT_CLEARANCE_TARGET_M) ** 2) / (2 * sigma ** 2)))
+        return total / len(swinging_indices)
 
     def _calf_swing_motion_reward(self):
         """Rewards a SWINGING leg's calf (knee) for actively moving, not
@@ -4032,6 +4148,28 @@ class DogEnv(gym.Env):
                 / (2 * WALK_PITCH_GATE_SIGMA_RAD ** 2))
             forward_velocity_reward = forward_velocity_reward * pitch_gate
 
+        # ROLL-GATED (2026-08-17, multi-agent review w/ Antigravity,
+        # chatbot.md "roll_penalty tuning" -- her diagnosis: PPO_28500000_
+        # roll_fix_standing_v1 still dies to a roll-triggered _is_fallen()
+        # (measured directly: roll=20.05deg, pitch=-0.01deg at the exact
+        # terminating tick) despite roll_penalty being additive and live
+        # for that run's entire 28.5M steps -- the same "additive penalty
+        # too weak against forward_velocity_reward's dominant weight"
+        # failure mode pitch_penalty already hit (see PITCH-GATED comment
+        # above), same fix applied: gate the reward itself instead of
+        # relying on an additive term to win a tug-of-war. Mirrors
+        # pitch_gate exactly, centered on 0 (no roll target, unlike
+        # pitch's deliberate lean) with its own tighter
+        # WALK_ROLL_GATE_SIGMA_RAD (see that constant's comment). Same
+        # "only gate when already earning positive credit" condition as
+        # pitch_gate -- this stops REWARDING fast-while-rolling, it
+        # doesn't shrink roll_penalty's own off-target penalty when
+        # forward velocity is already off too.
+        if forward_velocity_reward > 0:
+            roll_gate = np.exp(
+                -(self._torso_roll_rad() ** 2) / (2 * WALK_ROLL_GATE_SIGMA_RAD ** 2))
+            forward_velocity_reward = forward_velocity_reward * roll_gate
+
         # ===== STAND+WALK ONLY SECTION (walk_start_pose='random') =====
         # Everything in this block is scoped behind is_stand_and_walk, and
         # ONLY affects walk_start_pose='random' episodes -- 'standing'-only
@@ -4420,7 +4558,25 @@ class DogEnv(gym.Env):
         # liftoffs, which is what needs encouraging in order to ever start
         # moving in the first place. Split the difference: never fully zero,
         # but scaled down to half strength until real forward progress exists.
-        foot_clearance_reward = self._foot_clearance_reward() * (0.5 + 0.5 * forward_progress)
+        # SPLIT into front_clearance_reward/back_clearance_reward
+        # (2026-08-17, see WALK_FRONT_CLEARANCE_WEIGHT/WALK_BACK_
+        # CLEARANCE_WEIGHT/WALK_BACK_CLEARANCE_GATE_START's comments for
+        # the full reasoning) -- self.foot_site_ids order is
+        # [leg_a, leg_b, leg_c, leg_d] = [front, front, back, back].
+        # front_clearance_reward keeps the ORIGINAL formula/gate exactly
+        # (same 0.5+0.5*forward_progress partial gate as before the
+        # split -- unchanged behavior for front legs).
+        front_clearance_reward = self._foot_clearance_reward(leg_indices=[0, 1]) * (0.5 + 0.5 * forward_progress)
+        # back_clearance_reward is NEW -- same partial gate as front,
+        # PLUS its own additional ramp (back_clearance_gate) so this
+        # brand-new penalty doesn't hit an already-converged, front-leg-
+        # dominant gait at full strength immediately.
+        back_clearance_gate = np.clip(
+            (forward_progress - WALK_BACK_CLEARANCE_GATE_START)
+            / (WALK_BACK_CLEARANCE_GATE_FULL - WALK_BACK_CLEARANCE_GATE_START),
+            0.0, 1.0)
+        back_clearance_reward = (self._foot_clearance_reward(leg_indices=[2, 3])
+                                  * (0.5 + 0.5 * forward_progress) * back_clearance_gate)
 
         # NEW 2026-08-04 (user request, see _calf_swing_motion_reward()'s
         # own docstring for the full "stiff-legged gait" diagnosis this
@@ -4522,6 +4678,11 @@ class DogEnv(gym.Env):
         # re-centered the same way -- deliberately deferred, see its own
         # comment for why.
         pitch_penalty = -((self._torso_pitch_rad() - WALK_TARGET_PITCH_RAD) ** 2)
+
+        # roll_penalty (2026-08-17, mirrors pitch_penalty exactly, see
+        # WALK_ROLL_PENALTY_WEIGHT/_torso_roll_rad()'s own comments) --
+        # no target offset, roll has no preferred non-zero direction.
+        roll_penalty = -(self._torso_roll_rad() ** 2)
 
         # Phase-gated EXTRA penalty for backward pitch specifically DURING
         # the 'home'->standing rise (2026-08-16, Antigravity's option (b),
@@ -4659,7 +4820,8 @@ class DogEnv(gym.Env):
             # sigma narrowed, a real drag/tuck failure now differs enough
             # from a good swing that this weight actually moves the
             # gradient, without approaching forward_velocity_reward's 5.0.
-            + 2.0 * foot_clearance_reward
+            + WALK_FRONT_CLEARANCE_WEIGHT * front_clearance_reward
+            + WALK_BACK_CLEARANCE_WEIGHT * back_clearance_reward
             + 1.0 * foot_slip_penalty
             + 1.0 * touchdown_velocity_penalty
             + 0.5 * feet_air_time_reward
@@ -4678,6 +4840,7 @@ class DogEnv(gym.Env):
             # nothing else in this reward currently provides that densely.
             + 1.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
+            + 1.0 * WALK_ROLL_PENALTY_WEIGHT * roll_penalty
             + 1.0 * WALK_RISE_BACKWARD_PITCH_PENALTY_WEIGHT * rise_backward_pitch_penalty
             + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
             + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty

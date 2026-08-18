@@ -1,0 +1,16 @@
+<!-- Shared "Actuator params" card (2026-08-18, user request -- also wanted
+     on the Deploy page, not just Basics, so it doesn't need its own tab
+     switch). Included from both jetson_basics.html and
+     jetson_deploy_detail.html -- both pass the same last_actuator_params/
+     set_actuator_params_url context variables, so edit this ONE file for
+     either page instead of two copies drifting apart. -->
+<div class="card">
+  <h3 style="margin-top:0">Actuator params</h3>
+  <div class="subtitle" style="margin-bottom:10px">position_kp/position_kd/pose_speed_deg_s on the running actuator node -- "Set live" applies immediately via ros2 param set (no restart), and is also remembered so the NEXT hardware bringup start launches with these same values instead of reverting to the hardcoded defaults.</div>
+  <form method="post" action="{{ set_actuator_params_url }}" class="field-row">
+    <input type="number" step="any" name="position_kp" placeholder="position_kp" value="{{ last_actuator_params.get('position_kp', '') }}" style="max-width:120px">
+    <input type="number" step="any" name="position_kd" placeholder="position_kd" value="{{ last_actuator_params.get('position_kd', '') }}" style="max-width:120px">
+    <input type="number" step="any" name="pose_speed_deg_s" placeholder="pose_speed_deg_s" value="{{ last_actuator_params.get('pose_speed_deg_s', '') }}" style="max-width:140px">
+    <button type="submit" class="primary">Set live</button>
+  </form>
+</div>

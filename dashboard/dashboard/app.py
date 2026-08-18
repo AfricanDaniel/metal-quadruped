@@ -43,6 +43,23 @@ _POLL_ENDPOINTS = {
 
 _CONNECT_GATE_ENDPOINTS = {'jetson_root', 'sheep_root'}
 
+# Fallback values shown in the "Actuator params" card (2026-08-18, user
+# request) before anything's ever been set/remembered -- kp=60/kd=8
+# match this project's own documented real firmware gain (see actuator/
+# README.md), speed=60 a reasonable starting ramp speed, so the form
+# starts from a sensible real baseline instead of blank.
+_ACTUATOR_PARAM_DEFAULTS = {'position_kp': '60', 'position_kd': '8', 'pose_speed_deg_s': '60'}
+
+
+def _last_actuator_params():
+    """Remembered actuator params (procs.set_last_tool_form('actuator_
+    params', ...), shared across the Basics AND Deploy pages -- setting
+    it on either page updates both), falling back to _ACTUATOR_PARAM_
+    DEFAULTS for any value that's missing or was left blank."""
+    remembered = procs.get_last_tool_form('actuator_params')
+    return {name: remembered.get(name) or default
+            for name, default in _ACTUATOR_PARAM_DEFAULTS.items()}
+
 
 @app.before_request
 def _remember_tab_position():
@@ -213,12 +230,15 @@ def local_checkpoints(folder, fname):
     checkpoints = [
         {**c, 'url': url_for('local_detail', folder=folder, fname=fname, basename=c['basename']),
          'view_url': url_for('local_view_training', folder=folder, fname=fname, basename=c['basename']),
-         'delete_url': url_for('local_delete_checkpoint', folder=folder, fname=fname, basename=c['basename'])}
+         'delete_url': url_for('local_delete_checkpoint', folder=folder, fname=fname, basename=c['basename']),
+         'last_start_pose': procs.get_last_tool_form(f"view_training:{c['basename']}").get('start_pose', 'home'),
+         'last_max_slew_deg_per_s': procs.get_last_tool_form(f"view_training:{c['basename']}").get('max_slew_deg_per_s', '')}
         for c in local_fs.list_checkpoints(folder, fname)
     ]
     return render_template(
         'checkpoints.html', tab='local', active_tab='local', sub_tab='models',
         folder=folder, fname=fname, checkpoints=checkpoints,
+        env_id=local_fs.resolve_env_id(folder),
         back_url=url_for('local_files', folder=folder),
         graphs_url=url_for('local_trainings_graphs', fname=fname),
         tabs_graphs_url=url_for('local_trainings_graphs', fname=fname),
@@ -261,16 +281,36 @@ def local_view_training(folder, fname, basename):
     user request -- mirrors sheep_view_training's own one-click shape, minus
     the download step since a local checkpoint is already local), so seeing
     a checkpoint run doesn't require clicking into local_detail's own form
-    first. Same fixed defaults sheep_view_training already uses (episodes=5,
-    start_pose='home' for Dog-Walk-v0, control_mode='position') -- for
-    anything else (a different env/episodes/control_mode), local_detail's
-    own form is still there, reachable via the checkpoint's name link."""
+    first. episodes=5/control_mode='position' still fixed -- for anything
+    else (a different env/episodes/control_mode), local_detail's own form
+    is still there, reachable via the checkpoint's name link. start_pose
+    (2026-08-17, user request -- checkpoints.html's per-row selector next
+    to this button) now comes from the submitted form instead of being
+    hardcoded to 'home' -- defaults to 'home' if the field is somehow
+    missing, matching the OLD unconditional behavior exactly. max_slew_
+    deg_per_s (2026-08-17, user request, same round -- see launch_view_
+    training()'s own docstring for why this matters) similarly comes from
+    the form, empty/missing means "don't override" (old default loose-
+    1000 behavior, unchanged). Both saved PER-CHECKPOINT, keyed by
+    basename (2026-08-17, user request -- a single shared 'last used'
+    value was applying whatever was picked for one checkpoint to every
+    OTHER checkpoint's row too, which defeats the actual point: comparing
+    different checkpoints under settings remembered per-checkpoint, e.g.
+    "what slew did I find worked for THIS one"). Uses procs.set_last_
+    tool_form()'s same underlying mechanism as the Deploy/Tools forms,
+    just with a per-basename key instead of one shared key."""
     zip_path = local_fs.checkpoint_zip_path(folder, basename)
     env_id = local_fs.resolve_env_id(folder)
+    start_pose = request.form.get('start_pose', 'home')
+    max_slew_deg_per_s = request.form.get('max_slew_deg_per_s', '').strip()
+    if env_id == 'Dog-Walk-v0':
+        procs.set_last_tool_form(f'view_training:{basename}', {
+            'start_pose': start_pose, 'max_slew_deg_per_s': max_slew_deg_per_s})
     ok, info = policy_actions.launch_view_training(
         zip_path, env_id, episodes=5,
-        start_pose='home' if env_id == 'Dog-Walk-v0' else None,
+        start_pose=start_pose if env_id == 'Dog-Walk-v0' else None,
         control_mode='position',
+        max_slew_deg_per_s=max_slew_deg_per_s or None,
     )
     flash('Launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
           'success' if ok else 'error')
@@ -599,6 +639,8 @@ def jetson_basics():
         read_motor_url=url_for('jetson_read_motor', next=request.path),
         adjust_motor_url=url_for('jetson_adjust_motor', next=request.path),
         reset_motors_url=url_for('jetson_reset_motors', next=request.path),
+        set_actuator_params_url=url_for('jetson_set_actuator_params', next=request.path),
+        last_actuator_params=_last_actuator_params(),
         last_service_output=request.args.get('out'),
         build=procs.build_status(),
         build_url=url_for('jetson_build', next=request.path),
@@ -690,6 +732,8 @@ def jetson_detail(policies_dir, task, fname, basename):
                                    fname=fname, basename=basename),
         status_poll_url=url_for('jetson_status_poll'),
         go_to_pose_url=url_for('jetson_go_to_pose', next=request.path),
+        set_actuator_params_url=url_for('jetson_set_actuator_params', next=request.path),
+        last_actuator_params=_last_actuator_params(),
         delete_url=url_for('jetson_delete_policy', policies_dir=policies_dir, task=task,
                             fname=fname, basename=basename),
     )
@@ -857,9 +901,41 @@ def jetson_set_home():
 @app.route('/jetson/basics/go_to_pose', methods=['POST'])
 def jetson_go_to_pose():
     pose_name = request.form.get('pose_name', 'home')
-    result = ros_actions.go_to_pose(pose_name)
+    speed_deg_s = request.form.get('pose_speed_deg_s', '').strip()
+    result = ros_actions.go_to_pose(pose_name, speed_deg_s=speed_deg_s or None)
     flash(result.stdout.strip() or result.stderr.strip() or f'go_to_pose {pose_name} called.',
           'success' if result.ok else 'error')
+    return _redirect_next('jetson_home')
+
+
+@app.route('/jetson/basics/set_actuator_params', methods=['POST'])
+def jetson_set_actuator_params():
+    """Live `ros2 param set /actuator ...` for whichever of position_kp/
+    position_kd/pose_speed_deg_s were actually filled in (2026-08-17,
+    user request -- "expose... as params... test with different values
+    without going to the code"). Saved via set_last_tool_form() so (a)
+    the form pre-fills with these same values next visit and (b) start_
+    hardware_bringup() applies them as launch-time overrides too, so a
+    value set here survives a hardware bringup restart -- not just a
+    one-off live tweak that reverts silently."""
+    params = {
+        name: request.form.get(name, '').strip()
+        for name in ('position_kp', 'position_kd', 'pose_speed_deg_s')
+    }
+    procs.set_last_tool_form('actuator_params', params)
+    results = []
+    all_ok = True
+    for name, value in params.items():
+        if not value:
+            continue
+        result = ros_actions.set_actuator_param(name, value)
+        all_ok = all_ok and result.ok
+        results.append(f'{name}={value}: '
+                        f'{"ok" if result.ok else (result.stderr or result.stdout).strip()[:100]}')
+    if not results:
+        flash('No values entered -- nothing set.', 'error')
+    else:
+        flash('; '.join(results), 'success' if all_ok else 'error')
     return _redirect_next('jetson_home')
 
 
@@ -968,12 +1044,15 @@ def sheep_checkpoints(folder, fname):
          'url': '#',
          'download_url': url_for('sheep_download_one', folder=folder, fname=fname, basename=c['basename']),
          'view_url': url_for('sheep_view_training', folder=folder, fname=fname, basename=c['basename']),
-         'delete_url': url_for('sheep_delete_checkpoint', folder=folder, fname=fname, basename=c['basename'])}
+         'delete_url': url_for('sheep_delete_checkpoint', folder=folder, fname=fname, basename=c['basename']),
+         'last_start_pose': procs.get_last_tool_form(f"view_training:{c['basename']}").get('start_pose', 'home'),
+         'last_max_slew_deg_per_s': procs.get_last_tool_form(f"view_training:{c['basename']}").get('max_slew_deg_per_s', '')}
         for c in remote_fs.list_remote_checkpoints_with_local(SHEEP_HOST, folder, fname)
     ]
     return render_template(
         'checkpoints.html', tab='sheep', active_tab='sheep', sub_tab='models',
         folder=folder, fname=fname, checkpoints=checkpoints,
+        env_id=local_fs.resolve_env_id(folder),
         back_url=url_for('sheep_files', folder=folder),
         graphs_url=url_for('sheep_trainings_graphs', fname=fname),
         download_status_url=url_for('sheep_download_status', folder=folder, fname=fname),
@@ -1032,10 +1111,16 @@ def sheep_view_training(folder, fname, basename):
             flash('Download failed, cannot view training.', 'error')
             return redirect(url_for('sheep_checkpoints', folder=folder, fname=fname))
     env_id = local_fs.resolve_env_id(folder)
+    start_pose = request.form.get('start_pose', 'home')
+    max_slew_deg_per_s = request.form.get('max_slew_deg_per_s', '').strip()
+    if env_id == 'Dog-Walk-v0':
+        procs.set_last_tool_form(f'view_training:{basename}', {
+            'start_pose': start_pose, 'max_slew_deg_per_s': max_slew_deg_per_s})
     ok, info = policy_actions.launch_view_training(
         local_path, env_id, episodes=5,
-        start_pose='home' if env_id == 'Dog-Walk-v0' else None,
+        start_pose=start_pose if env_id == 'Dog-Walk-v0' else None,
         control_mode='position',
+        max_slew_deg_per_s=max_slew_deg_per_s or None,
     )
     flash('Downloaded and launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
           'success' if ok else 'error')

@@ -26,9 +26,30 @@ def set_home():
     return _call('ros2 run dog_deploy set_home_and_cache')
 
 
-def go_to_pose(pose_name):
-    return _call(f'ros2 service call /go_to_pose actuator/srv/GoToPose '
-                 f'"{{pose_name: {pose_name}}}"')
+def go_to_pose(pose_name, speed_deg_s=None):
+    """speed_deg_s (2026-08-17, user request -- dashboard "Go to pose"
+    section): GoToPose.srv already has a per-call speed_deg_s field
+    (0/omitted = actuator's own pose_speed_deg_s param default, a
+    positive value overrides it for just this call) -- previously never
+    threaded through from the dashboard at all. None/0 omits the field
+    from the request entirely, matching the service's own "0 = default"
+    convention exactly rather than sending an explicit 0.0."""
+    req = f'pose_name: {pose_name}'
+    if speed_deg_s:
+        req += f', speed_deg_s: {speed_deg_s}'
+    return _call(f'ros2 service call /go_to_pose actuator/srv/GoToPose "{{{req}}}"')
+
+
+def set_actuator_param(name, value):
+    """Live `ros2 param set /actuator <name> <value>` (2026-08-17, user
+    request -- "expose position_kp/position_kd/pose_speed_deg_s... test
+    with different values without going to the code"). These are real,
+    already-declared parameters on basic_control.cpp (see actuator/
+    README.md's own documented `ros2 param set` pattern) -- this takes
+    effect on the actuator node immediately, no restart/rebuild needed.
+    Only affects the CURRENTLY RUNNING node; see procs.start_hardware_
+    bringup()'s own comment for how a value also survives a restart."""
+    return _call(f'ros2 param set /actuator {name} {value}')
 
 
 def read_motor_positions(motor_ids=None):

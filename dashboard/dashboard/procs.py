@@ -161,7 +161,18 @@ def start_hardware_bringup():
     top of one already running -- checked live (see _find_hw_bringup_pid),
     so this catches one left over from before a dashboard restart, one
     started directly in a terminal, or an orphaned node with no launch
-    parent left, not just one this exact process remembers launching."""
+    parent left, not just one this exact process remembers launching.
+
+    Passes the last-set actuator params (position_kp/position_kd/
+    pose_speed_deg_s, see set_last_tool_form('actuator_params', ...) in
+    app.py's live-set route) as launch arguments to hardware_bringup.
+    launch.py -- 2026-08-17, user request ("persist across restarts"):
+    without this, a value set live via `ros2 param set` only lasts until
+    the actuator node is next restarted, silently reverting to whatever
+    default is hardcoded in basic_control.cpp. Any param never explicitly
+    set (empty string, get_last_tool_form's own default) is simply
+    omitted from the launch command, so hardware_bringup launches exactly
+    as before this feature existed until the user actually sets something."""
     existing_pid = _find_hw_bringup_pid()
     if existing_pid is not None:
         with _lock:
@@ -172,9 +183,13 @@ def start_hardware_bringup():
         return True, 'Hardware bringup is already running (found an existing process) -- not starting a second one.'
     _ensure_log_dir()
     log = _remote_log_path('hardware_bringup')
+    actuator_params = get_last_tool_form('actuator_params')
+    launch_args = ' '.join(
+        f'{name}:={value}' for name in ('position_kp', 'position_kd', 'pose_speed_deg_s')
+        if (value := actuator_params.get(name, '')))
     cmd = (f'cd {JETSON_WS_ROOT} && source /opt/ros/*/setup.bash && '
            'source install/setup.bash && '
-           'ros2 launch dog_deploy hardware_bringup.launch.py')
+           f'ros2 launch dog_deploy hardware_bringup.launch.py {launch_args}'.rstrip())
     pid = ssh.run_background(JETSON_HOST, cmd, log)
     with _lock:
         _state['hardware_bringup'] = {'pid': pid, 'log': log}

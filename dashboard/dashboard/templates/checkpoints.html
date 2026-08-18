@@ -32,10 +32,26 @@
           <button type="submit">Download</button>
         </form>
         <form class="inline" method="post" action="{{ c.view_url }}">
+          {% if env_id == 'Dog-Walk-v0' %}
+          <select name="start_pose" title="Start pose" style="max-width:100px">
+            {% for p in ['home', 'standing', 'random'] %}
+              <option value="{{ p }}" {{ 'selected' if p == c.last_start_pose }}>{{ p }}</option>
+            {% endfor %}
+          </select>
+          <input type="number" name="max_slew_deg_per_s" title="Max slew deg/s (blank = loose 1000 default; set to the value this checkpoint actually trained under, e.g. 250, to view it under its own realistic clamp instead of an artificially loose one)" placeholder="slew (1000)" value="{{ c.last_max_slew_deg_per_s }}" style="max-width:90px">
+          {% endif %}
           <button type="submit" class="primary">View Training</button>
         </form>
         {% elif tab == 'local' and c.view_url %}
         <form class="inline" method="post" action="{{ c.view_url }}">
+          {% if env_id == 'Dog-Walk-v0' %}
+          <select name="start_pose" title="Start pose" style="max-width:100px">
+            {% for p in ['home', 'standing', 'random'] %}
+              <option value="{{ p }}" {{ 'selected' if p == c.last_start_pose }}>{{ p }}</option>
+            {% endfor %}
+          </select>
+          <input type="number" name="max_slew_deg_per_s" title="Max slew deg/s (blank = loose 1000 default; set to the value this checkpoint actually trained under, e.g. 250, to view it under its own realistic clamp instead of an artificially loose one)" placeholder="slew (1000)" value="{{ c.last_max_slew_deg_per_s }}" style="max-width:90px">
+          {% endif %}
           <button type="submit" class="primary">View Training</button>
         </form>
         {% endif %}

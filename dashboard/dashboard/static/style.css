@@ -118,6 +118,15 @@ h2 { font-size: 1.1rem; margin: 24px 0 10px; }
   background: linear-gradient(90deg, var(--accent-dim) 0%, var(--panel) 40px);
 }
 
+/* Marks the fname you just navigated back FROM (files.html's own
+   sessionStorage-based scroll/highlight restore, see that template's
+   script -- 2026-08-17, user request). Same accent-dim/accent-border
+   treatment as .sidebar-item.active for visual consistency. */
+.list-item.just-visited {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
 /* Left-side sibling nav -- lets you jump straight to a different group
    (files.html/policy_files.html: sibling folders/policy groups) or a
    different checkpoint of the SAME fname (local_detail.html/

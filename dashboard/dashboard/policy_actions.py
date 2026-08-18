@@ -39,13 +39,31 @@ def export_target_path(basename, env_id, control_mode):
         _policies_dir(control_mode), _task_subfolder(env_id), 'policy', basename + '.pt')
 
 
-def launch_view_training(zip_path, env_id, episodes, start_pose=None, control_mode=None):
+def launch_view_training(zip_path, env_id, episodes, start_pose=None, control_mode=None,
+                          max_slew_deg_per_s=None):
     """Spawns `python3 -m dog_gym.train --test ...` DETACHED (the
     dashboard's own request returns immediately; the MuJoCo viewer opens
     in its own window and keeps running independently of the dashboard
     process). Returns True if the subprocess was launched (not whether
     the rollout itself succeeds -- there's no synchronous way to know
-    that for a GUI window)."""
+    that for a GUI window).
+
+    max_slew_deg_per_s (2026-08-17, user request): without this, --test
+    never passes --max-slew-deg-per-s, so dog_env.py's own loose module
+    default (MAX_SLEW_DEG_PER_S=1000) is always used at view time --
+    regardless of what slew clamp the checkpoint was actually TRAINED
+    under at that step if it came from a run using --slew-curriculum-
+    start-step/-decay-steps (which tightens the clamp over training, e.g.
+    down to 250 by a few million steps in). Viewing under the wrong
+    (looser) clamp than a checkpoint actually trained with makes it look
+    more violent/unstable than it really is -- confirmed directly
+    (chatbot.md-adjacent investigation, 2026-08-17): re-testing
+    PPO_5500000_roll_gate_standing_v1 at its OWN real trained clamp
+    (250) instead of the loose test-default (1000) dropped its peak
+    front-leg swing from 7.08 to 3.41deg/tick and let it survive the
+    full test window instead of falling early. This lets the caller
+    override it per-viewing so a checkpoint can be watched under its own
+    realistic clamp instead of always the loose default."""
     cmd_parts = [
         VENV_PYTHON, '-m', 'dog_gym.train',
         '--test', zip_path,
@@ -57,6 +75,8 @@ def launch_view_training(zip_path, env_id, episodes, start_pose=None, control_mo
             cmd_parts += ['--walk-start-pose', start_pose]
         if control_mode:
             cmd_parts += ['--control-mode', control_mode]
+        if max_slew_deg_per_s:
+            cmd_parts += ['--max-slew-deg-per-s', str(max_slew_deg_per_s)]
     cmd = SOURCE_PREFIX + ' '.join(cmd_parts)
     try:
         subprocess.Popen(

@@ -18,7 +18,7 @@
 
 <div class="list">
   {% for item in fnames %}
-    <div class="list-item {{ 'needs-download' if item.local_count is defined and item.local_count < item.count else '' }}">
+    <div class="list-item {{ 'needs-download' if item.local_count is defined and item.local_count < item.count else '' }}" data-fname="{{ item.fname }}">
       <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ item.url }}">
         {{ item.fname }}
         <span class="meta">({{ item.count }} checkpoint{{ 's' if item.count != 1 else '' }})</span>
@@ -44,4 +44,38 @@
 </div>
   </div>
 </div>
+
+<script>
+(function() {
+  // Remembers scroll position + which fname was clicked into, per-URL
+  // (sessionStorage, so it's tab-scoped and clears on tab close) -- so
+  // clicking a fname, then using the "back" breadcrumb (a plain link,
+  // not a real browser Back navigation, so the browser's own bfcache
+  // scroll restoration doesn't apply) lands back at the same scroll
+  // position instead of the top, with the fname you were just in
+  // visually marked (2026-08-17, user request).
+  var STORAGE_KEY = 'dashboard:filesState:' + window.location.pathname;
+  var saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) {}
+
+  if (saved) {
+    if (saved.fname) {
+      var el = document.querySelector('.list-item[data-fname="' + CSS.escape(saved.fname) + '"]');
+      if (el) el.classList.add('just-visited');
+    }
+    if (typeof saved.scrollY === 'number') {
+      window.scrollTo(0, saved.scrollY);
+    }
+  }
+
+  document.querySelectorAll('.list-item[data-fname] > a.name').forEach(function(link) {
+    link.addEventListener('click', function() {
+      var fname = link.closest('.list-item').getAttribute('data-fname');
+      try {
+        sessionStorage.setItem(STORAGE_KEY, JSON.stringify({fname: fname, scrollY: window.scrollY}));
+      } catch (e) {}
+    });
+  });
+})();
+</script>
 {% endblock %}
