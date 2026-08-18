@@ -1039,6 +1039,32 @@ WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 # WEIGHT's matching restore comment above, same round.
 WALK_TROT_SYMMETRY_WEIGHT = 2.5
 
+# _bound_symmetry_reward()'s weight/gate (2026-08-18, user request --
+# genuine running with an aerial phase, not just faster trotting, see
+# gait_style's own comment -- multi-agent review w/ Antigravity, chatbot.md
+# "found something you didn't have context on... trot's OWN cross-leg
+# version is currently disabled"). _trot_symmetry_reward() itself is
+# currently DROPPED at its usage site below (0.0 multiplier) because a
+# cross-leg comparison term was found to entangle gradients into coupled
+# local optima once per-leg terms (swing_fairness_penalty etc.) could
+# handle trot's own failure mode alone -- see that call site's own
+# comment for the full history. Bound is different: front/back-pair
+# synchronization IS the definition of the gait, no per-leg-only signal
+# can express it (nothing about "is my own duty cycle fair" distinguishes
+# a bound from a trot from a pace), so SOME cross-leg term is structurally
+# necessary here, unlike trot's case. Antigravity's answer to the exact
+# risk this raises: the entanglement problem isn't the target WEIGHT so
+# much as introducing it before basic locomotion is established -- gate
+# it in gradually (like WALK_BACK_CLEARANCE_GATE_START/_FULL/swing_
+# fairness's own gate) rather than live from step 0, same 0.2/0.4
+# forward_progress convention already used for both of those. Full
+# strength (2.5) matches WALK_TROT_SYMMETRY_WEIGHT's own restored value
+# -- her point was the EARLY-introduction risk, not that 2.5 itself is
+# unsafe once the gate has let basic locomotion establish first.
+WALK_BOUND_SYMMETRY_WEIGHT = 2.5
+WALK_BOUND_SYMMETRY_GATE_START = 0.2
+WALK_BOUND_SYMMETRY_GATE_FULL = 0.4
+
 # WALK-specific RESIDUAL action space (2026-08-02) -- inspired by both
 # reference repos in this workspace (quadrupeds_locomotion/friend_code),
 # which structure their action as target = default_pose +
@@ -1745,7 +1771,8 @@ class DogEnv(gym.Env):
                  walk_start_pose='standing', walk_height_fraction=WALK_HEIGHT_FRACTION,
                  control_mode='position', position_kp=None, position_kd=None,
                  position_kp_range=None, position_kd_range=None, home_start_prob=0.0,
-                 max_slew_deg_per_s=None, walk_forward_progress_target_m_s=None):
+                 max_slew_deg_per_s=None, walk_forward_progress_target_m_s=None,
+                 gait_style='trot'):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
@@ -1887,6 +1914,20 @@ class DogEnv(gym.Env):
         self._walk_forward_progress_target_m_s = (
             walk_forward_progress_target_m_s if walk_forward_progress_target_m_s is not None
             else WALK_FORWARD_PROGRESS_TARGET_M_S)
+        # gait_style (2026-08-18, user request -- "real running, not
+        # trot, all 4 legs off the ground"): WALK-only, picks which gait-
+        # pattern reward _compute_reward_walk() uses -- 'trot' (default,
+        # unchanged behavior) uses _trot_symmetry_reward() (currently
+        # zeroed at its own call site, see that constant's history);
+        # 'bound' uses the new _bound_symmetry_reward() instead, gated in
+        # via WALK_BOUND_SYMMETRY_GATE_START/_FULL -- see that constant's
+        # own comment for why these two are mutually exclusive rather than
+        # both active (they actively disagree on what a "good" contact
+        # pattern looks like). Not validated for task='stand' -- WALK-
+        # only, same scope as walk_start_pose/walk_height_fraction above.
+        if gait_style not in ('trot', 'bound'):
+            raise ValueError(f"gait_style must be 'trot' or 'bound', got {gait_style!r}")
+        self.gait_style = gait_style
         self.task = task
         # torque_belt only -- see BELT_TARGET_ADAPT_RATE_STAND/_WALK's
         # comment for why these need different timescales. Harmless to set
@@ -3195,6 +3236,47 @@ class DogEnv(gym.Env):
         pairs_offset = 1.0 if a != b else -1.0
         return (pair_ad_synced + pair_bc_synced + pairs_offset) / 3.0
 
+    def _bound_symmetry_reward(self):
+        """Rewards a front/back-pair BOUND contact pattern -- leg_a
+        (front-right) + leg_b (front-left) sharing the same contact
+        state (both grounded or both swinging together), leg_c (back-
+        right) + leg_d (back-left) likewise, and the front/back PAIRS
+        offset from each other -- mirrors _trot_symmetry_reward()'s
+        exact shape (see that method's own docstring for the STUCK-PHASE
+        GATE history this borrows unchanged), just paired front/back
+        instead of diagonally. See gait_style's own __init__ comment and
+        WALK_BOUND_SYMMETRY_WEIGHT's comment for why this exists as a
+        SEPARATE method rather than a parameterized version of
+        _trot_symmetry_reward() -- additive, doesn't touch that method's
+        own code at all.
+
+        Unlike a diagonal trot pattern, a genuine simultaneous 4-foot
+        flight moment (a=b=c=d=False, no leg in contact) scores the SAME
+        as a genuine bound stance moment on the pair-sync terms (both
+        pairs trivially "synced" when all four share one state) -- this
+        method doesn't specifically REWARD the flight moment beyond that,
+        it's the PAIRS_OFFSET term (front pair state != back pair state)
+        that does the real work of shaping the alternating front/back
+        push pattern a bound needs; the brief all-air transition between
+        pushes is a natural physical consequence of that pattern, not
+        something separately targeted here.
+
+        Returns a value in [-1, 1], same convention as _trot_symmetry_
+        reward(): 1.0 = perfect bound contact pattern this tick, -1.0 =
+        worst possible (front/back pairs internally desynced AND in
+        phase with each other instead of offset -- e.g. a diagonal trot
+        pattern scores this method's worst case, same way a bound
+        pattern scores _trot_symmetry_reward()'s worst case, by design:
+        the two methods actively disagree on what "good" looks like,
+        which is exactly why gait_style picks only one at a time)."""
+        if np.any(self._leg_phase_time > MAX_LEG_PHASE_S):
+            return -1.0
+        a, b, c, d = self._foot_contact_per_leg()
+        pair_ab_synced = 1.0 if a == b else -1.0
+        pair_cd_synced = 1.0 if c == d else -1.0
+        pairs_offset = 1.0 if a != c else -1.0
+        return (pair_ab_synced + pair_cd_synced + pairs_offset) / 3.0
+
     def _foot_clearance_reward(self, leg_indices=None, target_m=None):
         """Rewards a SWINGING (non-contacting) foot for actually being
         elevated, not dragged along the ground -- adapted from the
@@ -4388,6 +4470,31 @@ class DogEnv(gym.Env):
         trot_symmetry_reward = (
             self._trot_symmetry_reward() if leg_stuck
             else self._trot_symmetry_reward() * forward_progress)
+        # gait_symmetry_reward/gait_symmetry_weight (2026-08-18, see
+        # gait_style/WALK_BOUND_SYMMETRY_WEIGHT's own comments) -- picks
+        # which gait-pattern term actually counts in the return sum
+        # below, replacing the old unconditional "+ 0.0 * WALK_TROT_
+        # SYMMETRY_WEIGHT * trot_symmetry_reward" line. gait_style='trot'
+        # (default) reproduces that EXACT line byte-for-byte (same 0.0
+        # multiplier, same trot_symmetry_reward computed above,
+        # unchanged); gait_style='bound' swaps in the new bound term
+        # instead, gated in via WALK_BOUND_SYMMETRY_GATE_START/_FULL
+        # (same np.clip ramp shape as swing_fairness_penalty/back_
+        # clearance_gate above) so it doesn't hit an untrained policy at
+        # full strength from step 0.
+        if self.gait_style == 'bound':
+            bound_symmetry_reward = (
+                self._bound_symmetry_reward() if leg_stuck
+                else self._bound_symmetry_reward() * forward_progress)
+            bound_symmetry_gate = np.clip(
+                (forward_progress - WALK_BOUND_SYMMETRY_GATE_START)
+                / (WALK_BOUND_SYMMETRY_GATE_FULL - WALK_BOUND_SYMMETRY_GATE_START),
+                0.0, 1.0)
+            gait_symmetry_reward = bound_symmetry_reward * bound_symmetry_gate
+            gait_symmetry_weight = WALK_BOUND_SYMMETRY_WEIGHT
+        else:
+            gait_symmetry_reward = trot_symmetry_reward
+            gait_symmetry_weight = 0.0 * WALK_TROT_SYMMETRY_WEIGHT
         # See WALK_SWING_FAIRNESS_WEIGHT's comment: replaces
         # trot_symmetry_reward's dropped cross-leg role with a slower,
         # duty-cycle-only signal that doesn't constrain per-tick timing.
@@ -4927,7 +5034,7 @@ class DogEnv(gym.Env):
             # both still fully computed above, trivially restorable (flip
             # 0.0 back to 1.0) if the recalibrated per-leg terms alone
             # prove insufficient.
-            + 0.0 * WALK_TROT_SYMMETRY_WEIGHT * trot_symmetry_reward
+            + gait_symmetry_weight * gait_symmetry_reward
             # ADDED 2026-08-11 (multi-agent review w/ Antigravity,
             # chatbot.md "swing-time-fairness" -- see WALK_SWING_FAIRNESS_
             # WEIGHT's comment for the full derivation/design rationale).

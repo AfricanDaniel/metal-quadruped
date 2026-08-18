@@ -356,11 +356,12 @@ class ForwardSpeedCurriculumCallback(BaseCallback):
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
              model_path=None, position_kp=None, position_kd=None,
              position_kp_range=None, position_kd_range=None, home_start_prob_start=None,
-             max_slew_deg_per_s=None):
+             max_slew_deg_per_s=None, gait_style='trot'):
     kwargs = dict(domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose,
                   walk_height_fraction=walk_height_fraction,
-                  control_mode=control_mode)
+                  control_mode=control_mode,
+                  gait_style=gait_style)
     # --model-path (2026-08-04): lets --test load a checkpoint against the
     # EXACT MJCF/ctrlrange it was actually trained on, overriding
     # control_mode's own default resolution -- needed once a shared file
@@ -420,7 +421,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           home_start_curriculum_steps=None, slew_curriculum_start_step=None,
           slew_curriculum_decay_steps=None, max_slew_deg_per_s=None,
           forward_speed_curriculum_start_step=None, forward_speed_curriculum_decay_steps=None,
-          forward_speed_curriculum_target=None,
+          forward_speed_curriculum_target=None, gait_style='trot',
           use_sde=False, sde_sample_freq=-1,
           wandb_project='dog-quadruped', wandb_entity=None):
     # Always on (2026-08-15, direct user request -- "wandb", always-on not
@@ -450,12 +451,13 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           f'max_slew_deg_per_s={max_slew_deg_per_s}, '
           f'forward_speed_curriculum_start_step={forward_speed_curriculum_start_step}, '
           f'forward_speed_curriculum_decay_steps={forward_speed_curriculum_decay_steps}, '
-          f'forward_speed_curriculum_target={forward_speed_curriculum_target})')
+          f'forward_speed_curriculum_target={forward_speed_curriculum_target}, '
+          f'gait_style={gait_style})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
                          control_mode, model_path, position_kp, position_kd,
                          position_kp_range_start, position_kd_range_start, home_start_prob_start,
-                         max_slew_deg_per_s)
+                         max_slew_deg_per_s, gait_style)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -672,10 +674,10 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
          walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position',
          model_path=None, position_kp=None, position_kd=None, home_start_prob=None,
-         max_slew_deg_per_s=None):
+         max_slew_deg_per_s=None, gait_style='trot'):
     kwargs = dict(render_mode='human', domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
-                  control_mode=control_mode)
+                  control_mode=control_mode, gait_style=gait_style)
     if model_path is not None:
         kwargs['model_path'] = model_path
     if position_kp is not None:
@@ -942,6 +944,21 @@ def main():
                               'steady-state of ~0.165 m/s on PPO_10500000_init_from_hf_v17_home_v1 -- '
                               'close to something already demonstrated as reachable rather than an '
                               'untested leap.')
+    parser.add_argument('--gait-style', default='trot', choices=['trot', 'bound'],
+                         help='WALK only, --train and --test (2026-08-18): which cross-leg gait '
+                              'symmetry term DogEnv.__init__ rewards. \'trot\' (default, unchanged '
+                              'behavior) diagonal pairs (a+d, b+c) offset from each other -- '
+                              'currently a no-op weight-wise (WALK_TROT_SYMMETRY_WEIGHT zeroed, see '
+                              'that term\'s DROPPED comment in dog_env.py), left in place only for '
+                              'reference/restorability. \'bound\' rewards front pair (a+b) synced, '
+                              'back pair (c+d) synced, offset from each other -- the pattern a genuine '
+                              'aerial-phase running gait needs (all 4 feet airborne together, not '
+                              'just fast walking), gated in via WALK_BOUND_SYMMETRY_GATE_START/_FULL '
+                              'so it doesn\'t disturb an already-converged trot-style policy. Per '
+                              'multi-agent review (chatbot.md, "genuine running" thread): train a '
+                              '--gait-style bound run FROM SCRATCH (no --init-from), not by '
+                              'fine-tuning a trot checkpoint, since the two terms actively disagree '
+                              'on what "good" looks like.')
     parser.add_argument('--lr-schedule', default='linear', choices=['linear', 'adaptive'],
                          help='PPO only, --train only (2026-08-06): "linear" (default, unchanged) '
                               'uses --learning-rate/--learning-rate-end/--decay-steps\' linear decay '
@@ -1063,13 +1080,14 @@ def main():
               args.home_start_curriculum_steps, args.slew_curriculum_start_step,
               args.slew_curriculum_decay_steps, args.max_slew_deg_per_s,
               args.forward_speed_curriculum_start_step, args.forward_speed_curriculum_decay_steps,
-              args.forward_speed_curriculum_target,
+              args.forward_speed_curriculum_target, args.gait_style,
               args.use_sde, args.sde_sample_freq,
               args.wandb_project, args.wandb_entity)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
-             args.position_kp, args.position_kd, args.home_start_prob_start, args.max_slew_deg_per_s)
+             args.position_kp, args.position_kd, args.home_start_prob_start, args.max_slew_deg_per_s,
+             args.gait_style)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 

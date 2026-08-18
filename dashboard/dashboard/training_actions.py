@@ -101,6 +101,11 @@ def build_train_args(form):
         args += ['--walk-start-pose', form.get('start_pose', 'home')]
         if form.get('walk_height_fraction_enabled'):
             args += ['--walk-height-fraction', form.get('walk_height_fraction', '0.9')]
+        # gait_style (2026-08-18, "genuine running" feature -- see dog_env.py's
+        # WALK_BOUND_SYMMETRY_WEIGHT comment): front-and-center like start_pose
+        # above, not buried in _ADVANCED_FIELDS -- same precedent the user set
+        # for forward_speed_curriculum_target ("easier to find").
+        args += ['--gait-style', form.get('gait_style', 'trot')]
 
     # Gain mode: mutually exclusive at the train.py argparse level, so
     # only ONE of these branches ever contributes anything.
