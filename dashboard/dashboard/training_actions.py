@@ -54,6 +54,14 @@ _ADVANCED_FIELDS = [
     # independent of the two curriculum fields above (those control
     # whether/how it tightens, not what it starts at).
     ('max_slew_deg_per_s', '--max-slew-deg-per-s', float),
+    # Forward-speed curriculum (2026-08-18, dog_gym/dog_gym/train.py's
+    # ForwardSpeedCurriculumCallback -- see WALK_FORWARD_PROGRESS_TARGET_
+    # M_S in dog_env.py): opt-in, same shape as the slew curriculum above
+    # -- omitting start-step leaves train.py's own default (no curriculum,
+    # fixed at 0.15 the whole run).
+    ('forward_speed_curriculum_start_step', '--forward-speed-curriculum-start-step', int),
+    ('forward_speed_curriculum_decay_steps', '--forward-speed-curriculum-decay-steps', int),
+    ('forward_speed_curriculum_target', '--forward-speed-curriculum-target', float),
     # --use-sde only (2026-08-17, gSDE exploration -- see dog_gym/train.py's
     # own --sde-sample-freq help): harmless to pass even if --use-sde isn't
     # checked, train.py's argparse accepts it unconditionally.

@@ -59,11 +59,24 @@ def group_checkpoints(file_entries, fname, pattern=CHECKPOINT_RE):
 
 
 def resolve_env_id(folder):
-    """'walk...' -> Dog-Walk-v0, else Dog-Stand-v0. Covers every actual
-    models/ folder name except the one genuinely ambiguous case,
+    """'walk...'/'trot...' -> Dog-Walk-v0, else Dog-Stand-v0. Covers every
+    actual models/ folder name except the one genuinely ambiguous case,
     'stand_walk' -- callers show this as an editable dropdown defaulted
-    to this guess, never silently trust it for that one case."""
-    return 'Dog-Walk-v0' if folder.startswith('walk') else 'Dog-Stand-v0'
+    to this guess, never silently trust it for that one case.
+
+    'trot' ADDED 2026-08-18 (user report: "view training button, mujoco
+    no longer opens, the max slew box is also gone" on models/trot_home/
+    trot_stand -- both symptoms trace to this function returning Dog-
+    Stand-v0 for those folders, since they don't start with 'walk': the
+    start_pose/max_slew boxes are gated on env_id=='Dog-Walk-v0' in
+    checkpoints.html (explaining the missing box), and launch_view_
+    training() was then invoked with the WRONG env-id for a WALK-trained
+    checkpoint, mismatching its observation/action space and failing
+    before MuJoCo ever opened (explaining the viewer not launching).
+    trot_home/trot_stand are WALK-task checkpoints (see chatbot.md "user
+    wants to push toward faster walking") under a new naming scheme this
+    prefix check hadn't been updated for."""
+    return 'Dog-Walk-v0' if folder.startswith(('walk', 'trot')) else 'Dog-Stand-v0'
 
 
 def list_model_folders():

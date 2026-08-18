@@ -98,7 +98,7 @@
       <label for="model_dir">model-dir (models/&hellip;)</label>
       <select name="model_dir" id="model_dir">
         {% for folder in model_folders %}
-          <option value="{{ folder }}" {{ 'selected' if folder == 'walk' }}>{{ folder }}</option>
+          <option value="{{ folder }}" {{ 'selected' if loop.first }}>{{ folder }}</option>
         {% endfor %}
       </select>
     </div>
@@ -110,7 +110,11 @@
       <label><input type="checkbox" name="domain_randomization" checked> domain-randomization</label>
     </div>
     <div class="field-row">
-      <label><input type="checkbox" name="use_sde"> use-sde (gSDE exploration)</label>
+      <label><input type="checkbox" name="use_sde" checked> use-sde (gSDE exploration)</label>
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="forward_speed_curriculum_target_enabled"> forward-speed-curriculum-target</label>
+      <input type="text" name="forward_speed_curriculum_target" value="0.3" placeholder="e.g. 0.3">
     </div>
 
     {% if tab == 'sheep' %}
@@ -234,6 +238,14 @@
         <div class="field-row">
           <label><input type="checkbox" name="slew_curriculum_decay_steps_enabled"> slew-curriculum-decay-steps</label>
           <input type="text" name="slew_curriculum_decay_steps" value="3000000" placeholder="e.g. 3000000">
+        </div>
+        <div class="field-row">
+          <label><input type="checkbox" name="forward_speed_curriculum_start_step_enabled"> forward-speed-curriculum-start-step</label>
+          <input type="text" name="forward_speed_curriculum_start_step" value="2000000" placeholder="e.g. 2000000">
+        </div>
+        <div class="field-row">
+          <label><input type="checkbox" name="forward_speed_curriculum_decay_steps_enabled"> forward-speed-curriculum-decay-steps</label>
+          <input type="text" name="forward_speed_curriculum_decay_steps" value="3000000" placeholder="e.g. 3000000">
         </div>
       </div>
     </details>

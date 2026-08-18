@@ -35,7 +35,9 @@ import sys
 import time
 
 import dog_gym  # noqa: F401  (registers Dog-v0)
-from dog_gym.envs.dog_env import MAX_SLEW_DEG_PER_S, SLEW_CURRICULUM_TARGET_DEG_PER_S
+from dog_gym.envs.dog_env import (
+    MAX_SLEW_DEG_PER_S, SLEW_CURRICULUM_TARGET_DEG_PER_S, WALK_FORWARD_PROGRESS_TARGET_M_S,
+)
 import gymnasium as gym
 import numpy as np
 import torch.nn as nn
@@ -302,6 +304,55 @@ class SlewCurriculumCallback(BaseCallback):
         return True
 
 
+class ForwardSpeedCurriculumCallback(BaseCallback):
+    """Raises DogEnv's WALK forward-speed reward target (see WALK_FORWARD_
+    PROGRESS_TARGET_M_S/set_walk_forward_progress_target_m_s()'s own
+    comments in dog_env.py) from the achievable WALK_FORWARD_PROGRESS_
+    TARGET_M_S (0.15, what existing checkpoints are already converged
+    toward) UP to a higher end_value, linearly, over decay_steps
+    cumulative timesteps -- mirrors SlewCurriculumCallback above exactly,
+    including staying PINNED at the start value until start_step is
+    reached (2026-08-18, multi-agent review w/ Antigravity, chatbot.md
+    "user wants to push toward faster walking" -- her answer (b): an
+    INSTANT target change would drop forward_progress, which gates
+    upright_reward/trot_symmetry_reward/climb_gate/hold_gate/the front+
+    back clearance terms, from ~1.0 to ~0.55 immediately for an already-
+    converged policy, risking a stability collapse before it ever learns
+    to go faster -- so this needs the same "let the policy settle at its
+    current fine-tune point first" pinning SlewCurriculumCallback already
+    uses, not a curriculum that starts moving from step 0).
+
+    Pushes the updated value into every parallel sub-environment via
+    VecEnv.env_method('set_walk_forward_progress_target_m_s', ...), same
+    DummyVecEnv/SubprocVecEnv-compatible mechanism as the other
+    curriculum callbacks, same update_interval_steps throttling
+    reasoning."""
+
+    def __init__(self, start_step, decay_steps, start_value=None, end_value=None,
+                 update_interval_steps=2000, verbose=0):
+        super().__init__(verbose)
+        self.start_step = start_step
+        self.decay_steps = decay_steps
+        self.start_value = start_value if start_value is not None else WALK_FORWARD_PROGRESS_TARGET_M_S
+        self.end_value = end_value if end_value is not None else WALK_FORWARD_PROGRESS_TARGET_M_S
+        self.update_interval_steps = update_interval_steps
+        self._last_update_step = -update_interval_steps  # forces an update on the very first call
+
+    def _on_step(self):
+        if self.num_timesteps - self._last_update_step < self.update_interval_steps:
+            return True
+        self._last_update_step = self.num_timesteps
+        if self.num_timesteps <= self.start_step:
+            progress = 0.0
+        elif self.decay_steps > 0:
+            progress = min(1.0, (self.num_timesteps - self.start_step) / self.decay_steps)
+        else:
+            progress = 1.0
+        value = self.start_value + (self.end_value - self.start_value) * progress
+        self.training_env.env_method('set_walk_forward_progress_target_m_s', value)
+        return True
+
+
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
              model_path=None, position_kp=None, position_kd=None,
              position_kp_range=None, position_kd_range=None, home_start_prob_start=None,
@@ -368,6 +419,8 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           home_start_prob_start=None, home_start_prob_end=None,
           home_start_curriculum_steps=None, slew_curriculum_start_step=None,
           slew_curriculum_decay_steps=None, max_slew_deg_per_s=None,
+          forward_speed_curriculum_start_step=None, forward_speed_curriculum_decay_steps=None,
+          forward_speed_curriculum_target=None,
           use_sde=False, sde_sample_freq=-1,
           wandb_project='dog-quadruped', wandb_entity=None):
     # Always on (2026-08-15, direct user request -- "wandb", always-on not
@@ -394,7 +447,10 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           f'home_start_prob_start={home_start_prob_start}, home_start_prob_end={home_start_prob_end}, '
           f'slew_curriculum_start_step={slew_curriculum_start_step}, '
           f'slew_curriculum_decay_steps={slew_curriculum_decay_steps}, '
-          f'max_slew_deg_per_s={max_slew_deg_per_s})')
+          f'max_slew_deg_per_s={max_slew_deg_per_s}, '
+          f'forward_speed_curriculum_start_step={forward_speed_curriculum_start_step}, '
+          f'forward_speed_curriculum_decay_steps={forward_speed_curriculum_decay_steps}, '
+          f'forward_speed_curriculum_target={forward_speed_curriculum_target})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
                          control_mode, model_path, position_kp, position_kd,
@@ -567,6 +623,18 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
             start_step=slew_curriculum_start_step,
             decay_steps=slew_curriculum_decay_steps if slew_curriculum_decay_steps is not None
             else decay_steps))
+    # Opt-in: only constructed if --forward-speed-curriculum-start-step was
+    # given -- a run that doesn't pass it behaves exactly as before (DogEnv
+    # trains at the fixed WALK_FORWARD_PROGRESS_TARGET_M_S the whole time,
+    # no raising). Same "pinned until start_step, not moving from step 0"
+    # shape as SlewCurriculumCallback -- see ForwardSpeedCurriculumCallback's
+    # own docstring for why.
+    if forward_speed_curriculum_start_step is not None:
+        callbacks.append(ForwardSpeedCurriculumCallback(
+            start_step=forward_speed_curriculum_start_step,
+            decay_steps=forward_speed_curriculum_decay_steps if forward_speed_curriculum_decay_steps is not None
+            else decay_steps,
+            end_value=forward_speed_curriculum_target))
     callback = CallbackList(callbacks)
 
     iteration = 0
@@ -847,6 +915,33 @@ def main():
                               'so different starting ceilings can be tried directly (e.g. investigating '
                               'whether a tighter start changes early-training stability) without '
                               'editing dog_env.py.')
+    parser.add_argument('--forward-speed-curriculum-start-step', type=int, default=None,
+                         help='WALK only, --train only (2026-08-18): cumulative timesteps to wait '
+                              'before ForwardSpeedCurriculumCallback starts raising dog_env.py\'s '
+                              'WALK_FORWARD_PROGRESS_TARGET_M_S (0.15) up toward --forward-speed-'
+                              'curriculum-target. Opt-in -- omitting this flag entirely disables the '
+                              'curriculum (trains at the fixed 0.15 the whole run, unchanged from '
+                              'before). Same "pinned at the start value until this step, not ramping '
+                              'from step 0" shape as --slew-curriculum-start-step, for the same reason: '
+                              'raising the speed target before a policy has settled at its current '
+                              'fine-tune point risks collapsing the forward_progress-gated terms '
+                              '(upright_reward/trot_symmetry_reward/clearance gates) it currently relies '
+                              'on. Multi-agent review (chatbot.md, "user wants to push toward faster '
+                              'walking") recommended starting from an already-converged checkpoint '
+                              'rather than step 0 of a fresh run.')
+    parser.add_argument('--forward-speed-curriculum-decay-steps', type=int, default=None,
+                         help='Cumulative timesteps AFTER --forward-speed-curriculum-start-step over '
+                              'which the speed target linearly rises from 0.15 to --forward-speed-'
+                              'curriculum-target, then holds there. Defaults to --decay-steps if not '
+                              'set, same convention as --slew-curriculum-decay-steps.')
+    parser.add_argument('--forward-speed-curriculum-target', type=float, default=None,
+                         help='WALK_FORWARD_PROGRESS_TARGET_M_S value the curriculum ramps toward. '
+                              'Defaults to 0.15 (the module constant, i.e. a no-op) if the curriculum '
+                              'is enabled without this set. Multi-agent review recommended 0.25-0.3 '
+                              '(roughly double the original 0.15) as a first step given a real measured '
+                              'steady-state of ~0.165 m/s on PPO_10500000_init_from_hf_v17_home_v1 -- '
+                              'close to something already demonstrated as reachable rather than an '
+                              'untested leap.')
     parser.add_argument('--lr-schedule', default='linear', choices=['linear', 'adaptive'],
                          help='PPO only, --train only (2026-08-06): "linear" (default, unchanged) '
                               'uses --learning-rate/--learning-rate-end/--decay-steps\' linear decay '
@@ -967,6 +1062,8 @@ def main():
               args.home_start_prob_start, args.home_start_prob_end,
               args.home_start_curriculum_steps, args.slew_curriculum_start_step,
               args.slew_curriculum_decay_steps, args.max_slew_deg_per_s,
+              args.forward_speed_curriculum_start_step, args.forward_speed_curriculum_decay_steps,
+              args.forward_speed_curriculum_target,
               args.use_sde, args.sde_sample_freq,
               args.wandb_project, args.wandb_entity)
     elif args.test:

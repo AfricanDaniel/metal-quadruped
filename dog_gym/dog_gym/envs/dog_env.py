@@ -1745,7 +1745,7 @@ class DogEnv(gym.Env):
                  walk_start_pose='standing', walk_height_fraction=WALK_HEIGHT_FRACTION,
                  control_mode='position', position_kp=None, position_kd=None,
                  position_kp_range=None, position_kd_range=None, home_start_prob=0.0,
-                 max_slew_deg_per_s=None):
+                 max_slew_deg_per_s=None, walk_forward_progress_target_m_s=None):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
@@ -1866,6 +1866,27 @@ class DogEnv(gym.Env):
         # exactly -- the module constant, unchanged.
         self._max_slew_deg_per_s = (
             max_slew_deg_per_s if max_slew_deg_per_s is not None else MAX_SLEW_DEG_PER_S)
+        # walk_forward_progress_target_m_s (2026-08-18, user request --
+        # "start creating what we need to train... running version",
+        # clarified as faster walking within the existing WALK task, not a
+        # new gait/task): same pattern as _max_slew_deg_per_s directly
+        # above -- per-step-independent (read fresh every step(), so
+        # set_walk_forward_progress_target_m_s() below takes effect
+        # immediately), defaults to the module constant WALK_FORWARD_
+        # PROGRESS_TARGET_M_S, normally raised over training by train.py's
+        # ForwardSpeedCurriculumCallback (mirrors SlewCurriculumCallback's
+        # own shape/reasoning -- see that callback's docstring). Multi-
+        # agent review w/ Antigravity, chatbot.md "user wants to push
+        # toward faster walking": an INSTANT target change would drop
+        # forward_progress (which gates upright_reward/trot_symmetry_
+        # reward/climb_gate/hold_gate/the front+back clearance terms) from
+        # ~1.0 to ~0.55 immediately for an already-converged policy, risking
+        # a stability collapse before it ever learns to go faster -- same
+        # "don't pull the rug out" reasoning the slew curriculum already
+        # established, hence the same ramped-callback shape reused here.
+        self._walk_forward_progress_target_m_s = (
+            walk_forward_progress_target_m_s if walk_forward_progress_target_m_s is not None
+            else WALK_FORWARD_PROGRESS_TARGET_M_S)
         self.task = task
         # torque_belt only -- see BELT_TARGET_ADAPT_RATE_STAND/_WALK's
         # comment for why these need different timescales. Harmless to set
@@ -2615,6 +2636,20 @@ class DogEnv(gym.Env):
         own comment for why training starts at that loose value and only
         tightens after gait discovery, never the other way around."""
         self._max_slew_deg_per_s = value
+
+    def set_walk_forward_progress_target_m_s(self, value):
+        """Updates the WALK task's forward-speed reward target, effective
+        IMMEDIATELY on the very next reward computation -- same "smooth
+        constraint/target change, not a physics discontinuity the policy
+        would need to have trained under" reasoning as set_max_slew_deg_
+        per_s() above, since raising a REWARD target (unlike e.g. an
+        observation-space change) doesn't invalidate anything the policy
+        has already learned, just shifts what's asked of it going forward.
+        Meant to be called externally via VecEnv.env_method() from
+        train.py's ForwardSpeedCurriculumCallback -- see WALK_FORWARD_
+        PROGRESS_TARGET_M_S's own comment and that callback's docstring
+        for why this ramps rather than jumping."""
+        self._walk_forward_progress_target_m_s = value
 
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)
@@ -4116,7 +4151,7 @@ class DogEnv(gym.Env):
         # strategy than attempting real dynamic walking, which risks
         # several other movement-triggered penalties at once. This
         # closes that specific escape hatch directly.
-        forward_progress = np.clip(forward_velocity_reward / WALK_FORWARD_PROGRESS_TARGET_M_S, 0.0, 1.0)
+        forward_progress = np.clip(forward_velocity_reward / self._walk_forward_progress_target_m_s, 0.0, 1.0)
         # CAPPED 2026-08-04 (user: "I want the robot to move slowly...
         # the robot is not moving smoothly") -- was uncapped raw qvel[1],
         # the ONLY term in this whole function with no ceiling at
@@ -4146,10 +4181,10 @@ class DogEnv(gym.Env):
         # (sigma = target itself, same convention as
         # _foot_clearance_reward()'s own Gaussian reformulation) --
         # overshoot now actively costs instead of being free.
-        if forward_velocity_reward > WALK_FORWARD_PROGRESS_TARGET_M_S:
-            overshoot = forward_velocity_reward - WALK_FORWARD_PROGRESS_TARGET_M_S
-            sigma = WALK_FORWARD_PROGRESS_TARGET_M_S
-            forward_velocity_reward = WALK_FORWARD_PROGRESS_TARGET_M_S * np.exp(
+        if forward_velocity_reward > self._walk_forward_progress_target_m_s:
+            overshoot = forward_velocity_reward - self._walk_forward_progress_target_m_s
+            sigma = self._walk_forward_progress_target_m_s
+            forward_velocity_reward = self._walk_forward_progress_target_m_s * np.exp(
                 -(overshoot ** 2) / (2 * sigma ** 2))
 
         # PITCH-GATED 2026-08-06 (same investigation as above): the
