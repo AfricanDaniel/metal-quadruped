@@ -12,6 +12,18 @@ from dashboard.config import (
 CONTROL_MODES = ['position', 'torque', 'torque_belt']
 START_POSES = ['home', 'standing']
 
+# View Training's own default when the max_slew_deg_per_s box is left
+# blank (2026-08-18, user request) -- duplicates dog_gym/envs/dog_env.py's
+# SLEW_CURRICULUM_TARGET_DEG_PER_S (the real-deployment-matching target
+# most checkpoints are actually trained/converged toward), NOT dog_env.py's
+# own bare-CLI-omission default (MAX_SLEW_DEG_PER_S=1000, the loose
+# training-exploration ceiling -- viewing a checkpoint under that makes it
+# look far more violent than it really is, see launch_view_training()'s
+# own docstring). Keep this in sync if SLEW_CURRICULUM_TARGET_DEG_PER_S
+# ever changes (same "keep duplicated constants in sync" pattern already
+# used for dog_deploy/home_correction.py's CALF_RANGE_DEG).
+VIEW_DEFAULT_MAX_SLEW_DEG_PER_S = 250
+
 
 def _policies_dir(control_mode):
     return POLICIES_POSITION_DIR if control_mode == 'position' else POLICIES_TORQUE_DIR

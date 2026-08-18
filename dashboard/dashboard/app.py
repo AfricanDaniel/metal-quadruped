@@ -316,8 +316,12 @@ def local_view_training(folder, fname, basename):
     missing, matching the OLD unconditional behavior exactly. max_slew_
     deg_per_s (2026-08-17, user request, same round -- see launch_view_
     training()'s own docstring for why this matters) similarly comes from
-    the form, empty/missing means "don't override" (old default loose-
-    1000 behavior, unchanged). Both saved PER-CHECKPOINT, keyed by
+    the form; empty/missing means policy_actions.VIEW_DEFAULT_MAX_SLEW_
+    DEG_PER_S (250, matching dog_env.py's real SLEW_CURRICULUM_TARGET_
+    DEG_PER_S -- CHANGED 2026-08-18, user request: previously empty meant
+    "omit the flag," which fell through to dog_env.py's own loose 1000
+    training-exploration default and made checkpoints look more violent
+    than they really are). Both saved PER-CHECKPOINT, keyed by
     basename (2026-08-17, user request -- a single shared 'last used'
     value was applying whatever was picked for one checkpoint to every
     OTHER checkpoint's row too, which defeats the actual point: comparing
@@ -336,7 +340,7 @@ def local_view_training(folder, fname, basename):
         zip_path, env_id, episodes=5,
         start_pose=start_pose if env_id == 'Dog-Walk-v0' else None,
         control_mode='position',
-        max_slew_deg_per_s=max_slew_deg_per_s or None,
+        max_slew_deg_per_s=max_slew_deg_per_s or policy_actions.VIEW_DEFAULT_MAX_SLEW_DEG_PER_S,
     )
     flash('Launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
           'success' if ok else 'error')
@@ -1161,7 +1165,7 @@ def sheep_view_training(folder, fname, basename):
         local_path, env_id, episodes=5,
         start_pose=start_pose if env_id == 'Dog-Walk-v0' else None,
         control_mode='position',
-        max_slew_deg_per_s=max_slew_deg_per_s or None,
+        max_slew_deg_per_s=max_slew_deg_per_s or policy_actions.VIEW_DEFAULT_MAX_SLEW_DEG_PER_S,
     )
     flash('Downloaded and launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
           'success' if ok else 'error')

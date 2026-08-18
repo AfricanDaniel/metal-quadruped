@@ -653,7 +653,26 @@ WALK_SWING_FAIRNESS_WEIGHT = 5.0
 # unchanged) since it was already working; only back_clearance_reward is
 # NEW and gets its own gate below.
 WALK_FRONT_CLEARANCE_WEIGHT = 2.0
-WALK_BACK_CLEARANCE_WEIGHT = 2.0
+# RAISED 2.0 -> 3.0 (2026-08-18, same chatbot.md thread, "back-leg
+# clearance: user wants MORE than the current split fix gives" round) --
+# real-hardware testing (PPO_1000000_init_from_hf_v17_home_v1 and later
+# checkpoints) showed the parity-weight split fix genuinely helped but
+# back legs still drag somewhat -- Antigravity's explicit (a) answer:
+# raise the weight AND give back legs their own higher target (see
+# BACK_FOOT_CLEARANCE_TARGET_M below) together, not either alone, now
+# that parity has had a real training window (back_clearance_v1 reached
+# 14.5M steps) to prove insufficient on its own.
+WALK_BACK_CLEARANCE_WEIGHT = 3.0
+
+# Back legs' own higher foot-clearance target (2026-08-18, same round) --
+# front_clearance_reward keeps using the shared FOOT_CLEARANCE_TARGET_M
+# (0.06m) unchanged; back_clearance_reward uses THIS instead (passed as
+# _foot_clearance_reward()'s target_m override). 0.08m per Antigravity's
+# explicit number -- meant to give back legs real margin against the
+# sim-to-real gap that still shows up as dragging on real hardware even
+# once they're reliably hitting the SAME target front legs use.
+# Placeholder, not independently swept.
+BACK_FOOT_CLEARANCE_TARGET_M = 0.08
 
 # Gate for back_clearance_reward specifically (2026-08-17, same round)
 # -- Antigravity's explicit (c) answer: introducing a stark new penalty
@@ -3141,7 +3160,7 @@ class DogEnv(gym.Env):
         pairs_offset = 1.0 if a != b else -1.0
         return (pair_ad_synced + pair_bc_synced + pairs_offset) / 3.0
 
-    def _foot_clearance_reward(self, leg_indices=None):
+    def _foot_clearance_reward(self, leg_indices=None, target_m=None):
         """Rewards a SWINGING (non-contacting) foot for actually being
         elevated, not dragged along the ground -- adapted from the
         standard feet_air_time/foot_clearance pattern used in quadruped
@@ -3214,11 +3233,23 @@ class DogEnv(gym.Env):
         if not swinging_indices:
             return 0.0  # no (selected) leg is swinging right now -- neutral, NOT rewarded (see bug note above)
         total = 0.0
-        sigma = FOOT_CLEARANCE_SIGMA_M
+        # target_m (2026-08-18, multi-agent review w/ Antigravity, chatbot.md
+        # "back-leg clearance: user wants MORE than the current split fix
+        # gives"): optional override of FOOT_CLEARANCE_TARGET_M, for
+        # back_clearance_reward's own higher BACK_FOOT_CLEARANCE_TARGET_M
+        # (real-hardware back legs still drag somewhat even with the
+        # front/back split's equal-weight fix -- a genuinely higher target,
+        # not just more pressure toward the same one, per Antigravity's
+        # explicit (a) answer). sigma scales WITH the target (same target/2
+        # ratio FOOT_CLEARANCE_SIGMA_M itself uses) rather than staying
+        # fixed at the front's own sigma, so a higher target keeps the same
+        # relative discrimination sharpness instead of becoming coarser.
+        target = target_m if target_m is not None else FOOT_CLEARANCE_TARGET_M
+        sigma = target / 2
         for i in swinging_indices:
             site_id = self.foot_site_ids[i]
             foot_z = max(self.data.site_xpos[site_id][2], 0.0)
-            total += float(np.exp(-((foot_z - FOOT_CLEARANCE_TARGET_M) ** 2) / (2 * sigma ** 2)))
+            total += float(np.exp(-((foot_z - target) ** 2) / (2 * sigma ** 2)))
         return total / len(swinging_indices)
 
     def _calf_swing_motion_reward(self):
@@ -4575,7 +4606,7 @@ class DogEnv(gym.Env):
             (forward_progress - WALK_BACK_CLEARANCE_GATE_START)
             / (WALK_BACK_CLEARANCE_GATE_FULL - WALK_BACK_CLEARANCE_GATE_START),
             0.0, 1.0)
-        back_clearance_reward = (self._foot_clearance_reward(leg_indices=[2, 3])
+        back_clearance_reward = (self._foot_clearance_reward(leg_indices=[2, 3], target_m=BACK_FOOT_CLEARANCE_TARGET_M)
                                   * (0.5 + 0.5 * forward_progress) * back_clearance_gate)
 
         # NEW 2026-08-04 (user request, see _calf_swing_motion_reward()'s
