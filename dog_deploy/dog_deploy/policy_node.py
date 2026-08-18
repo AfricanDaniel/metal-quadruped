@@ -85,7 +85,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
 from actuator.srv import ReadMotorPositions, SetMotorTargets, SetMotorTorque
-from dog_deploy.home_correction import apply_back_leg_correction
+from dog_deploy.home_correction import apply_back_leg_correction, apply_front_leg_correction
 
 NUM_MOTORS = 8
 DEFAULT_MOTOR_MAPPING_PATH = os.path.join(
@@ -323,6 +323,19 @@ class PolicyNode(Node):
         # home_switch_cache_path are given, home_switch_cache_path wins
         # (more specific/explicit).
         self.declare_parameter('home_switch_back_leg_fraction', 0.0)
+        # Same mechanism as home_switch_back_leg_fraction above, for the
+        # front legs (motors 1/4, leg_a/leg_b thigh -- see home_
+        # correction.py's FRONT_LEG_HOME_CORRECTION_DEG) -- 2026-08-18,
+        # user report: front legs sit too close to the robot's face/body
+        # once deployed, the opposite problem from the back legs. Can be
+        # used TOGETHER with home_switch_back_leg_fraction (both apply to
+        # different motors, no interaction) -- see _on_positions_read()'s
+        # own comment for how they combine. 0.0 default = inert.
+        # MOTOR_1_CORRECTION_DEG/MOTOR_4_CORRECTION_DEG measured 2026-08-18
+        # (see home_correction.py's own comment for the real-hardware
+        # readings and a caveat on measurement precision) -- consider a
+        # fraction below 1.0 for the first real test given that caveat.
+        self.declare_parameter('home_switch_front_leg_fraction', 0.0)
         self.declare_parameter('home_switch_after_sec', 3.0)
         self.declare_parameter('home_switch_ramp_sec', 1.5)
 
@@ -441,6 +454,7 @@ class PolicyNode(Node):
         self.home_position_deg_after_switch = None
         home_switch_cache_path = self.get_parameter('home_switch_cache_path').value
         home_switch_back_leg_fraction = self.get_parameter('home_switch_back_leg_fraction').value
+        home_switch_front_leg_fraction = self.get_parameter('home_switch_front_leg_fraction').value
         if home_switch_cache_path:
             switch_cache_path = os.path.expanduser(home_switch_cache_path)
             self.get_logger().info(
@@ -452,15 +466,24 @@ class PolicyNode(Node):
                 f'Loaded post-switch home_position_deg: {self.home_position_deg_after_switch} -- '
                 f'will start ramping {self.get_parameter("home_switch_after_sec").value}s into the run, '
                 f'over {self.get_parameter("home_switch_ramp_sec").value}s.')
-        elif home_switch_back_leg_fraction != 0.0:
-            # See home_switch_back_leg_fraction's declare_parameter
-            # comment -- computed fresh from home_position_deg (whatever
-            # 'regular' reference was just loaded/captured above), not
-            # read from a second file.
-            self.home_position_deg_after_switch = apply_back_leg_correction(
-                self.home_position_deg, home_switch_back_leg_fraction)
+        elif home_switch_back_leg_fraction != 0.0 or home_switch_front_leg_fraction != 0.0:
+            # See home_switch_back_leg_fraction/home_switch_front_leg_
+            # fraction's own declare_parameter comments -- computed fresh
+            # from home_position_deg (whatever 'regular' reference was
+            # just loaded/captured above), not read from a second file.
+            # Both can be set together -- they touch different motors
+            # (5/8 vs 1/4), so applying one after the other composes
+            # cleanly with no interaction either way.
+            self.home_position_deg_after_switch = self.home_position_deg
+            if home_switch_back_leg_fraction != 0.0:
+                self.home_position_deg_after_switch = apply_back_leg_correction(
+                    self.home_position_deg_after_switch, home_switch_back_leg_fraction)
+            if home_switch_front_leg_fraction != 0.0:
+                self.home_position_deg_after_switch = apply_front_leg_correction(
+                    self.home_position_deg_after_switch, home_switch_front_leg_fraction)
             self.get_logger().info(
-                f'home_switch_back_leg_fraction={home_switch_back_leg_fraction} -- post-switch '
+                f'home_switch_back_leg_fraction={home_switch_back_leg_fraction}, '
+                f'home_switch_front_leg_fraction={home_switch_front_leg_fraction} -- post-switch '
                 f'home_position_deg computed as {self.home_position_deg_after_switch} -- '
                 f'will start ramping {self.get_parameter("home_switch_after_sec").value}s into the run, '
                 f'over {self.get_parameter("home_switch_ramp_sec").value}s.')

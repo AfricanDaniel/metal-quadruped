@@ -98,14 +98,31 @@ def _remember_tab_position():
     if request.endpoint in _CONNECT_GATE_ENDPOINTS:
         return
     path = request.path
+    endpoint = request.endpoint or ''
     if path.startswith('/local'):
         procs.set_last_path('local', path)
+        # Sub-tab-specific tracking (2026-08-18, same "forgets where I
+        # was" bug class as jetson_policies below, just for Local's own
+        # 4 sub-tabs) -- classified by endpoint-name prefix, matching
+        # this project's own consistent local_<subtab>* naming.
+        if endpoint.startswith('local_trainings'):
+            procs.set_last_path('local_trainings', path)
+        elif endpoint.startswith('local_policy') or endpoint == 'local_policies':
+            procs.set_last_path('local_policies', path)
+        elif endpoint.startswith('local_tools'):
+            procs.set_last_path('local_tools', path)
+        else:
+            procs.set_last_path('local_models', path)
     elif path.startswith('/jetson'):
         procs.set_last_path('jetson', path)
-        if request.endpoint != 'jetson_basics':
+        if endpoint != 'jetson_basics':
             procs.set_last_path('jetson_policies', path)
     elif path.startswith('/sheep'):
         procs.set_last_path('sheep', path)
+        if endpoint.startswith('sheep_trainings'):
+            procs.set_last_path('sheep_trainings', path)
+        else:
+            procs.set_last_path('sheep_models', path)
 
 
 @app.context_processor
@@ -122,16 +139,25 @@ def _inject_sub_tab_urls():
     """sub_tabs.html (Models/Trainings) is included from folders/files/
     checkpoints/trainings templates on both Local and Sheep -- rather than
     have every one of those routes pass these two urls by hand, derive them
-    once here from which tab we're currently under."""
+    once here from which tab we're currently under.
+
+    Uses procs.get_last_path() (2026-08-18, user report -- "clicked
+    Policies then back to Models, landed on the Models landing page
+    instead of where I left") instead of a plain url_for() to the tab's
+    root -- same fix shape as jetson_policies below, just extended to
+    Local's 4 sub-tabs and Sheep's 2, which had never gotten it."""
     if request.path.startswith('/local'):
         return {
-            'sub_models_url': url_for('local_folders'),
-            'sub_trainings_url': url_for('local_trainings'),
-            'sub_policies_url': url_for('local_policies'),
-            'sub_tools_url': url_for('local_tools'),
+            'sub_models_url': procs.get_last_path('local_models'),
+            'sub_trainings_url': procs.get_last_path('local_trainings'),
+            'sub_policies_url': procs.get_last_path('local_policies'),
+            'sub_tools_url': procs.get_last_path('local_tools'),
         }
     if request.path.startswith('/sheep'):
-        return {'sub_models_url': url_for('sheep_home'), 'sub_trainings_url': url_for('sheep_trainings')}
+        return {
+            'sub_models_url': procs.get_last_path('sheep_models'),
+            'sub_trainings_url': procs.get_last_path('sheep_trainings'),
+        }
     if request.path.startswith('/jetson'):
         return {
             'sub_jetson_policies_url': procs.get_last_path('jetson_policies'),
@@ -636,6 +662,7 @@ def jetson_basics():
         status_poll_url=url_for('jetson_status_poll'),
         set_home_url=url_for('jetson_set_home', next=request.path),
         go_to_pose_url=url_for('jetson_go_to_pose', next=request.path),
+        last_pose_speed_deg_s=procs.get_last_tool_form('go_to_pose').get('speed_deg_s') or '60',
         read_motor_url=url_for('jetson_read_motor', next=request.path),
         adjust_motor_url=url_for('jetson_adjust_motor', next=request.path),
         reset_motors_url=url_for('jetson_reset_motors', next=request.path),
@@ -865,8 +892,17 @@ def jetson_deploy_toggle(policies_dir, task, fname, basename):
             cache_path = request.form.get('home_position_deg_cache_path') or '~/.dog_home_cache.yaml'
             ros_args.append(f'-p home_position_deg_cache_path:={_expand_tilde_for_ros_arg(cache_path)}')
         if request.form.get('home_reference_mode') == 'edited':
-            fraction = _ros_float(request.form.get('home_switch_back_leg_fraction'), 1.0)
-            ros_args.append(f'-p home_switch_back_leg_fraction:={fraction}')
+            back_fraction = _ros_float(request.form.get('home_switch_back_leg_fraction'), 1.0)
+            ros_args.append(f'-p home_switch_back_leg_fraction:={back_fraction}')
+            # front_fraction (2026-08-18, user request -- see home_
+            # correction.py's FRONT_LEG_HOME_CORRECTION_DEG): defaults to
+            # 0.0 (inert) unless the form field is explicitly non-blank --
+            # unlike the back-leg field, which is the reason this whole
+            # "edited" mode exists and defaults to 1.0 whenever this
+            # branch runs at all.
+            front_fraction_raw = request.form.get('home_switch_front_leg_fraction', '').strip()
+            if front_fraction_raw:
+                ros_args.append(f'-p home_switch_front_leg_fraction:={_ros_float(front_fraction_raw, 0.0)}')
             ros_args.append(f'-p home_switch_after_sec:={_ros_float(request.form.get("home_switch_after_sec"), 3.0)}')
             ros_args.append(f'-p home_switch_ramp_sec:={_ros_float(request.form.get("home_switch_ramp_sec"), 1.5)}')
         ok, message = procs.start_deploy(policy_pt, ros_args)
@@ -902,6 +938,11 @@ def jetson_set_home():
 def jetson_go_to_pose():
     pose_name = request.form.get('pose_name', 'home')
     speed_deg_s = request.form.get('pose_speed_deg_s', '').strip()
+    # Remembered (2026-08-18, user request -- "should remember where i
+    # last left off") so the field pre-fills with this same value next
+    # time instead of always resetting -- same procs.set_last_tool_form()
+    # mechanism used throughout this dashboard.
+    procs.set_last_tool_form('go_to_pose', {'speed_deg_s': speed_deg_s})
     result = ros_actions.go_to_pose(pose_name, speed_deg_s=speed_deg_s or None)
     flash(result.stdout.strip() or result.stderr.strip() or f'go_to_pose {pose_name} called.',
           'success' if result.ok else 'error')

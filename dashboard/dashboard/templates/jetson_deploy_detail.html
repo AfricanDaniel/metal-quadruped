@@ -69,12 +69,16 @@
     </div>
     <div class="field-row">
       <label><input type="radio" name="home_reference_mode" value="regular" {{ 'checked' if last_deploy_form.get('home_reference_mode', 'regular') == 'regular' }} onchange="toggleHomeEdited()"> Regular home (no switch)</label>
-      <label><input type="radio" name="home_reference_mode" value="edited" {{ 'checked' if last_deploy_form.get('home_reference_mode') == 'edited' }} onchange="toggleHomeEdited()"> Edited home (climb on regular, switch to back-leg-corrected mid-walk)</label>
+      <label><input type="radio" name="home_reference_mode" value="edited" {{ 'checked' if last_deploy_form.get('home_reference_mode') == 'edited' }} onchange="toggleHomeEdited()"> Edited home (climb on regular, switch to corrected mid-walk)</label>
     </div>
     <div id="home-edited-fields" style="display:{{ '' if last_deploy_form.get('home_reference_mode') == 'edited' else 'none' }}">
       <div class="field-row">
         <label>back_leg_correction_fraction (1.0 = the correction we set up with)</label>
         <input type="number" step="0.05" name="home_switch_back_leg_fraction" value="{{ last_deploy_form.get('home_switch_back_leg_fraction', '1.0') }}" style="max-width:100px">
+      </div>
+      <div class="field-row">
+        <label>front_leg_correction_fraction (blank = off -- NOT YET MEASURED, see home_correction.py)</label>
+        <input type="number" step="0.05" name="home_switch_front_leg_fraction" value="{{ last_deploy_form.get('home_switch_front_leg_fraction', '') }}" style="max-width:100px">
       </div>
       <div class="field-row">
         <label>home_switch_after_sec</label>

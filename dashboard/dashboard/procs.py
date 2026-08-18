@@ -55,7 +55,16 @@ _state = {
     # jump back to wherever you left off (e.g. a specific fname's
     # checkpoint list) instead of always landing on that tab's root --
     # updated from app.py's before_request hook, on GET requests only.
-    'last_path': {'local': '/local', 'jetson': '/jetson', 'sheep': '/sheep', 'jetson_policies': '/jetson/home'},
+    'last_path': {
+        'local': '/local', 'jetson': '/jetson', 'sheep': '/sheep', 'jetson_policies': '/jetson/home',
+        # Local/Sheep sub-tab-specific tracking (2026-08-18, user report --
+        # "clicked Policies then back to Models, landed on the Models
+        # landing page instead of where I left" -- same bug class as
+        # jetson_policies above, just never extended to these sub-tabs).
+        'local_models': '/local', 'local_trainings': '/local/trainings',
+        'local_policies': '/local/policies', 'local_tools': '/local/tools',
+        'sheep_models': '/sheep/home', 'sheep_trainings': '/sheep/trainings',
+    },
 }
 
 
