@@ -1061,7 +1061,21 @@ WALK_TROT_SYMMETRY_WEIGHT = 2.5
 # strength (2.5) matches WALK_TROT_SYMMETRY_WEIGHT's own restored value
 # -- her point was the EARLY-introduction risk, not that 2.5 itself is
 # unsafe once the gate has let basic locomotion establish first.
-WALK_BOUND_SYMMETRY_WEIGHT = 2.5
+#
+# RAISED 2.5 -> 5.0 (2026-08-19, task #43 follow-up, multi-agent review
+# w/ Antigravity, chatbot.md "foot-contact data shows the policies
+# learned TROT, not BOUND"): real foot-contact data from the running_*
+# checkpoints (all --init-from a trot-converged source) showed the
+# gate/continuous-reward fixes alone weren't enough -- 588-600/1000 ticks
+# still classified as a diagonal TROT pattern, only 20-22/1000 as genuine
+# front/back BOUND, despite gait_symmetry_reward being active. Antigravity's
+# read: the policy is stuck in a local optimum where its already-converged
+# trot habit reaps strong reward from forward_velocity_reward (weight 5.0)
+# and 2.5 simply isn't competitive enough to break it -- needs to be
+# "competitive with, or even dominate" forward_velocity_reward during this
+# transition. Her recommended range was 5.0-10.0; starting at the more
+# conservative end.
+WALK_BOUND_SYMMETRY_WEIGHT = 5.0
 WALK_BOUND_SYMMETRY_GATE_START = 0.2
 WALK_BOUND_SYMMETRY_GATE_FULL = 0.4
 
@@ -1268,6 +1282,20 @@ NONTIP_TERMINATION_ENABLED = True
 # second layer), not just the original "clumsy scuff after standing"
 # purpose alone.
 NONTIP_TERMINATION_S = 2.0
+# STANDING-start gets its OWN, tighter threshold (2026-08-19, direct user
+# request): the 2.0s value above exists specifically to cover 'home's own
+# reset-time penetration violence (see the comment right above) -- a
+# 'standing' start never has that initial penetration at all, so there's
+# no established reason for it to need the same 2.0s of slack. Reverted
+# to the ORIGINAL pre-2026-08-16 value (0.5) for standing specifically --
+# calibrated for "ordinary mid-gait knee scuff" tolerance (see
+# NONTIP_TERMINATION_S's own 2026-08-03 history above), not 0: a hard
+# instant-termination-on-any-touch would reintroduce the exact "crushes
+# early exploration" problem NONTIP_TERMINATION_S's own docstring already
+# warns about, just for standing-start instead of home-start. See
+# _knee_walking_too_long() for where this is selected based on
+# self._episode_start_pose.
+NONTIP_TERMINATION_S_STANDING = 0.5
 
 # Hard cutoff for _knee_walking_too_long()'s gate (2026-08-16, multi-agent
 # review w/ Antigravity, chatbot.md same title as NONTIP_TERMINATION_S's
@@ -3315,14 +3343,48 @@ class DogEnv(gym.Env):
         pattern scores this method's worst case, same way a bound
         pattern scores _trot_symmetry_reward()'s worst case, by design:
         the two methods actively disagree on what "good" looks like,
-        which is exactly why gait_style picks only one at a time)."""
+        which is exactly why gait_style picks only one at a time).
+
+        CONTINUOUS since 2026-08-19 (task #43 item 2, multi-agent
+        research w/ Antigravity, chatbot.md "independent research
+        request" thread): the ORIGINAL formula (this docstring's own
+        history above) compared per-leg CONTACT BOOLEANS via ==/!=, a
+        flat step function -- two legs 1mm apart in swing height score
+        identically to two legs fully out of phase, giving PPO no
+        gradient to climb toward "closer to synced" versus "further from
+        synced," only a binary yes/no. The literature (both independent
+        searches converged here) instead uses a continuous per-leg PHASE
+        signal for exactly this reason -- dense gradient beats a flat
+        step function for optimization. Full phase-oscillator tracking
+        (a per-leg clock variable with an estimated cycle period) would
+        be a much larger, riskier addition; this reuses the SAME
+        continuous, already-calibrated foot-height signal
+        _foot_clearance_reward() uses as a swing-phase proxy instead --
+        foot height rises smoothly from ~0 (planted) toward
+        FOOT_CLEARANCE_TARGET_M (full swing) over a real gait cycle, so
+        the DIFFERENCE in height between two legs is a natural continuous
+        "how out of phase are these two, right now" signal, without
+        needing to estimate an absolute cycle period at all. Sign/range
+        convention deliberately unchanged ([-1, 1], same STUCK-PHASE
+        GATE, same downstream weight/gate constants) -- only the
+        boolean-vs-continuous comparison changed, so this is a strict
+        smoothing of the SAME target pattern, not a new one."""
         if np.any(self._leg_phase_time > MAX_LEG_PHASE_S):
             return -1.0
-        a, b, c, d = self._foot_contact_per_leg()
-        pair_ab_synced = 1.0 if a == b else -1.0
-        pair_cd_synced = 1.0 if c == d else -1.0
-        pairs_offset = 1.0 if a != c else -1.0
-        return (pair_ab_synced + pair_cd_synced + pairs_offset) / 3.0
+        a_z, b_z, c_z, d_z = (
+            max(self.data.site_xpos[site_id][2], 0.0) for site_id in self.foot_site_ids)
+        # Normalize by FOOT_CLEARANCE_TARGET_M (the same "full swing"
+        # calibration _foot_clearance_reward() already uses) so this
+        # stays on a comparable [~0, ~1] scale regardless of the robot's
+        # absolute size -- not clipped to exactly [0, 1] since a leg
+        # swung HIGHER than the target is still meaningfully "more
+        # airborne" than one at the target, not a saturating ceiling.
+        a_air, b_air, c_air, d_air = (
+            z / FOOT_CLEARANCE_TARGET_M for z in (a_z, b_z, c_z, d_z))
+        pair_ab_synced = 1.0 - 2.0 * abs(a_air - b_air)
+        pair_cd_synced = 1.0 - 2.0 * abs(c_air - d_air)
+        pairs_offset = 2.0 * abs((a_air + b_air) / 2.0 - (c_air + d_air) / 2.0) - 1.0
+        return float(np.clip((pair_ab_synced + pair_cd_synced + pairs_offset) / 3.0, -1.0, 1.0))
 
     def _foot_clearance_reward(self, leg_indices=None, target_m=None):
         """Rewards a SWINGING (non-contacting) foot for actually being
@@ -3928,12 +3990,26 @@ class DogEnv(gym.Env):
         NONTIP_TERMINATION_MIN_RISE_PROGRESS's own comment) -- skips this
         check entirely while still below that threshold, since non-tip
         contact while genuinely still in the sitting posture is expected
-        (matches the real robot), not a walking failure."""
+        (matches the real robot), not a walking failure.
+
+        THRESHOLD (2026-08-19, see NONTIP_TERMINATION_S_STANDING's own
+        comment): WALK with self._episode_start_pose == 'standing' uses
+        the tighter NONTIP_TERMINATION_S_STANDING instead of
+        NONTIP_TERMINATION_S -- the longer duration exists specifically
+        to cover 'home's own reset-time penetration, which a standing
+        start never has. self._episode_start_pose only exists for the
+        WALK task (see reset()) -- STAND, and WALK before its first
+        reset(), fall through to the getattr default (NONTIP_
+        TERMINATION_S), unchanged from before this threshold split
+        existed."""
         if not NONTIP_TERMINATION_ENABLED:
             return False
         if self._get_rise_progress() < NONTIP_TERMINATION_MIN_RISE_PROGRESS:
             return False
-        return bool(np.any(self._non_tip_contact_time > NONTIP_TERMINATION_S))
+        threshold = (NONTIP_TERMINATION_S_STANDING
+                     if getattr(self, '_episode_start_pose', None) == 'standing'
+                     else NONTIP_TERMINATION_S)
+        return bool(np.any(self._non_tip_contact_time > threshold))
 
     def _not_all_feet_grounded(self):
         """STAND only: True if any leg has been fully airborne (no floor
@@ -5019,7 +5095,7 @@ class DogEnv(gym.Env):
         # nothing else in this reward currently provides as densely
         # (tip_reward/non_tip_penalty only judge contact AFTER it
         # happens, not the swing trajectory leading up to it).
-        return (
+        walk_reward_total = (
             5.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 1.0 * climb_posture_reward
@@ -5092,6 +5168,29 @@ class DogEnv(gym.Env):
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
         )
+        # Floor per-tick reward at 0 (2026-08-19, task #43 item 1 --
+        # "fall early to minimize penalty" exploit, confirmed happening in
+        # the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean
+        # improved -3480 -> -63 over training while ep_len_mean COLLAPSED
+        # 800 -> 40 steps -- the policy learned that ending the episode
+        # fast accumulates LESS total penalty than actually trying to
+        # walk, since this term's own average was mildly negative
+        # (~-0.4 to -0.6/tick) and the +0.1 survival bonus above was never
+        # enough to outweigh that. Direct real-episode math: ~900 more
+        # ticks at -0.5/tick is ~-450, dwarfing WALK_FALL_TERMINAL_PENALTY's
+        # one-time -10 -- so even that penalty couldn't make "keep trying"
+        # the better strategy once this term was reliably negative.
+        # Matches legged_gym's own only_positive_rewards=True convention
+        # (its own comment: "avoids early termination problems") --
+        # flooring here removes the incentive structurally (no number of
+        # additional ticks can ever REDUCE accumulated reward, so living
+        # longer is never worse) instead of needing an ever-larger one-time
+        # penalty to try to outrun accumulating small negatives, which is
+        # fragile and exactly what was failing here. WALK_FALL_TERMINAL_
+        # PENALTY is added separately in step() AFTER this return -- a
+        # real fall still costs -10 on top of this floor, so the incentive
+        # to avoid falling in the first place is unchanged.
+        return max(0.0, walk_reward_total)
 
     def _ensure_viewer(self):
         if self.renderer is None:

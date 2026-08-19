@@ -61,7 +61,7 @@
     </div>
     <div class="field-row">
       <label><input type="checkbox" name="log_csv_enabled" {{ 'checked' if last_deploy_form.get('log_csv_enabled', not last_deploy_form) }}> log_csv</label>
-      <input type="text" name="log_csv" value="{{ last_deploy_form.get('log_csv', checkpoint.basename) }}">
+      <input type="text" name="log_csv" value="{{ checkpoint.basename }}">
     </div>
     <div class="field-row">
       <label><input type="checkbox" name="home_position_deg_cache_path_enabled" {{ 'checked' if last_deploy_form.get('home_position_deg_cache_path_enabled', not last_deploy_form) }}> home_position_deg_cache_path (regular reference -- always used to climb)</label>
