@@ -30,6 +30,11 @@ namespace {
 const std::string kPresetPoseFile  = std::string(ACTUATOR_PACKAGE_DIR) + "/config/preset_pose.yaml";
 const std::string kLogCsvDir       = std::string(ACTUATOR_PACKAGE_DIR) + "/data/csv_logs";
 
+// get_or_create_motor()'s home-registration probe retry knobs (2026-08-19,
+// see that function's own comment for the full "motor 8 messes up" story).
+constexpr int kHomeProbeMaxAttempts   = 3;
+constexpr int kHomeProbeRetryDelayMs  = 20;
+
 // Loads a named pose (motor_id -> target angle in degrees) from
 // preset_pose.yaml. Re-reads the file every call, so poses added/edited
 // there show up immediately without restarting the node. Returns nullopt if
@@ -333,7 +338,38 @@ private:
         // motor, but it populates state.data with the real current reading.
         // Without this, state.data.q would still be its default-constructed
         // 0 the first time something latches onto "current position".
-        serial_->sendRecv(&state.cmd, &state.data);
+        //
+        // RETRIED up to kHomeProbeMaxAttempts times (2026-08-19, real-hardware
+        // bug report: "every now and then motor 8 messes up and goes to the
+        // wrong position" -- root-caused to this exact probe, previously a
+        // single unchecked sendRecv() call). sendRecv() returns bool (see
+        // SerialPort.h) and the SDK itself prints "<id> does not reply" to
+        // stdout directly (confirmed via `strings` on libUnitreeMotorSDK,
+        // not routed through RCLCPP logging) on an RS485 dropout -- observed
+        // happening intermittently to ARBITRARY motor IDs on this bus, not
+        // specific to motor 8. state.data is zero-initialized (MotorState's
+        // own default member initializer), so when the old one-shot probe
+        // landed on exactly this motor's dropped reply, state.data.q was
+        // silently left at 0 and logged/used as its real home -- every
+        // subsequent home+offset absolute-position command for that motor
+        // was then computed from a wrong (zero) home reference, moving it to
+        // the wrong physical spot. Retrying here fixes it at the source,
+        // before this reading is ever latched in as a home reference.
+        bool probe_ok = false;
+        for (int attempt = 1; attempt <= kHomeProbeMaxAttempts && !probe_ok; ++attempt) {
+            probe_ok = serial_->sendRecv(&state.cmd, &state.data);
+            if (!probe_ok && attempt < kHomeProbeMaxAttempts) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kHomeProbeRetryDelayMs));
+            }
+        }
+        if (!probe_ok) {
+            RCLCPP_WARN(get_logger(),
+                        "Motor %d did not reply after %d attempts -- registering at %.2f deg "
+                        "anyway, but this reading (and therefore this motor's home reference) "
+                        "may be stale/wrong. Consider checking this motor's RS485 connection.",
+                        motor_id, kHomeProbeMaxAttempts,
+                        (state.data.q / gear_ratio_) * 180.0f / static_cast<float>(M_PI));
+        }
 
         RCLCPP_INFO(get_logger(), "Motor %d registered at %.2f deg.", motor_id,
                     (state.data.q / gear_ratio_) * 180.0f / static_cast<float>(M_PI));

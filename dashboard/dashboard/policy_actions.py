@@ -29,30 +29,53 @@ def _policies_dir(control_mode):
     return POLICIES_POSITION_DIR if control_mode == 'position' else POLICIES_TORQUE_DIR
 
 
-def _task_subfolder(env_id):
-    return 'walk' if env_id == 'Dog-Walk-v0' else 'stand'
+# WALK lineage folders (2026-08-19, see local_fs.LOCAL_POLICY_GROUPS's own
+# comment for the full reorganization story) -- exact mirror of the 6
+# models/ folder names this taxonomy is meant to match.
+_WALK_LINEAGE_FOLDERS = {
+    'walk_home', 'walk_standing', 'trot_home', 'trot_stand', 'running_home', 'running_stand',
+}
 
 
-def export_target_group(env_id, control_mode):
+def _task_subfolder(env_id, source_folder=None):
+    """'stand' for STAND-task checkpoints (no gait-lineage concept there).
+    For WALK, routes by the checkpoint's OWN models/ source_folder --
+    env_id alone can no longer decide this since WALK now has 6 possible
+    destinations, not one. source_folder=None or anything outside the 6
+    known lineage names (e.g. a pre-split legacy checkpoint, or a folder
+    like 'stand_walk' that isn't itself a lineage name) falls back to
+    'walk_home' -- same fallback the 2026-08-19 migration used for
+    existing files that couldn't be traced to a specific models/ folder,
+    approved directly by the user rather than guessed."""
+    if env_id != 'Dog-Walk-v0':
+        return 'stand'
+    if source_folder in _WALK_LINEAGE_FOLDERS:
+        return source_folder
+    return 'walk_home'
+
+
+def export_target_group(env_id, control_mode, source_folder=None):
     """(policies_dir, task) as the plain strings the Local Policies
-    routes key on ('policies_position'/'policies_torque', 'stand'/
-    'walk') -- same mapping export_target_path() uses internally, just
-    exposed so app.py can build a url_for('local_policy_detail', ...)
-    link to wherever a given export actually landed."""
+    routes key on ('policies_position'/'policies_torque', one of 'stand'/
+    the 6 WALK lineage names) -- same mapping export_target_path() uses
+    internally, just exposed so app.py can build a url_for(
+    'local_policy_detail', ...) link to wherever a given export actually
+    landed."""
     policies_dir = 'policies_position' if control_mode == 'position' else 'policies_torque'
-    return policies_dir, _task_subfolder(env_id)
+    return policies_dir, _task_subfolder(env_id, source_folder)
 
 
-def export_target_path(basename, env_id, control_mode):
-    """<repo>/src/policies_{position,torque}/{stand,walk}/policy/<basename>.pt
-    -- matches this project's own established layout exactly (see the
-    plan's 'Ground truth' section)."""
+def export_target_path(basename, env_id, control_mode, source_folder=None):
+    """<repo>/src/policies_{position,torque}/<task>/policy/<basename>.pt
+    -- matches this project's own established layout exactly (see
+    local_fs.LOCAL_POLICY_GROUPS's own comment for the current 7-task
+    breakdown)."""
     return os.path.join(
-        _policies_dir(control_mode), _task_subfolder(env_id), 'policy', basename + '.pt')
+        _policies_dir(control_mode), _task_subfolder(env_id, source_folder), 'policy', basename + '.pt')
 
 
 def launch_view_training(zip_path, env_id, episodes, start_pose=None, control_mode=None,
-                          max_slew_deg_per_s=None):
+                          max_slew_deg_per_s=None, joint_stiffness=None):
     """Spawns `python3 -m dog_gym.train --test ...` DETACHED (the
     dashboard's own request returns immediately; the MuJoCo viewer opens
     in its own window and keeps running independently of the dashboard
@@ -89,6 +112,20 @@ def launch_view_training(zip_path, env_id, episodes, start_pose=None, control_mo
             cmd_parts += ['--control-mode', control_mode]
         if max_slew_deg_per_s:
             cmd_parts += ['--max-slew-deg-per-s', str(max_slew_deg_per_s)]
+        # joint_stiffness (2026-08-18, user request -- "does the viewer know
+        # which stiffness is affiliated with the simulation?"): like
+        # max_slew_deg_per_s above, this is a runtime env-construction
+        # kwarg, not something saved inside the .zip checkpoint -- without
+        # this, --test never passes --joint-stiffness, so dog_env.py's own
+        # default (None -> the MJCF's physically-correct 0) is always used,
+        # regardless of what a T_FAKE-lineage checkpoint actually trained
+        # under. UNLIKE max_slew_deg_per_s, there's no "smart" nonzero
+        # default here -- most checkpoints genuinely trained at 0, only the
+        # T_FAKE lineage uses a nonzero value, so blank correctly means
+        # "omit the flag" (matching dog_env.py's own default), not a
+        # substituted value.
+        if joint_stiffness:
+            cmd_parts += ['--joint-stiffness', str(joint_stiffness)]
     cmd = SOURCE_PREFIX + ' '.join(cmd_parts)
     try:
         subprocess.Popen(
@@ -103,10 +140,14 @@ def launch_view_training(zip_path, env_id, episodes, start_pose=None, control_mo
         return False, str(e)
 
 
-def run_export_policy(zip_path, env_id, control_mode, basename):
+def run_export_policy(zip_path, env_id, control_mode, basename, source_folder=None):
     """Blocking (export is fast) -- runs dog_gym.export_policy and
-    returns (ok, message, target_path)."""
-    target_path = export_target_path(basename, env_id, control_mode)
+    returns (ok, message, target_path). source_folder (2026-08-19): the
+    checkpoint's own models/ folder name, passed through to
+    export_target_path() so a WALK checkpoint lands in ITS lineage's
+    policy folder (walk_home/trot_home/etc.) instead of always 'walk_home'
+    -- see that function's own comment."""
+    target_path = export_target_path(basename, env_id, control_mode, source_folder)
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     cmd_parts = [
         VENV_PYTHON, '-m', 'dog_gym.export_policy',

@@ -3,15 +3,58 @@ manually against the Jetson throughout this project -- each one sources
 ROS + the workspace install first (a fresh `ssh host "cmd"` is a new
 shell every time, nothing persists across calls) then runs the service
 call, over SSH.
+
+local_read_motor_positions()/local_adjust_motor_position() (2026-08-18,
+user request -- Motors section for the Local Tools tab, talking to
+local_actuator_actions.py's own locally-run basic_control instead of the
+Jetson's) are the same two service calls run as a LOCAL subprocess
+instead, for bench-debugging motors plugged straight into this laptop.
 """
+import subprocess
+
 from dashboard import ssh
-from dashboard.config import JETSON_HOST, JETSON_WS_ROOT
+from dashboard.config import JETSON_HOST, JETSON_WS_ROOT, SOURCE_PREFIX
 
 _PREFIX = f'source /opt/ros/*/setup.bash && source {JETSON_WS_ROOT}/install/setup.bash && '
 
 
 def _call(cmd, timeout_s=15):
     return ssh.run(JETSON_HOST, _PREFIX + cmd, timeout_s=timeout_s)
+
+
+def _local_call(cmd, timeout_s=15):
+    """Local equivalent of _call() -- same SshResult-shaped return (.ok/
+    .stdout/.stderr) so app.py's route handlers can treat local and
+    Jetson results identically."""
+    try:
+        proc = subprocess.run(
+            ['bash', '-c', SOURCE_PREFIX + cmd],
+            capture_output=True, text=True, timeout=timeout_s,
+        )
+        return ssh.SshResult(proc.returncode == 0, proc.stdout, proc.stderr, proc.returncode)
+    except subprocess.TimeoutExpired:
+        return ssh.SshResult(False, '', f'Timed out after {timeout_s}s.', None)
+    except OSError as e:
+        return ssh.SshResult(False, '', str(e), None)
+
+
+def local_read_motor_positions(motor_ids=None):
+    """Local (not Jetson) equivalent of read_motor_positions() -- see
+    that function's own docstring for the request format."""
+    if motor_ids:
+        ids = ', '.join(str(i) for i in motor_ids)
+        req = f'{{motor_id: [{ids}]}}'
+    else:
+        req = '{}'
+    return _local_call(f'ros2 service call /read_motor_positions '
+                        f'actuator/srv/ReadMotorPositions "{req}"')
+
+
+def local_adjust_motor_position(motor_id, degrees):
+    """Local (not Jetson) equivalent of adjust_motor_position()."""
+    return _local_call(f'ros2 service call /adjust_motor_position '
+                        f'actuator/srv/AdjustMotorPosition '
+                        f'"{{motor_id: {int(motor_id)}, degrees: {float(degrees)}}}"')
 
 
 def set_home():

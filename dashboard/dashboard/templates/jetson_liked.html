@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Liked policies - dashboard{% endblock %}
+{% block content %}
+{% include "sub_tabs.html" %}
+<h1>Liked policies</h1>
+<div class="subtitle">Policies you've liked (♥) on this Jetson -- quick access without hunting back through Policies groups.</div>
+
+<div class="list">
+  {% for c in items %}
+    <div class="list-item">
+      <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ c.detail_url }}">
+        {{ c.basename }}
+        <span class="meta">{{ c.policies_dir }}/{{ c.task }}</span>
+      </a>
+      <span class="row-actions">
+        <form class="inline" method="post" action="{{ c.unlike_url }}">
+          <button type="submit" class="like-btn liked" title="Unlike">♥</button>
+        </form>
+      </span>
+    </div>
+  {% else %}
+    <div class="subtitle">Nothing liked yet -- click ♡ next to any policy on the Policies tab.</div>
+  {% endfor %}
+</div>
+{% endblock %}

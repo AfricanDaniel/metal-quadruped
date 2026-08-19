@@ -17,14 +17,21 @@ import shlex
 from dashboard import local_fs, ssh
 from dashboard.config import JETSON_WS_ROOT, SHEEP_WS_ROOT
 
-# (policies_dir, task) -> the 4 fixed policy groups Jetson browsing shows
+# (policies_dir, task) -> the fixed policy groups Jetson browsing shows
 # as its top-level "folders". policies_dir is 'policies_position' or
-# 'policies_torque' (control-mode split); task is 'stand' or 'walk'
-# (env-id split) -- exact mirror of this project's own on-disk layout,
-# confirmed by reading it directly (see the plan's "Ground truth" section).
+# 'policies_torque' (control-mode split); task is 'stand' or one of the 6
+# WALK lineage names -- exact mirror of local_fs.LOCAL_POLICY_GROUPS, see
+# that constant's own comment for the full 2026-08-19 reorganization
+# story (both local and Jetson's on-disk layout were migrated together,
+# confirmed identical .pt counts per folder on both machines).
 JETSON_POLICY_GROUPS = [
     ('policies_position', 'stand'),
-    ('policies_position', 'walk'),
+    ('policies_position', 'walk_home'),
+    ('policies_position', 'walk_standing'),
+    ('policies_position', 'trot_home'),
+    ('policies_position', 'trot_stand'),
+    ('policies_position', 'running_home'),
+    ('policies_position', 'running_stand'),
     ('policies_torque', 'stand'),
     ('policies_torque', 'walk'),
 ]
@@ -198,7 +205,12 @@ def list_jetson_csvs(host, group_name, basename, ws_root=JETSON_WS_ROOT):
     """[{name, mtime}] of CSVs in the sibling csv/ folder whose name
     starts with this policy's basename (e.g. basename
     'PPO_33000000_walk_position_obshistory_v31' matches
-    '..._v31_1.csv', '..._v31_2.csv', ...), newest first."""
+    '..._v31_1.csv', '..._v31_2.csv', ...), newest first.
+
+    Exact basename prefix -- see local_fs.list_policy_csvs's own comment
+    for why this deliberately does NOT strip/ignore a trailing _vN (tried
+    that 2026-08-19, reverted same day per direct user correction: each
+    version number is its own distinct identity, not interchangeable)."""
     g = _parse_group_name(group_name)
     entries = _remote_file_entries(host, _group_csv_dir(g, ws_root), f'{basename}*.csv')
     entries.sort(key=lambda e: e[1], reverse=True)

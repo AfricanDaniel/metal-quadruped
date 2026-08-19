@@ -9,7 +9,8 @@
 </div>
 {% elif tab == 'jetson' %}
 <div class="sub-tabs">
-  <a class="sub-tab {{ 'active' if sub_tab != 'basics' else '' }}" href="{{ sub_jetson_policies_url }}">Policies</a>
+  <a class="sub-tab {{ 'active' if sub_tab not in ('basics', 'liked') else '' }}" href="{{ sub_jetson_policies_url }}">Policies</a>
   <a class="sub-tab {{ 'active' if sub_tab == 'basics' else '' }}" href="{{ sub_jetson_basics_url }}">Basics</a>
+  <a class="sub-tab {{ 'active' if sub_tab == 'liked' else '' }}" href="{{ sub_jetson_liked_url }}">Liked</a>
 </div>
 {% endif %}

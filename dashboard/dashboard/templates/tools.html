@@ -76,6 +76,28 @@
       <input type="number" step="0.5" name="period_s" value="{{ last_vbd_form.get('period_s', '4') }}" style="max-width:100px">
     </div>
     <div class="field-row">
+      <label style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" name="joint_stiffness_enabled" {{ 'checked' if last_vbd_form.get('joint_stiffness_enabled') }}> joint-stiffness
+        <details class="info-tip">
+          <summary title="What does this mean?">i</summary>
+          <div class="info-tip-content">
+            Overrides the MJCF's baked-in per-leg-joint stiffness (correct real-hardware value
+            is 0, unchecked = left as-is). A nonzero value adds a passive restoring spring to
+            the swinging leg's own joints -- watch how it changes how hard the actuator fights
+            the sweep. Doesn't change the belt-decoupling result itself (that's a kinematic
+            target computed independently of stiffness), only how visibly strained the motion
+            looks.
+          </div>
+        </details>
+      </label>
+      <input type="number" step="0.5" name="joint_stiffness" value="{{ last_vbd_form.get('joint_stiffness', '5') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
+      <label><input type="checkbox" name="vbd_max_slew_deg_per_s_enabled" {{ 'checked' if last_vbd_form.get('vbd_max_slew_deg_per_s_enabled') }}> max-slew-deg-per-s</label>
+      <input type="number" step="10" name="vbd_max_slew_deg_per_s" value="{{ last_vbd_form.get('vbd_max_slew_deg_per_s', '250') }}" style="max-width:100px">
+      <span class="meta">unchecked = DogEnv's own default (1000). --full-range auto-lengthens period to stay under this.</span>
+    </div>
+    <div class="field-row">
       <label><input type="checkbox" name="duration_s_enabled" {{ 'checked' if last_vbd_form.get('duration_s_enabled') }}> duration-s</label>
       <input type="number" step="1" name="duration_s" value="{{ last_vbd_form.get('duration_s', '0') }}" style="max-width:100px">
       <span class="meta">0 = run until the viewer window is closed</span>
@@ -96,6 +118,39 @@
   <div class="subtitle" style="margin-bottom:10px">Full 4-leg dog in RViz with slider-controlled joints. No configurable arguments.</div>
   <form method="post" action="{{ url_for('local_tools_dog_view') }}">
     <button type="submit" class="primary">Launch</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">Motors (real hardware)</h2>
+  <div class="subtitle" style="margin-bottom:10px">Runs actuator's basic_control node directly on THIS machine (not the Jetson) -- for debugging motors plugged straight into your laptop, without going through the Jetson at all.</div>
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+    <div>
+      <strong>basic_control</strong>
+      <span class="status-pill {{ 'running' if actuator_status.running else 'stopped' }}">
+        {{ 'running' if actuator_status.running else 'stopped' }}
+      </span>
+    </div>
+    <form method="post" action="{{ actuator_toggle_url }}">
+      <button type="submit" class="{{ 'danger' if actuator_status.running else 'primary' }}">
+        {{ 'Stop basic_control' if actuator_status.running else 'Start basic_control' }}
+      </button>
+    </form>
+  </div>
+  {% if actuator_status.log_tail %}
+  <pre class="log">{{ actuator_status.log_tail }}</pre>
+  {% endif %}
+
+  <form method="post" action="{{ read_motor_url }}" class="field-row" style="margin-top:10px">
+    <label>read_motor_positions (motor ids, blank = all)</label>
+    <input type="text" name="motor_ids" placeholder="e.g. 1,2">
+    <button type="submit">Read</button>
+  </form>
+  <form method="post" action="{{ adjust_motor_url }}" class="field-row">
+    <label>adjust_motor_position</label>
+    <input type="number" name="motor_id" placeholder="motor_id" style="max-width:100px">
+    <input type="number" step="0.1" name="degrees" placeholder="degrees" style="max-width:100px">
+    <button type="submit">Adjust</button>
   </form>
 </div>
 {% endblock %}

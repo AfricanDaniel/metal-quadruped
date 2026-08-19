@@ -356,7 +356,7 @@ class ForwardSpeedCurriculumCallback(BaseCallback):
 def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction, control_mode,
              model_path=None, position_kp=None, position_kd=None,
              position_kp_range=None, position_kd_range=None, home_start_prob_start=None,
-             max_slew_deg_per_s=None, gait_style='trot'):
+             max_slew_deg_per_s=None, gait_style='trot', joint_stiffness=None):
     kwargs = dict(domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose,
                   walk_height_fraction=walk_height_fraction,
@@ -406,6 +406,12 @@ def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction
     # tightens, not what it starts at.
     if max_slew_deg_per_s is not None:
         kwargs['max_slew_deg_per_s'] = max_slew_deg_per_s
+    # --joint-stiffness (2026-08-18, "T_FAKE" staged-training idea -- see
+    # DogEnv.__init__'s joint_stiffness comment): runtime override of
+    # generate_dog_mjcf.py's baked-in per-leg-joint stiffness="0". None
+    # (default) leaves it at the physically-correct 0, unchanged.
+    if joint_stiffness is not None:
+        kwargs['joint_stiffness'] = joint_stiffness
     return lambda: gym.make(env_id, **kwargs)
 
 
@@ -421,7 +427,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           home_start_curriculum_steps=None, slew_curriculum_start_step=None,
           slew_curriculum_decay_steps=None, max_slew_deg_per_s=None,
           forward_speed_curriculum_start_step=None, forward_speed_curriculum_decay_steps=None,
-          forward_speed_curriculum_target=None, gait_style='trot',
+          forward_speed_curriculum_target=None, gait_style='trot', joint_stiffness=None,
           use_sde=False, sde_sample_freq=-1,
           wandb_project='dog-quadruped', wandb_entity=None):
     # Always on (2026-08-15, direct user request -- "wandb", always-on not
@@ -452,12 +458,12 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           f'forward_speed_curriculum_start_step={forward_speed_curriculum_start_step}, '
           f'forward_speed_curriculum_decay_steps={forward_speed_curriculum_decay_steps}, '
           f'forward_speed_curriculum_target={forward_speed_curriculum_target}, '
-          f'gait_style={gait_style})')
+          f'gait_style={gait_style}, joint_stiffness={joint_stiffness})')
 
     env_fns = [make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction,
                          control_mode, model_path, position_kp, position_kd,
                          position_kp_range_start, position_kd_range_start, home_start_prob_start,
-                         max_slew_deg_per_s, gait_style)
+                         max_slew_deg_per_s, gait_style, joint_stiffness)
                for _ in range(num_envs)]
     if env_type == 'dummy':
         env = DummyVecEnv(env_fns)
@@ -674,7 +680,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
 def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_csv=None,
          walk_start_pose='standing', walk_height_fraction=0.90, control_mode='position',
          model_path=None, position_kp=None, position_kd=None, home_start_prob=None,
-         max_slew_deg_per_s=None, gait_style='trot'):
+         max_slew_deg_per_s=None, gait_style='trot', joint_stiffness=None):
     kwargs = dict(render_mode='human', domain_randomization=domain_randomization,
                   walk_start_pose=walk_start_pose, walk_height_fraction=walk_height_fraction,
                   control_mode=control_mode, gait_style=gait_style)
@@ -684,6 +690,8 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
         kwargs['position_kp'] = position_kp
     if position_kd is not None:
         kwargs['position_kd'] = position_kd
+    if joint_stiffness is not None:
+        kwargs['joint_stiffness'] = joint_stiffness
     # walk_start_pose='random' only -- test has no curriculum (unlike
     # train()'s HomeStartCurriculumCallback), so this is just the single
     # fixed probability used for the whole test session. Reuses
@@ -959,6 +967,22 @@ def main():
                               '--gait-style bound run FROM SCRATCH (no --init-from), not by '
                               'fine-tuning a trot checkpoint, since the two terms actively disagree '
                               'on what "good" looks like.')
+    parser.add_argument('--joint-stiffness', type=float, default=None,
+                         help='WALK/STAND, --train and --test (2026-08-18, "T_FAKE" staged-training '
+                              'idea -- trot_home_v1/trot_stand_1ms_v1 both plateaued far below their '
+                              'forward-speed-curriculum targets): runtime override of generate_dog_'
+                              'mjcf.py\'s baked-in per-leg-joint stiffness="0" (see that script\'s '
+                              '2026-08-16 comment for why 0 is the physically-correct value). A '
+                              'nonzero value adds a passive restoring spring on every leg joint, '
+                              'which may make a fast gait easier for PPO to discover from scratch '
+                              'even though it does not match real hardware -- the idea is to train a '
+                              'first-phase policy under this easier physics (plus a loosened '
+                              '--max-slew-deg-per-s), then --init-from it into a second phase with '
+                              'this flag OMITTED (back to the correct 0) and the correct '
+                              '--max-slew-deg-per-s, so the learned gait transfers into '
+                              'physically-accurate dynamics instead of being learned under them from '
+                              'a random policy. Omitting this flag entirely (default) leaves the '
+                              'MJCF\'s own stiffness="0" untouched, matching every existing run.')
     parser.add_argument('--lr-schedule', default='linear', choices=['linear', 'adaptive'],
                          help='PPO only, --train only (2026-08-06): "linear" (default, unchanged) '
                               'uses --learning-rate/--learning-rate-end/--decay-steps\' linear decay '
@@ -1080,14 +1104,14 @@ def main():
               args.home_start_curriculum_steps, args.slew_curriculum_start_step,
               args.slew_curriculum_decay_steps, args.max_slew_deg_per_s,
               args.forward_speed_curriculum_start_step, args.forward_speed_curriculum_decay_steps,
-              args.forward_speed_curriculum_target, args.gait_style,
+              args.forward_speed_curriculum_target, args.gait_style, args.joint_stiffness,
               args.use_sde, args.sde_sample_freq,
               args.wandb_project, args.wandb_entity)
     elif args.test:
         test(args.env_id, args.algo, args.test, args.episodes, args.domain_randomization, args.log_csv,
              args.walk_start_pose, args.walk_height_fraction, args.control_mode, args.model_path,
              args.position_kp, args.position_kd, args.home_start_prob_start, args.max_slew_deg_per_s,
-             args.gait_style)
+             args.gait_style, args.joint_stiffness)
     else:
         parser.error('Pass either --train or --test PATH_TO_MODEL')
 

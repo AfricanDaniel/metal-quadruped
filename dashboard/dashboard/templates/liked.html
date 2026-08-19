@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_view_training_form.html" import view_training_form %}
+{% block title %}Liked - dashboard{% endblock %}
+{% block content %}
+<h1>Liked</h1>
+<div class="subtitle">Checkpoints you've liked (♥), from Local and Sheep -- easy MuJoCo viewing without hunting back through folders.</div>
+
+<div class="list">
+  {% for c in items %}
+    <div class="list-item">
+      <a class="name" style="flex:1;text-decoration:none;color:inherit" href="{{ c.checkpoints_url }}">
+        {{ c.basename }}
+        <span class="meta">{{ c.folder }}/{{ c.fname }}</span>
+      </a>
+      <span class="row-actions">
+        <span class="status-pill stopped">{{ c.host }}</span>
+        {% if c.host == 'sheep' and not c.downloaded_locally %}
+        <span class="status-pill running" title="Not downloaded locally yet -- viewing will download it first">needs download</span>
+        {% endif %}
+        <form class="inline" method="post" action="{{ c.unlike_url }}">
+          <button type="submit" class="like-btn liked" title="Unlike">♥</button>
+        </form>
+        {{ view_training_form(c.view_url, c.env_id, c.last_start_pose, c.last_max_slew_deg_per_s, c.last_joint_stiffness) }}
+      </span>
+    </div>
+  {% else %}
+    <div class="subtitle">Nothing liked yet -- click ♡ next to any checkpoint on the Local or Sheep Models tab.</div>
+  {% endfor %}
+</div>
+{% endblock %}

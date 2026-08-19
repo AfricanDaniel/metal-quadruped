@@ -1,0 +1,18 @@
+{# Shared "View Training" form -- start_pose/max_slew_deg_per_s/joint_stiffness
+   (WALK only) + submit. Used by checkpoints.html (both Local and Sheep
+   branches) and liked.html, so all three stay in sync automatically
+   instead of drifting apart as separate copies. #}
+{% macro view_training_form(view_url, env_id, last_start_pose, last_max_slew_deg_per_s, last_joint_stiffness) %}
+<form class="inline" method="post" action="{{ view_url }}">
+  {% if env_id == 'Dog-Walk-v0' %}
+  <select name="start_pose" title="Start pose" style="max-width:100px">
+    {% for p in ['home', 'standing', 'random'] %}
+      <option value="{{ p }}" {{ 'selected' if p == last_start_pose }}>{{ p }}</option>
+    {% endfor %}
+  </select>
+  <input type="number" name="max_slew_deg_per_s" title="Max slew deg/s (blank = default 250, the real-deployment-matching target most checkpoints are trained toward; set to the value this checkpoint actually trained under if different)" placeholder="slew (default 250)" value="{{ last_max_slew_deg_per_s }}" style="max-width:100px">
+  <input type="number" step="0.5" name="joint_stiffness" title="Joint stiffness (blank = default 0, physically correct -- set to what this checkpoint actually trained under, e.g. 5 for the T_FAKE/s5_ms... lineage)" placeholder="stiffness (default 0)" value="{{ last_joint_stiffness }}" style="max-width:110px">
+  {% endif %}
+  <button type="submit" class="primary">View Training</button>
+</form>
+{% endmacro %}

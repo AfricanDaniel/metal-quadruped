@@ -37,7 +37,7 @@ import mujoco
 import numpy as np
 
 import dog_gym  # noqa: F401  (registers Dog-Stand-v0/Dog-Walk-v0)
-from dog_gym.envs.dog_env import load_motor_joint_names
+from dog_gym.envs.dog_env import MAX_SLEW_DEG_PER_S, load_motor_joint_names
 
 # 180deg rotation about world +X (MuJoCo quat is w,x,y,z) -- flips the
 # torso belly-up. Which of front/back vs left/right ends up mirrored
@@ -55,8 +55,10 @@ def parse_args():
                          "model) instead of +-amplitude-deg around home -- shows the whole "
                          "path. Starts from whichever range end is nearer the home pose. "
                          "--period-s is auto-lengthened if needed so the moving target "
-                         "never outruns DogEnv's 100deg/s slew-rate limit (otherwise the "
-                         "real motion would lag/flatten instead of tracking the sweep).")
+                         "never outruns the effective slew-rate limit (DogEnv's own "
+                         f"MAX_SLEW_DEG_PER_S={MAX_SLEW_DEG_PER_S:.0f}deg/s by default, or "
+                         "--max-slew-deg-per-s if set) -- otherwise the real motion would "
+                         "lag/flatten instead of tracking the sweep.")
     p.add_argument('--period-s', type=float, default=4.0)
     p.add_argument('--duration-s', type=float, default=0.0,
                     help='0 = run until the viewer window is closed')
@@ -67,6 +69,22 @@ def parse_args():
                          "still applies normally to the swinging leg itself.")
     p.add_argument('--pin-height-m', type=float, default=0.6,
                     help='--upside-down only: world z height the torso is held at')
+    p.add_argument('--joint-stiffness', type=float, default=None,
+                    help="runtime override of the MJCF's baked-in per-leg-joint stiffness "
+                         "(see DogEnv.__init__'s joint_stiffness comment) -- watch how a "
+                         "passive restoring spring on the SWINGING leg's own joints changes "
+                         "how visibly it fights the sweep. None (default) leaves it at the "
+                         "physically-correct 0. Does not affect the belt-decoupling result "
+                         "itself (that's a kinematic constraint on the calf's COMMANDED "
+                         "target, computed independently of joint stiffness), only how "
+                         "hard the actuator has to work to hit that target.")
+    p.add_argument('--max-slew-deg-per-s', type=float, default=None,
+                    help='runtime override of DogEnv\'s own max_slew_deg_per_s starting '
+                         'ceiling (see DogEnv.__init__\'s max_slew_deg_per_s comment). None '
+                         f'(default) leaves it at MAX_SLEW_DEG_PER_S={MAX_SLEW_DEG_PER_S:.0f}. '
+                         'A tighter value visibly slows/flattens how fast the commanded '
+                         'target can move each tick -- --full-range\'s own auto period-'
+                         'lengthening accounts for whatever this is set to.')
     p.add_argument('--no-coupling', action='store_true',
                     help="illustrate the OPPOSITE case, for comparison (2026-08-17, user "
                          "request -- 'show what the robot would look like if it was not "
@@ -108,7 +126,14 @@ def main():
     thigh_idx = joint_names.index(f'leg_{args.leg}_thigh')
     calf_idx = joint_names.index(f'leg_{args.leg}_calf')
 
-    env = gym.make('Dog-Stand-v0', render_mode='human').unwrapped
+    env_kwargs = {}
+    if args.joint_stiffness is not None:
+        env_kwargs['joint_stiffness'] = args.joint_stiffness
+    if args.max_slew_deg_per_s is not None:
+        env_kwargs['max_slew_deg_per_s'] = args.max_slew_deg_per_s
+    env = gym.make('Dog-Stand-v0', render_mode='human', **env_kwargs).unwrapped
+    effective_slew_deg_per_s = (
+        args.max_slew_deg_per_s if args.max_slew_deg_per_s is not None else MAX_SLEW_DEG_PER_S)
     obs, _ = env.reset()
     if args.upside_down:
         _pin_torso(env, args.pin_height_m)
@@ -167,14 +192,17 @@ def main():
         # pose (qpos=0), so there's no big initial jump: cos starts at
         # +1, so `center + amp*cos` starts at hi, `center - amp*cos` at lo.
         start_sign = 1.0 if abs(hi) <= abs(lo) else -1.0
-        # DogEnv.step() slew-limits the target to 100deg/s; the sine
-        # target's peak speed is amp*2pi/T. Cap at 90deg/s (small margin)
-        # or the real motion lags the target and never shows the true path.
-        min_period = np.degrees(amp) * 2 * np.pi / 90.0
+        # DogEnv.step() slew-limits the target to effective_slew_deg_per_s
+        # (MAX_SLEW_DEG_PER_S by default, or --max-slew-deg-per-s if set);
+        # the sine target's peak speed is amp*2pi/T. Cap at 90% of that
+        # ceiling (small margin) or the real motion lags the target and
+        # never shows the true path.
+        slew_margin_deg_per_s = 0.9 * effective_slew_deg_per_s
+        min_period = np.degrees(amp) * 2 * np.pi / slew_margin_deg_per_s
         if period_s < min_period:
             period_s = min_period
             print(f'note: --period-s raised to {period_s:.1f}s so the sweep target stays '
-                  f'within the 100deg/s slew-rate limit.')
+                  f'within the {effective_slew_deg_per_s:.0f}deg/s slew-rate limit.')
 
         def thigh_target(t):
             return center + start_sign * amp * np.cos(2 * np.pi * t / period_s)

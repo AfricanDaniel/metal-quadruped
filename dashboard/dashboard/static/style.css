@@ -73,11 +73,72 @@ nav.tabs {
 .chart-card h3 { margin: 0 0 10px; font-size: 0.9rem; font-weight: 600; }
 .chart-card canvas { width: 100%; height: 180px; display: block; }
 
-main {
-  max-width: 1080px;
+/* Wraps persistent-nav (Sheep only, see base.html) + main -- centering/
+   max-width moved here from main itself so the sidebar sits OUTSIDE that
+   centered column instead of splitting it. */
+.page-layout {
+  max-width: 1260px;
   margin: 0 auto;
+  display: flex;
+  align-items: flex-start;
+}
+
+main {
+  flex: 1;
+  min-width: 0;
+  max-width: 1080px;
   padding: 28px 20px 60px;
 }
+
+/* Sheep-only persistent left nav (2026-08-19, user request -- "I should
+   always be able to access the training landing page and the model
+   landing page, make them persistent on the left side"): unlike
+   .sub-tabs (a top tab bar included per-template, missing entirely from
+   graphs.html) or .sidebar (in-page sibling nav, e.g. other model
+   folders), this is rendered once in base.html so it's on EVERY Sheep
+   page with no per-template opt-in, and always links to the literal
+   landing pages (never last-visited-path memory like .sub-tabs does). */
+.persistent-nav {
+  position: sticky;
+  top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 160px;
+  flex-shrink: 0;
+  padding: 28px 12px 0 20px;
+}
+.persistent-nav-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+}
+.persistent-nav-item:hover { border-color: var(--border); color: var(--text); }
+.persistent-nav-item.active {
+  background: var(--accent-dim);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Heart-shaped like toggle (2026-08-19, user request -- checkpoints.html
+   rows and the Liked landing page). Plain-text glyph (♡/♥), not an icon
+   font/image, so it needs no asset and renders identically everywhere
+   this CSS loads. */
+.like-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 2px 4px;
+  color: var(--text-dim);
+}
+.like-btn:hover { color: var(--danger); }
+.like-btn.liked { color: var(--danger); }
 
 h1 { font-size: 1.4rem; margin: 0 0 6px; }
 h2 { font-size: 1.1rem; margin: 24px 0 10px; }

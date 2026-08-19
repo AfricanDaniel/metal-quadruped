@@ -252,6 +252,25 @@
           <input type="text" name="max_slew_deg_per_s" value="100" placeholder="e.g. 100">
         </div>
         <div class="field-row">
+          <label style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" name="joint_stiffness_enabled"> joint-stiffness
+            <details class="info-tip">
+              <summary title="What does this mean?">i</summary>
+              <div class="info-tip-content">
+                "T_FAKE" staged-training idea: overrides the MJCF's baked-in per-leg-joint
+                stiffness (correct real-hardware value is 0, the default here if left
+                unchecked). A nonzero value adds a passive restoring spring on every leg
+                joint, which is NOT physically accurate but may make a fast gait easier
+                for PPO to discover from scratch. Train a first phase with this set
+                (paired with a loosened max-slew-deg-per-s), then init-from it into a
+                second phase with this box UNCHECKED (back to the correct 0) and the
+                correct max-slew-deg-per-s, so the gait transfers into accurate dynamics.
+              </div>
+            </details>
+          </label>
+          <input type="text" name="joint_stiffness" value="5" placeholder="e.g. 5">
+        </div>
+        <div class="field-row">
           <label><input type="checkbox" name="slew_curriculum_start_step_enabled"> slew-curriculum-start-step</label>
           <input type="text" name="slew_curriculum_start_step" value="2000000" placeholder="e.g. 2000000">
         </div>

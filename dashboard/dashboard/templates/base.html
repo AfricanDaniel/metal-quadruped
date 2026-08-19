@@ -10,26 +10,35 @@
     <a class="tab {{ 'active' if active_tab == 'local' else '' }}" href="{{ nav_local_url }}">Local</a>
     <a class="tab {{ 'active' if active_tab == 'jetson' else '' }}" href="{{ nav_jetson_url }}">Jetson</a>
     <a class="tab {{ 'active' if active_tab == 'sheep' else '' }}" href="{{ nav_sheep_url }}">Sheep</a>
+    <a class="tab {{ 'active' if active_tab == 'liked' else '' }}" href="{{ nav_liked_url }}">Liked</a>
   </nav>
-  <main>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <div class="flashes">
-          {% for category, message in messages %}
-            <div class="flash flash-{{ category }}">
-              {{ message }}
-              {% if action_suggestion and loop.last %}
-              <form method="post" action="{{ action_suggestion.url }}" class="inline" style="margin-left:10px">
-                <button type="submit" class="danger">{{ action_suggestion.label }}</button>
-              </form>
-              {% endif %}
-            </div>
-          {% endfor %}
-        </div>
-      {% endif %}
-    {% endwith %}
-    {% block content %}{% endblock %}
-  </main>
+  <div class="page-layout">
+    {% if active_tab == 'sheep' and sheep_models_landing_url %}
+    <aside class="persistent-nav">
+      <a class="persistent-nav-item {{ 'active' if sub_tab == 'models' else '' }}" href="{{ sheep_models_landing_url }}">Models</a>
+      <a class="persistent-nav-item {{ 'active' if sub_tab == 'trainings' else '' }}" href="{{ sheep_trainings_landing_url }}">Trainings</a>
+    </aside>
+    {% endif %}
+    <main>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flashes">
+            {% for category, message in messages %}
+              <div class="flash flash-{{ category }}">
+                {{ message }}
+                {% if action_suggestion and loop.last %}
+                <form method="post" action="{{ action_suggestion.url }}" class="inline" style="margin-left:10px">
+                  <button type="submit" class="danger">{{ action_suggestion.label }}</button>
+                </form>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+      {% block content %}{% endblock %}
+    </main>
+  </div>
   {% if redirect_suggestion %}
   <script>
     if (confirm({{ redirect_suggestion.label | tojson }} + '?')) {

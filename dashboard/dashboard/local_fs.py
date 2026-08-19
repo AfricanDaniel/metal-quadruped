@@ -155,14 +155,36 @@ def count_checkpoints_for_fname(fname):
     return total
 
 
-# --- Local: src/policies_{position,torque}/{stand,walk}/{policy,csv}/ --
-# Same 4-group layout as Jetson's own policies_position/policies_torque
-# (see remote_fs.py's JETSON_POLICY_GROUPS) -- these are exported here
-# via "Export Policy" on the Models tab, then browsed/uploaded from here.
-
+# --- Local: src/policies_{position,torque}/<task>/{policy,csv}/ --
+# Same layout as Jetson's own policies_position/policies_torque (see
+# remote_fs.py's JETSON_POLICY_GROUPS) -- these are exported here via
+# "Export Policy" on the Models tab, then browsed/uploaded from here.
+#
+# WALK split into 6 lineage folders (2026-08-19, user request -- "sync/
+# fix the jetson so it has the correct policy folders, just as we have on
+# local [walk, run, trot] [home/stand]"): mirrors models/'s own folder
+# names exactly (walk_home, walk_standing, trot_home, trot_stand,
+# running_home, running_stand), so a checkpoint's model-dir tells you
+# directly which policies_position/<lineage> it exports into -- see
+# policy_actions.py's export_target_group()/_task_subfolder() for how a
+# checkpoint's source folder maps to one of these. Previously a single
+# flat 'walk' bucket mixed every lineage together, indistinguishable
+# except by filename. Migrated the 16 existing .pt files (+ matching
+# csv/) into their correct lineage folder by cross-referencing each
+# embedded fname against the actual models/ folder it was found in (not
+# guessed) -- ambiguous/pre-split legacy files (can't be traced to a
+# specific models/ folder) fall back to walk_home, per direct user
+# approval. STAND and both policies_torque groups are unaffected --
+# STAND has no gait-lineage concept, and policies_torque/walk has never
+# had any exports (confirmed empty on both local and Jetson).
 LOCAL_POLICY_GROUPS = [
     ('policies_position', 'stand'),
-    ('policies_position', 'walk'),
+    ('policies_position', 'walk_home'),
+    ('policies_position', 'walk_standing'),
+    ('policies_position', 'trot_home'),
+    ('policies_position', 'trot_stand'),
+    ('policies_position', 'running_home'),
+    ('policies_position', 'running_stand'),
     ('policies_torque', 'stand'),
     ('policies_torque', 'walk'),
 ]
@@ -226,7 +248,15 @@ def policy_pt_path(group_name, basename):
 def list_policy_csvs(group_name, basename):
     """[{name, mtime}] of CSVs in the sibling csv/ folder whose name
     starts with this policy's basename -- same matching convention as
-    remote_fs.list_jetson_csvs, newest first."""
+    remote_fs.list_jetson_csvs, newest first.
+
+    Exact basename prefix, deliberately NOT stripping a trailing _vN
+    (tried that 2026-08-19, reverted same day per direct user correction:
+    "we should not ignore v number" -- v1/v2/v3 are each their OWN
+    distinct identity, every one with its own family of further-suffixed
+    files, e.g. v1_1/v1_2/v1_data/v1_tscs all belong to v1 specifically,
+    v2_1/v2_2/etc. to v2 -- stripping _vN merged separate versions'
+    CSVs together instead of keeping them apart.)"""
     g = _parse_policy_group_name(group_name)
     entries = _dir_file_entries(_policy_csv_dir(g))
     matches = [{'name': name, 'mtime': mtime} for name, mtime in entries if name.startswith(basename)]

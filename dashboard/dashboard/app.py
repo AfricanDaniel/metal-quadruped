@@ -14,8 +14,8 @@ import webbrowser
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 
 from dashboard import (
-    build_actions, download_actions, graphs, local_fs, local_tools_actions, policy_actions, procs, remote_fs,
-    ros_actions, ssh, training_actions,
+    build_actions, download_actions, graphs, likes, local_actuator_actions, local_fs, local_tools_actions,
+    policy_actions, procs, remote_fs, ros_actions, ssh, training_actions,
 )
 from dashboard.config import (
     JETSON_HOST, JETSON_WS_ROOT, MODELS_DIR, SHEEP_HOST, SHEEP_WS_ROOT,
@@ -131,6 +131,7 @@ def _inject_nav_urls():
         'nav_local_url': procs.get_last_path('local'),
         'nav_jetson_url': procs.get_last_path('jetson'),
         'nav_sheep_url': procs.get_last_path('sheep'),
+        'nav_liked_url': url_for('liked_page'),
     }
 
 
@@ -162,6 +163,7 @@ def _inject_sub_tab_urls():
         return {
             'sub_jetson_policies_url': procs.get_last_path('jetson_policies'),
             'sub_jetson_basics_url': url_for('jetson_basics'),
+            'sub_jetson_liked_url': url_for('jetson_liked'),
         }
     return {}
 
@@ -191,6 +193,31 @@ def _suggest_redirect(label, url):
     (e.g. 'Go to policy' -> the exported .pt's own detail page) instead
     of leaving the user to navigate there by hand."""
     session['redirect_suggestion'] = {'label': label, 'url': url}
+
+
+@app.context_processor
+def _inject_sheep_persistent_nav():
+    """sheep_models_landing_url/sheep_trainings_landing_url (2026-08-19,
+    user request -- "I should always be able to access the training
+    landing page and the model landing page [on Sheep], make them
+    persistent on the left side"): unlike sub_models_url/sub_trainings_url
+    above (which follow procs.get_last_path()'s own "remember where I
+    left off within this sub-tab" memory -- the RIGHT behavior for the
+    top sub-tab bar), these two are always the literal landing pages
+    (sheep_home/sheep_trainings), by design never affected by that
+    memory -- the whole point is a fixed, always-the-same anchor you can
+    return to regardless of how deep you've navigated. Rendered by
+    base.html as a persistent left-side nav on every Sheep page,
+    including graphs.html, which -- unlike checkpoints.html/trainings.html
+    -- doesn't even include sub_tabs.html today, so this was the one
+    Sheep page with NO way back to either landing page at all short of
+    its own single back_url."""
+    if not request.path.startswith('/sheep'):
+        return {}
+    return {
+        'sheep_models_landing_url': url_for('sheep_home'),
+        'sheep_trainings_landing_url': url_for('sheep_trainings'),
+    }
 
 
 @app.context_processor
@@ -257,17 +284,37 @@ def local_checkpoints(folder, fname):
         {**c, 'url': url_for('local_detail', folder=folder, fname=fname, basename=c['basename']),
          'view_url': url_for('local_view_training', folder=folder, fname=fname, basename=c['basename']),
          'delete_url': url_for('local_delete_checkpoint', folder=folder, fname=fname, basename=c['basename']),
+         'like_url': url_for('local_toggle_like', folder=folder, fname=fname, basename=c['basename']),
+         'liked': likes.is_liked('local', folder, fname, c['basename']),
          'last_start_pose': procs.get_last_tool_form(f"view_training:{c['basename']}").get('start_pose', 'home'),
-         'last_max_slew_deg_per_s': procs.get_last_tool_form(f"view_training:{c['basename']}").get('max_slew_deg_per_s', '')}
+         'last_max_slew_deg_per_s': procs.get_last_tool_form(f"view_training:{c['basename']}").get('max_slew_deg_per_s', ''),
+         'last_joint_stiffness': procs.get_last_tool_form(f"view_training:{c['basename']}").get('joint_stiffness', '')}
         for c in local_fs.list_checkpoints(folder, fname)
     ]
+    # back_url (2026-08-18, user report -- "on trot_stand_ms500_v2 tab, in
+    # models, pressed back and it brings me to jetson"): this page has TWO
+    # real entry points -- the normal Models folder-browsing flow, and the
+    # Graphs page's own "Checkpoints" tab (training_tabs.html). A single
+    # hardcoded back_url can only ever be right for one of them. An
+    # earlier attempt used the BROWSER's real history.back() to sidestep
+    # that, but browser history replays the user's ENTIRE actual click
+    # path (which can include unrelated tabs visited earlier in the
+    # session), not just this page's logical parent -- confirmed broken
+    # by the report above. Fixed instead with an explicit ?from=graphs
+    # marker: only set when arriving via the Graphs tab's own link (see
+    # local_trainings_graphs()'s tabs_checkpoints_url below), so this is
+    # 100% deterministic from the request itself, never dependent on
+    # unrelated navigation history. Absence of the marker (the normal
+    # Models-flow case) preserves the exact original back_url.
+    back_url = (url_for('local_trainings_graphs', fname=fname) if request.args.get('from') == 'graphs'
+                else url_for('local_files', folder=folder))
     return render_template(
         'checkpoints.html', tab='local', active_tab='local', sub_tab='models',
         folder=folder, fname=fname, checkpoints=checkpoints,
         env_id=local_fs.resolve_env_id(folder),
-        back_url=url_for('local_files', folder=folder),
+        back_url=back_url,
         graphs_url=url_for('local_trainings_graphs', fname=fname),
-        tabs_graphs_url=url_for('local_trainings_graphs', fname=fname),
+        tabs_graphs_url=url_for('local_trainings_graphs', fname=fname, **{'from': 'checkpoints'}),
         tabs_checkpoints_url=url_for('local_checkpoints', folder=folder, fname=fname),
         active_training_tab='checkpoints',
     )
@@ -301,6 +348,45 @@ def local_delete_checkpoint(folder, fname, basename):
     return redirect(url_for('local_checkpoints', folder=folder, fname=fname))
 
 
+def _do_view_training(host, folder, fname, basename, redirect_url):
+    """Shared by local_view_training()/sheep_view_training()/
+    liked_view_training() (2026-08-19, factored out when the Liked page
+    needed the exact same "launch the viewer for one checkpoint" logic a
+    THIRD time) -- host-aware: 'sheep' downloads the checkpoint first if
+    not already local (mirroring sheep_view_training's original one-click
+    shape, via _sheep_download() below), 'local' just uses the zip
+    directly. See local_view_training()'s own docstring for the full
+    history behind start_pose/max_slew_deg_per_s/joint_stiffness coming
+    from the submitted form and being remembered PER-CHECKPOINT."""
+    if host == 'sheep':
+        local_path = local_fs.checkpoint_zip_path(folder, basename)
+        if not os.path.exists(local_path):
+            ok, local_path = _sheep_download(folder, basename)
+            if not ok:
+                flash('Download failed, cannot view training.', 'error')
+                return redirect(redirect_url)
+    else:
+        local_path = local_fs.checkpoint_zip_path(folder, basename)
+    env_id = local_fs.resolve_env_id(folder)
+    start_pose = request.form.get('start_pose', 'home')
+    max_slew_deg_per_s = request.form.get('max_slew_deg_per_s', '').strip()
+    joint_stiffness = request.form.get('joint_stiffness', '').strip()
+    if env_id == 'Dog-Walk-v0':
+        procs.set_last_tool_form(f'view_training:{basename}', {
+            'start_pose': start_pose, 'max_slew_deg_per_s': max_slew_deg_per_s,
+            'joint_stiffness': joint_stiffness})
+    ok, info = policy_actions.launch_view_training(
+        local_path, env_id, episodes=5,
+        start_pose=start_pose if env_id == 'Dog-Walk-v0' else None,
+        control_mode='position',
+        max_slew_deg_per_s=max_slew_deg_per_s or policy_actions.VIEW_DEFAULT_MAX_SLEW_DEG_PER_S,
+        joint_stiffness=joint_stiffness or None,
+    )
+    flash(('Downloaded and launched MuJoCo viewer.' if host == 'sheep' else 'Launched MuJoCo viewer.') if ok
+          else f'Failed to launch: {info}', 'success' if ok else 'error')
+    return redirect(redirect_url)
+
+
 @app.route('/local/<folder>/<fname>/<basename>/view', methods=['POST'])
 def local_view_training(folder, fname, basename):
     """One-click viewer launch straight from the checkpoints list (2026-08-16,
@@ -329,21 +415,13 @@ def local_view_training(folder, fname, basename):
     "what slew did I find worked for THIS one"). Uses procs.set_last_
     tool_form()'s same underlying mechanism as the Deploy/Tools forms,
     just with a per-basename key instead of one shared key."""
-    zip_path = local_fs.checkpoint_zip_path(folder, basename)
-    env_id = local_fs.resolve_env_id(folder)
-    start_pose = request.form.get('start_pose', 'home')
-    max_slew_deg_per_s = request.form.get('max_slew_deg_per_s', '').strip()
-    if env_id == 'Dog-Walk-v0':
-        procs.set_last_tool_form(f'view_training:{basename}', {
-            'start_pose': start_pose, 'max_slew_deg_per_s': max_slew_deg_per_s})
-    ok, info = policy_actions.launch_view_training(
-        zip_path, env_id, episodes=5,
-        start_pose=start_pose if env_id == 'Dog-Walk-v0' else None,
-        control_mode='position',
-        max_slew_deg_per_s=max_slew_deg_per_s or policy_actions.VIEW_DEFAULT_MAX_SLEW_DEG_PER_S,
-    )
-    flash('Launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
-          'success' if ok else 'error')
+    return _do_view_training('local', folder, fname, basename,
+                              url_for('local_checkpoints', folder=folder, fname=fname))
+
+
+@app.route('/local/<folder>/<fname>/<basename>/like', methods=['POST'])
+def local_toggle_like(folder, fname, basename):
+    likes.toggle_like('local', folder, fname, basename)
     return redirect(url_for('local_checkpoints', folder=folder, fname=fname))
 
 
@@ -365,10 +443,10 @@ def local_detail_act(folder, fname, basename):
         flash('Launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
               'success' if ok else 'error')
     elif action == 'export':
-        ok, message, _ = policy_actions.run_export_policy(zip_path, env_id, control_mode, basename)
+        ok, message, _ = policy_actions.run_export_policy(zip_path, env_id, control_mode, basename, folder)
         flash(message, 'success' if ok else 'error')
         if ok:
-            policies_dir, task = policy_actions.export_target_group(env_id, control_mode)
+            policies_dir, task = policy_actions.export_target_group(env_id, control_mode, folder)
             _suggest_redirect('Go to policy', url_for(
                 'local_policy_detail', policies_dir=policies_dir, task=task, fname=fname, basename=basename))
     else:
@@ -427,13 +505,22 @@ def local_trainings_stop(fname):
 def local_trainings_graphs(fname):
     scalars = graphs.read_scalars(fname)
     folder = local_fs.find_folder_for_fname(fname)
+    # back_url: mirrors local_checkpoints()'s own ?from=graphs marker --
+    # this page is ALSO reachable two ways (the Trainings ongoing-list
+    # AND checkpoints.html's own "Graphs" tab), see that comment for the
+    # full reasoning. ?from=checkpoints here means "came via the
+    # Checkpoints tab", so back returns there instead of Trainings.
+    back_url = (url_for('local_checkpoints', folder=folder, fname=fname)
+                if request.args.get('from') == 'checkpoints' and folder
+                else url_for('local_trainings'))
     return render_template(
         'graphs.html', tab='local', active_tab='local',
         fname=fname, running=training_actions.is_training_running(fname), sheep=False,
         request_path=request.path, tags=graphs.ordered_tags(scalars), series_json=json.dumps(scalars),
-        back_url=url_for('local_trainings'),
+        back_url=back_url,
         tabs_graphs_url=request.path,
-        tabs_checkpoints_url=url_for('local_checkpoints', folder=folder, fname=fname) if folder else None,
+        tabs_checkpoints_url=(url_for('local_checkpoints', folder=folder, fname=fname, **{'from': 'graphs'})
+                               if folder else None),
         active_training_tab='graphs',
     )
 
@@ -572,7 +659,47 @@ def local_tools():
         last_save_pose_form=procs.get_last_tool_form('save_pose'),
         last_mmc_form=procs.get_last_tool_form('manual_motor_control'),
         last_vbd_form=procs.get_last_tool_form('verify_belt_decoupling'),
+        actuator_status=local_actuator_actions.local_actuator_status(),
+        actuator_toggle_url=url_for('local_actuator_toggle'),
+        read_motor_url=url_for('local_read_motor'),
+        adjust_motor_url=url_for('local_adjust_motor'),
     )
+
+
+@app.route('/local/tools/actuator/toggle', methods=['POST'])
+def local_actuator_toggle():
+    status = local_actuator_actions.local_actuator_status()
+    if status['running']:
+        ok = local_actuator_actions.stop_local_actuator()
+        flash('Stopped basic_control.' if ok else 'Failed to stop basic_control -- check directly.',
+              'success' if ok else 'error')
+    else:
+        ok, message = local_actuator_actions.start_local_actuator()
+        flash(message, 'success' if ok else 'error')
+    return redirect(url_for('local_tools'))
+
+
+@app.route('/local/tools/read_motor', methods=['POST'])
+def local_read_motor():
+    raw = request.form.get('motor_ids', '').strip()
+    motor_ids = [int(x) for x in raw.split(',') if x.strip().isdigit()] if raw else None
+    result = ros_actions.local_read_motor_positions(motor_ids)
+    flash(result.stdout.strip() or result.stderr.strip() or 'read_motor_positions called.',
+          'success' if result.ok else 'error')
+    return redirect(url_for('local_tools'))
+
+
+@app.route('/local/tools/adjust_motor', methods=['POST'])
+def local_adjust_motor():
+    motor_id = request.form.get('motor_id')
+    degrees = request.form.get('degrees')
+    if not motor_id or not degrees:
+        flash('motor_id and degrees are both required.', 'error')
+        return redirect(url_for('local_tools'))
+    result = ros_actions.local_adjust_motor_position(motor_id, degrees)
+    flash(result.stdout.strip() or result.stderr.strip() or 'adjust_motor_position called.',
+          'success' if result.ok else 'error')
+    return redirect(url_for('local_tools'))
 
 
 @app.route('/local/tools/save_pose', methods=['POST'])
@@ -721,7 +848,10 @@ def jetson_group_checkpoints(policies_dir, task, fname):
         {**c, 'url': url_for('jetson_detail', policies_dir=policies_dir, task=task,
                               fname=fname, basename=c['basename']),
          'delete_url': url_for('jetson_delete_policy', policies_dir=policies_dir, task=task,
-                                fname=fname, basename=c['basename'])}
+                                fname=fname, basename=c['basename']),
+         'like_url': url_for('jetson_toggle_like', policies_dir=policies_dir, task=task,
+                              fname=fname, basename=c['basename']),
+         'liked': likes.is_liked('jetson', group_name, fname, c['basename'])}
         for c in remote_fs.list_jetson_checkpoints(JETSON_HOST, group_name, fname)
     ]
     return render_template(
@@ -729,6 +859,34 @@ def jetson_group_checkpoints(policies_dir, task, fname):
         folder=group_name, fname=fname, checkpoints=checkpoints,
         back_url=url_for('jetson_group_files', policies_dir=policies_dir, task=task),
     )
+
+
+@app.route('/jetson/<policies_dir>/<task>/<fname>/<basename>/like', methods=['POST'])
+def jetson_toggle_like(policies_dir, task, fname, basename):
+    likes.toggle_like('jetson', f'{policies_dir}/{task}', fname, basename)
+    return redirect(url_for('jetson_group_checkpoints', policies_dir=policies_dir, task=task, fname=fname))
+
+
+@app.route('/jetson/liked')
+def jetson_liked():
+    guard = _require_jetson()
+    if guard:
+        return guard
+    items = []
+    for item in likes.list_likes():
+        if item['host'] != 'jetson':
+            continue
+        policies_dir, task = item['folder'].split('/', 1)
+        items.append({
+            **item,
+            'policies_dir': policies_dir,
+            'task': task,
+            'detail_url': url_for('jetson_detail', policies_dir=policies_dir, task=task,
+                                   fname=item['fname'], basename=item['basename']),
+            'unlike_url': url_for('jetson_toggle_like', policies_dir=policies_dir, task=task,
+                                   fname=item['fname'], basename=item['basename']),
+        })
+    return render_template('jetson_liked.html', tab='jetson', active_tab='jetson', sub_tab='liked', items=items)
 
 
 @app.route('/jetson/<policies_dir>/<task>/<fname>/<basename>')
@@ -1090,19 +1248,28 @@ def sheep_checkpoints(folder, fname):
          'download_url': url_for('sheep_download_one', folder=folder, fname=fname, basename=c['basename']),
          'view_url': url_for('sheep_view_training', folder=folder, fname=fname, basename=c['basename']),
          'delete_url': url_for('sheep_delete_checkpoint', folder=folder, fname=fname, basename=c['basename']),
+         'like_url': url_for('sheep_toggle_like', folder=folder, fname=fname, basename=c['basename']),
+         'liked': likes.is_liked('sheep', folder, fname, c['basename']),
          'last_start_pose': procs.get_last_tool_form(f"view_training:{c['basename']}").get('start_pose', 'home'),
-         'last_max_slew_deg_per_s': procs.get_last_tool_form(f"view_training:{c['basename']}").get('max_slew_deg_per_s', '')}
+         'last_max_slew_deg_per_s': procs.get_last_tool_form(f"view_training:{c['basename']}").get('max_slew_deg_per_s', ''),
+         'last_joint_stiffness': procs.get_last_tool_form(f"view_training:{c['basename']}").get('joint_stiffness', '')}
         for c in remote_fs.list_remote_checkpoints_with_local(SHEEP_HOST, folder, fname)
     ]
+    # back_url: same ?from=graphs marker as local_checkpoints() -- see
+    # that route's own comment for the full reasoning (2026-08-18 user
+    # report: "on trot_stand_ms500_v2 tab, in models, pressed back and
+    # it brings me to jetson", reported on this exact Sheep page).
+    back_url = (url_for('sheep_trainings_graphs', fname=fname) if request.args.get('from') == 'graphs'
+                else url_for('sheep_files', folder=folder))
     return render_template(
         'checkpoints.html', tab='sheep', active_tab='sheep', sub_tab='models',
         folder=folder, fname=fname, checkpoints=checkpoints,
         env_id=local_fs.resolve_env_id(folder),
-        back_url=url_for('sheep_files', folder=folder),
+        back_url=back_url,
         graphs_url=url_for('sheep_trainings_graphs', fname=fname),
         download_status_url=url_for('sheep_download_status', folder=folder, fname=fname),
         local_folder_url=url_for('local_files', folder=folder),
-        tabs_graphs_url=url_for('sheep_trainings_graphs', fname=fname),
+        tabs_graphs_url=url_for('sheep_trainings_graphs', fname=fname, **{'from': 'checkpoints'}),
         tabs_checkpoints_url=url_for('sheep_checkpoints', folder=folder, fname=fname),
         active_training_tab='checkpoints',
     )
@@ -1149,26 +1316,13 @@ def sheep_delete_checkpoint(folder, fname, basename):
 
 @app.route('/sheep/<folder>/<fname>/<basename>/view', methods=['POST'])
 def sheep_view_training(folder, fname, basename):
-    local_path = local_fs.checkpoint_zip_path(folder, basename)
-    if not os.path.exists(local_path):
-        ok, local_path = _sheep_download(folder, basename)
-        if not ok:
-            flash('Download failed, cannot view training.', 'error')
-            return redirect(url_for('sheep_checkpoints', folder=folder, fname=fname))
-    env_id = local_fs.resolve_env_id(folder)
-    start_pose = request.form.get('start_pose', 'home')
-    max_slew_deg_per_s = request.form.get('max_slew_deg_per_s', '').strip()
-    if env_id == 'Dog-Walk-v0':
-        procs.set_last_tool_form(f'view_training:{basename}', {
-            'start_pose': start_pose, 'max_slew_deg_per_s': max_slew_deg_per_s})
-    ok, info = policy_actions.launch_view_training(
-        local_path, env_id, episodes=5,
-        start_pose=start_pose if env_id == 'Dog-Walk-v0' else None,
-        control_mode='position',
-        max_slew_deg_per_s=max_slew_deg_per_s or policy_actions.VIEW_DEFAULT_MAX_SLEW_DEG_PER_S,
-    )
-    flash('Downloaded and launched MuJoCo viewer.' if ok else f'Failed to launch: {info}',
-          'success' if ok else 'error')
+    return _do_view_training('sheep', folder, fname, basename,
+                              url_for('sheep_checkpoints', folder=folder, fname=fname))
+
+
+@app.route('/sheep/<folder>/<fname>/<basename>/like', methods=['POST'])
+def sheep_toggle_like(folder, fname, basename):
+    likes.toggle_like('sheep', folder, fname, basename)
     return redirect(url_for('sheep_checkpoints', folder=folder, fname=fname))
 
 
@@ -1233,15 +1387,68 @@ def sheep_trainings_graphs(fname):
     scalars = graphs.sheep_sync_and_read_scalars(fname)
     running = any(t['fname'] == fname for t in remote_fs.list_remote_running_trainings(SHEEP_HOST))
     folder = remote_fs.find_remote_folder_for_fname(SHEEP_HOST, fname)
+    # back_url: same ?from=checkpoints marker as local_trainings_graphs()
+    # -- see that route's own comment.
+    back_url = (url_for('sheep_checkpoints', folder=folder, fname=fname)
+                if request.args.get('from') == 'checkpoints' and folder
+                else url_for('sheep_trainings'))
     return render_template(
         'graphs.html', tab='sheep', active_tab='sheep',
         fname=fname, running=running, sheep=True,
         request_path=request.path, tags=graphs.ordered_tags(scalars), series_json=json.dumps(scalars),
-        back_url=url_for('sheep_trainings'),
+        back_url=back_url,
         tabs_graphs_url=request.path,
-        tabs_checkpoints_url=url_for('sheep_checkpoints', folder=folder, fname=fname) if folder else None,
+        tabs_checkpoints_url=(url_for('sheep_checkpoints', folder=folder, fname=fname, **{'from': 'graphs'})
+                               if folder else None),
         active_training_tab='graphs',
     )
+
+
+# ======================================================================
+# Liked
+# ======================================================================
+# Cross-cutting: a liked checkpoint can be 'local' or 'sheep' (see
+# likes.py's own module docstring for why host is part of a like's
+# identity, not just a display label) -- this section isn't scoped under
+# either tab, it's its own top-level nav entry (see base.html/
+# _inject_nav_urls's nav_liked_url).
+
+@app.route('/liked')
+def liked_page():
+    items = []
+    for item in likes.list_likes():
+        host, folder, fname, basename = item['host'], item['folder'], item['fname'], item['basename']
+        last_form = procs.get_last_tool_form(f'view_training:{basename}')
+        items.append({
+            **item,
+            'env_id': local_fs.resolve_env_id(folder),
+            # Whether this checkpoint's .zip is ALREADY on disk locally --
+            # always true for host='local'; for host='sheep' this is
+            # exactly what _do_view_training() checks to decide whether
+            # viewing needs a download first, surfaced here so the Liked
+            # page can show the same "needs-download" hint checkpoints.html
+            # already uses for Sheep checkpoints.
+            'downloaded_locally': os.path.exists(local_fs.checkpoint_zip_path(folder, basename)),
+            'view_url': url_for('liked_view_training', host=host, folder=folder, fname=fname, basename=basename),
+            'unlike_url': url_for('liked_unlike', host=host, folder=folder, fname=fname, basename=basename),
+            'checkpoints_url': url_for('local_checkpoints' if host == 'local' else 'sheep_checkpoints',
+                                        folder=folder, fname=fname),
+            'last_start_pose': last_form.get('start_pose', 'home'),
+            'last_max_slew_deg_per_s': last_form.get('max_slew_deg_per_s', ''),
+            'last_joint_stiffness': last_form.get('joint_stiffness', ''),
+        })
+    return render_template('liked.html', tab='liked', active_tab='liked', items=items)
+
+
+@app.route('/liked/<host>/<folder>/<fname>/<basename>/view', methods=['POST'])
+def liked_view_training(host, folder, fname, basename):
+    return _do_view_training(host, folder, fname, basename, url_for('liked_page'))
+
+
+@app.route('/liked/<host>/<folder>/<fname>/<basename>/unlike', methods=['POST'])
+def liked_unlike(host, folder, fname, basename):
+    likes.toggle_like(host, folder, fname, basename)
+    return redirect(url_for('liked_page'))
 
 
 # ======================================================================

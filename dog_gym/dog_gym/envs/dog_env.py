@@ -1772,7 +1772,7 @@ class DogEnv(gym.Env):
                  control_mode='position', position_kp=None, position_kd=None,
                  position_kp_range=None, position_kd_range=None, home_start_prob=0.0,
                  max_slew_deg_per_s=None, walk_forward_progress_target_m_s=None,
-                 gait_style='trot'):
+                 gait_style='trot', joint_stiffness=None):
         super().__init__()
         if task not in ('stand', 'walk'):
             raise ValueError(f"task must be 'stand' or 'walk', got {task!r}")
@@ -2093,6 +2093,43 @@ class DogEnv(gym.Env):
             [self.model.joint(name).qposadr[0] for name in joint_names])
         self.motor_dof_adr = np.array(
             [self.model.joint(name).dofadr[0] for name in joint_names])
+
+        # joint_stiffness (2026-08-18, "T_FAKE" staged-training idea,
+        # chatbot.md/user request -- trot_home_v1/trot_stand_1ms_v1 both
+        # plateaued far below their forward-speed-curriculum targets, see
+        # that measurement): runtime override of generate_dog_mjcf.py's
+        # baked-in per-leg-joint stiffness="0" (the physically-correct
+        # value -- real hardware has no passive spring pulling a joint
+        # back toward qpos=0, see that script's 2026-08-16 comment for the
+        # full "previous stiffness=10 was an unreviewed leftover" story).
+        # The idea: a nonzero stiffness adds a passive restoring spring
+        # that may make a fast gait easier for PPO to discover from
+        # scratch (less has to be learned purely from actuator torque)
+        # even though it's not real-hardware-accurate -- train a
+        # first-phase policy ("T_FAKE") under this easier physics plus a
+        # loosened max_slew_deg_per_s, then --init-from it into a second
+        # phase with joint_stiffness back at the correct 0 (i.e. omit
+        # this flag) and the correct max_slew_deg_per_s, so the learned
+        # gait pattern transfers into physically-accurate dynamics
+        # instead of being learned under them from a random policy.
+        #
+        # THIGH joints only (2026-08-18, user report -- with the spring
+        # on EVERY leg joint including the calf, the calf was reluctant
+        # to extend toward the ground for a soft landing, since the
+        # spring pulls it back toward qpos=0 same as it pulls the thigh):
+        # the calf's own job (cushioning landings, decoupled via the
+        # belt/pulley fix) is unrelated to what this knob is meant to
+        # ease (thigh swing dynamics for a faster gait) -- applying it
+        # there too was collateral, not intentional. Mirrors
+        # _apply_position_gains()'s exact "runtime override instead of a
+        # separate MJCF file" pattern. None (default) leaves the MJCF's
+        # own stiffness="0" untouched on every joint -- every existing
+        # call/checkpoint is unaffected.
+        self._thigh_joint_ids = np.array([
+            self.model.joint(name).id for name in joint_names if name.endswith('_thigh')])
+        if joint_stiffness is not None:
+            self._apply_joint_stiffness(joint_stiffness)
+        self.joint_stiffness = joint_stiffness
 
         # Belt/pulley coupling compensation (real robot confirmed
         # 2026-07-25): each leg's calf motor drives its lower pulley
@@ -2638,6 +2675,16 @@ class DogEnv(gym.Env):
         self.model.actuator_gainprm[:, 0] = kp
         self.model.actuator_biasprm[:, 1] = -kp
         self.model.actuator_biasprm[:, 2] = -kd
+
+    def _apply_joint_stiffness(self, value):
+        """Writes a passive restoring-spring stiffness directly into the
+        loaded model's per-THIGH-joint jnt_stiffness (MuJoCo's own
+        <joint stiffness="..."> attribute, applied at runtime instead of
+        regenerating the MJCF -- see joint_stiffness's __init__ comment
+        for why this exists, and why thighs only -- not calves -- as of
+        2026-08-18). Only the 4 thigh joints (self._thigh_joint_ids) --
+        calves and the torso's free 'root' joint are both untouched."""
+        self.model.jnt_stiffness[self._thigh_joint_ids] = value
 
     def set_position_gain_range(self, kp_range, kd_range):
         """Updates the (low, high) bounds reset() samples position_kp/

@@ -100,6 +100,10 @@ def launch_verify_belt_decoupling(form):
         cmd_parts += ['--no-coupling']
     if form.get('period_s_enabled') and form.get('period_s'):
         cmd_parts += ['--period-s', form['period_s']]
+    if form.get('joint_stiffness_enabled') and form.get('joint_stiffness'):
+        cmd_parts += ['--joint-stiffness', form['joint_stiffness']]
+    if form.get('vbd_max_slew_deg_per_s_enabled') and form.get('vbd_max_slew_deg_per_s'):
+        cmd_parts += ['--max-slew-deg-per-s', form['vbd_max_slew_deg_per_s']]
     if form.get('duration_s_enabled') and form.get('duration_s'):
         cmd_parts += ['--duration-s', form['duration_s']]
     cmd_parts += ['--upside-down' if form.get('upside_down') else '--no-upside-down']

@@ -66,6 +66,11 @@ _ADVANCED_FIELDS = [
     # own --sde-sample-freq help): harmless to pass even if --use-sde isn't
     # checked, train.py's argparse accepts it unconditionally.
     ('sde_sample_freq', '--sde-sample-freq', int),
+    # --joint-stiffness (2026-08-18, "T_FAKE" staged-training idea -- see
+    # dog_gym/train.py's own --joint-stiffness help): opt-in override of
+    # generate_dog_mjcf.py's baked-in per-leg-joint stiffness="0".
+    # Omitting this checkbox leaves it at the physically-correct 0.
+    ('joint_stiffness', '--joint-stiffness', float),
 ]
 
 

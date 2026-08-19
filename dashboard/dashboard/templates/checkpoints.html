@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_view_training_form.html" import view_training_form %}
 {% block title %}{{ fname }} - dashboard{% endblock %}
 {% block content %}
 {% include "sub_tabs.html" %}
@@ -27,33 +28,18 @@
       <span class="row-actions">
         {% if c.local is defined and c.local %}<span class="status-pill stopped">local</span>{% endif %}
         <span class="meta">{{ c.mtime | fmt_dt }}</span>
+        {% if c.like_url %}
+        <form class="inline" method="post" action="{{ c.like_url }}">
+          <button type="submit" class="like-btn {{ 'liked' if c.liked else '' }}" title="{{ 'Unlike' if c.liked else 'Like' }}">{{ '♥' if c.liked else '♡' }}</button>
+        </form>
+        {% endif %}
         {% if tab == 'sheep' %}
         <form class="inline" method="post" action="{{ c.download_url }}">
           <button type="submit">Download</button>
         </form>
-        <form class="inline" method="post" action="{{ c.view_url }}">
-          {% if env_id == 'Dog-Walk-v0' %}
-          <select name="start_pose" title="Start pose" style="max-width:100px">
-            {% for p in ['home', 'standing', 'random'] %}
-              <option value="{{ p }}" {{ 'selected' if p == c.last_start_pose }}>{{ p }}</option>
-            {% endfor %}
-          </select>
-          <input type="number" name="max_slew_deg_per_s" title="Max slew deg/s (blank = default 250, the real-deployment-matching target most checkpoints are trained toward; set to the value this checkpoint actually trained under if different)" placeholder="slew (default 250)" value="{{ c.last_max_slew_deg_per_s }}" style="max-width:100px">
-          {% endif %}
-          <button type="submit" class="primary">View Training</button>
-        </form>
+        {{ view_training_form(c.view_url, env_id, c.last_start_pose, c.last_max_slew_deg_per_s, c.last_joint_stiffness) }}
         {% elif tab == 'local' and c.view_url %}
-        <form class="inline" method="post" action="{{ c.view_url }}">
-          {% if env_id == 'Dog-Walk-v0' %}
-          <select name="start_pose" title="Start pose" style="max-width:100px">
-            {% for p in ['home', 'standing', 'random'] %}
-              <option value="{{ p }}" {{ 'selected' if p == c.last_start_pose }}>{{ p }}</option>
-            {% endfor %}
-          </select>
-          <input type="number" name="max_slew_deg_per_s" title="Max slew deg/s (blank = default 250, the real-deployment-matching target most checkpoints are trained toward; set to the value this checkpoint actually trained under if different)" placeholder="slew (default 250)" value="{{ c.last_max_slew_deg_per_s }}" style="max-width:100px">
-          {% endif %}
-          <button type="submit" class="primary">View Training</button>
-        </form>
+        {{ view_training_form(c.view_url, env_id, c.last_start_pose, c.last_max_slew_deg_per_s, c.last_joint_stiffness) }}
         {% endif %}
         {% if c.delete_url %}
         <form class="inline" method="post" action="{{ c.delete_url }}">
