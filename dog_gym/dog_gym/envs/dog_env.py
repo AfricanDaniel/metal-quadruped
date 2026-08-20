@@ -3029,10 +3029,25 @@ class DogEnv(gym.Env):
         # without moving," a different failure mode from an actual fall,
         # and deliberately excluded from the penalty (see that
         # constant's comment).
-        fell_over = (self._is_fallen() or self._knee_walking_too_long()
-                     or self._leg_stuck_too_long() or self._pitch_diverging_too_long()
-                     or self._not_all_feet_grounded())
-        terminated = fell_over or self._no_forward_progress()
+        # SIMPLIFIED termination for gait_style='bound' (2026-08-19, direct
+        # user request, same round as walk_reward_total's own bound-only
+        # simplification above -- "I only want forward_velocity_reward and
+        # non-tip termination", corrected from an earlier "non
+        # termination" typo, confirmed via direct question: ONLY
+        # _knee_walking_too_long(), dropping actual fall/tip-over
+        # detection (_is_fallen()), leg-stuck, pitch-diverging, and
+        # _no_forward_progress() entirely for bound). Mirrors
+        # walk_reward_total's own precedent exactly -- additive,
+        # STAND and WALK+trot's termination logic below is completely
+        # untouched.
+        if self.task == 'walk' and self.gait_style == 'bound':
+            fell_over = self._knee_walking_too_long()
+            terminated = fell_over
+        else:
+            fell_over = (self._is_fallen() or self._knee_walking_too_long()
+                         or self._leg_stuck_too_long() or self._pitch_diverging_too_long()
+                         or self._not_all_feet_grounded())
+            terminated = fell_over or self._no_forward_progress()
         truncated = self._step_count >= MAX_EPISODE_STEPS
 
         if self.task == 'walk' and fell_over:
@@ -5168,6 +5183,32 @@ class DogEnv(gym.Env):
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
         )
+        # SIMPLIFIED bound-only reward (2026-08-19, direct user request --
+        # "reshape and simplify running (bound)... to get it working in
+        # sim first. I only want forward_velocity_reward and non
+        # termination... since the current trainings do not seem to be
+        # improving"). User is on a dedicated new branch
+        # (walking_better_running) specifically to experiment with this.
+        # Rather than the heavily-shaped walk_reward_total above (25+
+        # interacting terms, including weight-100 height_sag_penalty/
+        # height_overshoot_penalty -- see chatbot.md "two new ideas...
+        # remove the fixed-height constraint" for the live suspicion those
+        # shaping terms may be actively fighting the vertical excursion a
+        # genuine bound needs), BOUND's per-tick reward is now JUST
+        # forward_velocity_reward. "non termination" == the EXISTING
+        # termination/fall-penalty mechanics (fell_over's checks +
+        # WALK_FALL_TERMINAL_PENALTY, both in step(), entirely unchanged)
+        # stay as the ONLY other structural pressure -- not a new/
+        # different termination scheme, just "keep whatever already ends
+        # + penalizes a fall, drop every OTHER shaping term." The full
+        # walk_reward_total above is still computed unconditionally
+        # (cheap, and TROT's own reward path is completely untouched,
+        # matching gait_style's own established "additive, don't touch
+        # the other style's code" precedent) -- this override just
+        # doesn't USE it for bound. Trivially reversible (delete this
+        # block) if the simplified version doesn't help either.
+        if self.gait_style == 'bound':
+            walk_reward_total = 1.0 * forward_velocity_reward
         # Floor per-tick reward at 0 (2026-08-19, task #43 item 1 --
         # "fall early to minimize penalty" exploit, confirmed happening in
         # the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean
