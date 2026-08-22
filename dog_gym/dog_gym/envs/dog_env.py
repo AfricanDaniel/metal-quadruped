@@ -479,7 +479,7 @@ WALK_BOUND_FOOT_USAGE_GATE_SIGMA = 0.10
 # (~49deg) -- real pressure to improve, not a free pass at the status
 # quo. GATES forward_velocity_reward, same reasoning as the foot-usage
 # gate above. Placeholder -- first attempt, expect a tuning pass.
-WALK_BOUND_THIGH_ROM_FLOOR_RAD = np.radians(50)
+WALK_BOUND_THIGH_ROM_FLOOR_RAD = np.radians(90)
 WALK_BOUND_THIGH_ROM_GATE_SIGMA_RAD = np.radians(15)
 
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
@@ -1324,12 +1324,12 @@ NONTIP_TERMINATION_ENABLED = True
 # original ~5cm penetration at the tilted 'home' reset is back, so this
 # needs enough room for that initial violent contact to actually resolve
 # before counting against the episode, not just enough for an ordinary
-# mid-gait knee scuff. Underneath NONTIP_TERMINATION_MIN_RISE_PROGRESS's
+# mid-gait knee scuff. Underneath NONTIP_TERMINATION_MIN_RISE_HEIGHT_M's
 # gate as before -- the two mechanisms now both cover the 'home'-start
 # penetration case (the gate more completely, this raised duration as a
 # second layer), not just the original "clumsy scuff after standing"
 # purpose alone.
-NONTIP_TERMINATION_S = 2.0
+NONTIP_TERMINATION_S = 0.0
 # STANDING-start gets its OWN, tighter threshold (2026-08-19, direct user
 # request): the 2.0s value above exists specifically to cover 'home's own
 # reset-time penetration violence (see the comment right above) -- a
@@ -1345,6 +1345,16 @@ NONTIP_TERMINATION_S = 2.0
 # self._episode_start_pose.
 NONTIP_TERMINATION_S_STANDING = 0.5
 
+# BOUND ONLY -- torso_body (main chassis) touching the floor, checked
+# against this much tighter threshold instead of NONTIP_TERMINATION_S/
+# NONTIP_TERMINATION_S_STANDING above. Direct, repeated user design goal
+# for bound specifically: the robot should ALWAYS land on its feet, which
+# only an effectively-instant threshold can enforce (a duration-based one
+# would tolerate the exact torso-drag failure mode being targeted). 0.0
+# -- fires the very first tick torso_body contacts the floor, once past
+# NONTIP_TERMINATION_MIN_RISE_HEIGHT_M's own gate below.
+NONTIP_TERMINATION_S_BOUND = 0.0
+
 # Hard cutoff for _knee_walking_too_long()'s gate (2026-08-16, multi-agent
 # review w/ Antigravity, chatbot.md same title as NONTIP_TERMINATION_S's
 # fix above -- her explicit recommendation, "a hard height cutoff rather
@@ -1352,13 +1362,25 @@ NONTIP_TERMINATION_S_STANDING = 0.5
 # effectively binary: it is required/expected while sitting, but invalid
 # once the robot has committed to standing or walking. A smooth fade
 # would implicitly endorse knee-walking for shorter durations midway
-# up"). Below this _get_rise_progress() threshold, _knee_walking_too_long()
-# skips its check entirely -- non-tip contact while still genuinely in
-# the sitting posture (progress~0) is the expected, real-hardware-matching
-# resting state (see HOME_START_FORWARD_LEAN_RAD's own bug for exactly
-# what this is protecting against), not a failure. 0.2 is Antigravity's
-# own suggested value, not swept.
-NONTIP_TERMINATION_MIN_RISE_PROGRESS = 0.2
+# up"). Below this torso height, _knee_walking_too_long() skips its check
+# entirely -- non-tip contact while still genuinely in the sitting
+# posture is the expected, real-hardware-matching resting state (see
+# HOME_START_FORWARD_LEAN_RAD's own bug for exactly what this is
+# protecting against), not a failure.
+#
+# CHANGED FROM a 0-1 fraction of the climb (0.2, i.e. 20% of the way from
+# SIT_HEIGHT_M to that training's own walk_target_height_m) TO an
+# absolute torso height in meters (2026-08-21, direct user request --
+# manually inspected dog_description/mjcf/pose_6.txt in the MuJoCo
+# viewer and confirmed it's "a good visible spot to turn it on"). Value
+# is pose_6.txt's saved root z (0.19460596m). Unlike the old fraction,
+# this is now the SAME absolute height for every training regardless of
+# walk_height_fraction -- for whf60 runs (walk_target_height_m=0.1878m)
+# this sits AT/ABOVE their full target height (the old 0.2 fraction was
+# ~0.15m for those), a meaningfully later/stricter gate-open point than
+# before; for default whf90 runs (target=0.2817m) this is ~38% of the
+# climb, vs. the old 20%.
+NONTIP_TERMINATION_MIN_RISE_HEIGHT_M = 0.19460596
 
 # STAND only -- grace period for _not_all_feet_grounded() (2026-08-07,
 # user request: measured directly that the instant/zero-grace version
@@ -2089,6 +2111,8 @@ class DogEnv(gym.Env):
             self.model, mujoco.mjtObj.mjOBJ_BODY, 'torso')
         self.floor_geom_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')
+        self.torso_geom_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_GEOM, 'torso_body')
         self.default_floor_friction = self.model.geom_friction[self.floor_geom_id].copy()
 
         # Back-leg attachment offset domain randomization (2026-08-09,
@@ -2354,6 +2378,11 @@ class DogEnv(gym.Env):
         # Per-leg seconds spent in CONTINUOUS non-tip (knee/shin) contact
         # -- see NONTIP_TERMINATION_S's comment / _knee_walking_too_long().
         self._non_tip_contact_time = np.zeros(4)
+        # BOUND ONLY -- seconds spent in CONTINUOUS torso_body-floor
+        # contact (reset-on-recovery, same pattern as
+        # _non_tip_contact_time) -- see NONTIP_TERMINATION_S_BOUND's
+        # comment / _knee_walking_too_long().
+        self._torso_contact_time = 0.0
         # Per-leg seconds spent in CONTINUOUS full airborne (no contact at
         # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
         # _not_all_feet_grounded().
@@ -2443,6 +2472,7 @@ class DogEnv(gym.Env):
         self._feet_air_time = np.zeros(4)
         self._feet_stance_time = np.zeros(4)
         self._non_tip_contact_time = np.zeros(4)
+        self._torso_contact_time = 0.0
         self._airborne_time = np.zeros(4)
         # STAND+WALK ONLY -- seconds spent CONTINUOUSLY at/above
         # WALK_STAND_HOLD_THRESHOLD stand_progress, resets to 0 after a
@@ -2587,7 +2617,7 @@ class DogEnv(gym.Env):
                 # SIT_HEIGHT_M -- the penetration this was protecting
                 # against is now instead absorbed by NONTIP_TERMINATION_S
                 # being raised to 2.0s (see that constant's own comment)
-                # plus NONTIP_TERMINATION_MIN_RISE_PROGRESS's height gate,
+                # plus NONTIP_TERMINATION_MIN_RISE_HEIGHT_M's height gate,
                 # rather than by avoiding the penetration itself.
                 # HOME_START_LEAN_HEIGHT_OFFSET_M/_rise_progress_height_
                 # offset are left in place (both now permanently 0 in
@@ -3863,6 +3893,25 @@ class DogEnv(gym.Env):
             else:
                 self._non_tip_contact_time[i] = 0.0
 
+        # BOUND ONLY -- torso_body (main chassis) touching the floor
+        # directly is a distinct, more severe failure than any leg's own
+        # non-tip contact (the leg-only check above never sees it, since
+        # _foot_contact_state_per_leg() only inspects thigh_geom_ids/
+        # calf_geom_ids). Same reset-on-recovery pattern. See
+        # NONTIP_TERMINATION_S_BOUND's comment / _knee_walking_too_long().
+        if self.gait_style == 'bound':
+            torso_touching = False
+            for i in range(self.data.ncon):
+                c = self.data.contact[i]
+                if ((c.geom1 == self.torso_geom_id and c.geom2 == self.floor_geom_id)
+                        or (c.geom2 == self.torso_geom_id and c.geom1 == self.floor_geom_id)):
+                    torso_touching = True
+                    break
+            if torso_touching:
+                self._torso_contact_time += dt
+            else:
+                self._torso_contact_time = 0.0
+
     def _update_airborne_time(self):
         """Advances self._airborne_time per leg -- MUST be called once
         per step, after mj_step. Grows while a leg stays in CONTINUOUS
@@ -4090,11 +4139,14 @@ class DogEnv(gym.Env):
         WALK's existing mechanism). No-ops entirely (always False) if
         NONTIP_TERMINATION_ENABLED is off.
 
-        GATED by _get_rise_progress() (2026-08-16, see
-        NONTIP_TERMINATION_MIN_RISE_PROGRESS's own comment) -- skips this
-        check entirely while still below that threshold, since non-tip
+        GATED by torso height (2026-08-16, see
+        NONTIP_TERMINATION_MIN_RISE_HEIGHT_M's own comment) -- skips this
+        check entirely while still below that height, since non-tip
         contact while genuinely still in the sitting posture is expected
-        (matches the real robot), not a walking failure.
+        (matches the real robot), not a walking failure. Same
+        _rise_progress_height_offset adjustment _get_rise_progress()
+        itself applies (see that method), so a 'home'+lean reset's height
+        bump doesn't falsely read as already past the gate.
 
         THRESHOLD (2026-08-19, see NONTIP_TERMINATION_S_STANDING's own
         comment): WALK with self._episode_start_pose == 'standing' uses
@@ -4108,12 +4160,21 @@ class DogEnv(gym.Env):
         existed."""
         if not NONTIP_TERMINATION_ENABLED:
             return False
-        if self._get_rise_progress() < NONTIP_TERMINATION_MIN_RISE_PROGRESS:
+        adjusted_height = self._torso_height() - self._rise_progress_height_offset
+        if adjusted_height < NONTIP_TERMINATION_MIN_RISE_HEIGHT_M:
             return False
         threshold = (NONTIP_TERMINATION_S_STANDING
                      if getattr(self, '_episode_start_pose', None) == 'standing'
                      else NONTIP_TERMINATION_S)
-        return bool(np.any(self._non_tip_contact_time > threshold))
+        if bool(np.any(self._non_tip_contact_time > threshold)):
+            return True
+        # BOUND ONLY -- torso_body directly touching the floor is checked
+        # against its own, much tighter NONTIP_TERMINATION_S_BOUND
+        # threshold rather than the leg thresholds above -- see that
+        # constant's comment.
+        if self.gait_style == 'bound' and self._torso_contact_time > NONTIP_TERMINATION_S_BOUND:
+            return True
+        return False
 
     def _not_all_feet_grounded(self):
         """STAND only: True if any leg has been fully airborne (no floor

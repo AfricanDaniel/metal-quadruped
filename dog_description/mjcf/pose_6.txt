@@ -1,0 +1,9 @@
+root (free)  pos=[-0.00213997  0.03336946  0.19460596]  quat=[ 0.99985361 -0.0123114   0.0038099   0.01125482]
+leg_a_thigh        0.37215 rad    21.323 deg
+leg_a_calf        -0.00665 rad    -0.381 deg   (ABSOLUTE, matches real motor encoder:  -21.704 deg -- sanity check only, RAW above is what gets saved)
+leg_b_thigh       -0.41286 rad   -23.655 deg
+leg_b_calf         0.01062 rad     0.608 deg   (ABSOLUTE, matches real motor encoder:   24.264 deg -- sanity check only, RAW above is what gets saved)
+leg_c_thigh        0.45376 rad    25.999 deg
+leg_c_calf        -0.01562 rad    -0.895 deg   (ABSOLUTE, matches real motor encoder:  -26.894 deg -- sanity check only, RAW above is what gets saved)
+leg_d_thigh       -0.48347 rad   -27.701 deg
+leg_d_calf         0.01435 rad     0.822 deg   (ABSOLUTE, matches real motor encoder:   28.523 deg -- sanity check only, RAW above is what gets saved)
