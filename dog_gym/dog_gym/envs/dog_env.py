@@ -582,6 +582,58 @@ WALK_BOUND_SYMMETRY_GATE_FLOOR = 0.5
 WALK_BOUND_SYMMETRY_SPEED_RATIO_START = 0.6
 WALK_BOUND_SYMMETRY_SPEED_RATIO_FULL = 0.9
 
+# Bound-only guardrail #6: stance-phase straight-leg (kinematic
+# singularity) avoidance (2026-08-22, direct user report on
+# PPO_5500000_running_home_s5_ms1000_simple_alr_v1b -- "when the thighs
+# rotate towards the back to propel the robot forward, the calfs are not
+# staying tucked... this should stay tucked in a bit to help push
+# forward"; multi-agent review w/ Antigravity, chatbot.md "Prioritizing
+# Tool Usage" thread -- her diagnosis that a straight/locked knee during
+# stance is a real biomechanical problem (the leg becomes a rigid strut
+# with no spring compliance to apply force through) matches the
+# direction of the report exactly, but her SPECIFIC proposed threshold
+# (penalize calf angle dropping below ~20-30deg during stance) was built
+# on an incorrect assumption about which raw calf qpos value is actually
+# "straight."
+#
+# DIRECTLY MEASURED instead of assumed (2026-08-22): hip-to-foot distance
+# as a pure function of calf qpos (thigh held fixed), both leg_a
+# (range 0-206.1deg) and leg_b (range -213.3-0deg) -- confirmed leg
+# length is SHORTEST at BOTH ends of the calf's range (~0.13-0.14m) and
+# LONGEST (straightest) near the MIDPOINT (~0.207m at ~103deg / ~-106deg
+# respectively) -- i.e. qpos=0 is the FOLDED limit (this is also where
+# the 'home' start pose sits, see NONTIP_TERMINATION_MIN_RISE_HEIGHT_M's
+# own history), NOT the straight one; the true straight-leg singularity
+# sits in the MIDDLE of the range, symmetric on both sides. A floor near
+# either end (Agy's original proposal) would not have caught this at
+# all, and applied literally would have directly penalized the home
+# starting pose itself (which sits at qpos=0, deep inside that floor's
+# penalized region) -- confirmed this would have been actively harmful
+# before ever training on it.
+#
+# ZONE is a half-width around each leg's own straight-CENTER (computed
+# per-leg in __init__ as the midpoint of self._calf_joint_range_lo/hi,
+# reusing the same real per-leg range data calf_joint_margin_gate
+# already loads) -- being within this band of the center, WHILE the foot
+# is planted (stance/'tip' contact), counts as being in the singularity
+# zone.
+STANCE_STRAIGHT_ZONE_RAD = np.radians(25)
+# DURATION-based, same reset-on-recovery dwell-time pattern as
+# CALF_JOINT_MARGIN_GRACE_S/_GATE_SIGMA_S above, and for the same reason
+# -- push-off naturally involves the leg passing through (or briefly
+# reaching) full extension right as the foot leaves the ground, which
+# must NOT be penalized; only genuinely DWELLING near-straight while
+# still bearing load (mid-stance, not at the liftoff instant) should be.
+# Only accumulates while state=='tip' -- resets to 0 the instant the leg
+# either moves out of the zone OR leaves stance (swing/liftoff), so a
+# brief straightening right at push-off never accumulates enough dwell
+# time to matter.
+STANCE_STRAIGHT_GRACE_S = 0.05
+STANCE_STRAIGHT_GATE_SIGMA_S = 0.3
+# FLOORED, same "5th/6th multiplicative gate, don't crush reward to 0"
+# reasoning as WALK_BOUND_SYMMETRY_GATE_FLOOR above.
+STANCE_STRAIGHT_GATE_FLOOR = 0.5
+
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
 # multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
 # and forward lean" -- sim-to-real motivation: user wants the trained
@@ -2405,6 +2457,14 @@ class DogEnv(gym.Env):
             [self.model.joint(joint_names[i]).range for i in self.calf_idx])
         self._calf_joint_range_lo = calf_joint_ranges[:, 0]
         self._calf_joint_range_hi = calf_joint_ranges[:, 1]
+        # Per-leg straight-leg (max hip-to-foot extension) calf qpos --
+        # the MIDPOINT of the range, NOT either endpoint -- see
+        # STANCE_STRAIGHT_ZONE_RAD's comment for the direct measurement
+        # confirming both endpoints are FOLDED (short leg) and the true
+        # straight-leg singularity sits here instead. Feeds BOUND-only
+        # stance_straight_gate.
+        self._calf_straight_center_rad = (
+            self._calf_joint_range_lo + self._calf_joint_range_hi) / 2.0
 
         calf_belt_sign = []
         for i in self.calf_idx:
@@ -2498,6 +2558,13 @@ class DogEnv(gym.Env):
         # see CALF_JOINT_MARGIN_FLOOR_RAD's comment / calf_joint_margin_
         # gate in _compute_reward_walk().
         self._calf_margin_time = np.zeros(4)
+        # BOUND ONLY -- per-leg seconds spent CONTINUOUSLY within
+        # STANCE_STRAIGHT_ZONE_RAD of that leg's own straight-leg calf
+        # center, WHILE that leg is in stance ('tip' contact) -- reset-
+        # on-recovery, same pattern as _calf_margin_time above. See
+        # STANCE_STRAIGHT_ZONE_RAD's comment / stance_straight_gate in
+        # _compute_reward_walk().
+        self._calf_stance_straight_time = np.zeros(4)
         # Per-leg seconds spent in CONTINUOUS full airborne (no contact at
         # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
         # _not_all_feet_grounded().
@@ -2589,6 +2656,7 @@ class DogEnv(gym.Env):
         self._non_tip_contact_time = np.zeros(4)
         self._torso_contact_time = 0.0
         self._calf_margin_time = np.zeros(4)
+        self._calf_stance_straight_time = np.zeros(4)
         self._airborne_time = np.zeros(4)
         # STAND+WALK ONLY -- seconds spent CONTINUOUSLY at/above
         # WALK_STAND_HOLD_THRESHOLD stand_progress, resets to 0 after a
@@ -3223,6 +3291,12 @@ class DogEnv(gym.Env):
         # walk(), same off-by-one-tick-lag reasoning as the calls above.
         # See _update_calf_margin_time()'s docstring.
         self._update_calf_margin_time()
+        # MUST also update before _compute_reward() -- BOUND's stance_
+        # straight_gate reads self._calf_stance_straight_time inside
+        # _compute_reward_walk(), same off-by-one-tick-lag reasoning as
+        # the calls above. See _update_calf_stance_straight_time()'s
+        # docstring.
+        self._update_calf_stance_straight_time()
 
         reward = self._compute_reward(action)
 
@@ -4217,6 +4291,29 @@ class DogEnv(gym.Env):
         in_margin_band = margin < CALF_JOINT_MARGIN_FLOOR_RAD
         self._calf_margin_time = np.where(
             in_margin_band, self._calf_margin_time + dt, 0.0)
+
+    def _update_calf_stance_straight_time(self):
+        """Advances self._calf_stance_straight_time per leg -- MUST be
+        called once per step, after mj_step. Grows while a leg is BOTH
+        (a) in stance ('tip' contact, per _foot_contact_state_per_leg())
+        AND (b) within STANCE_STRAIGHT_ZONE_RAD of its own straight-leg
+        calf center (self._calf_straight_center_rad) -- resets to 0 the
+        instant EITHER condition stops holding (leg moves out of the
+        zone, OR leaves stance entirely). Same reset-on-recovery,
+        duration-based pattern as _update_calf_margin_time() and for the
+        same reason -- see STANCE_STRAIGHT_ZONE_RAD's own comment.
+        self.calf_idx order, same as self._foot_contact_state_per_leg()'s
+        leg_a..leg_d order. Called unconditionally every step regardless
+        of gait_style, matching every other rolling tracker in this
+        class."""
+        calf_qpos = self.data.qpos[self.motor_qpos_adr[self.calf_idx]]
+        distance_from_straight = np.abs(calf_qpos - self._calf_straight_center_rad)
+        in_straight_zone = distance_from_straight < STANCE_STRAIGHT_ZONE_RAD
+        state = self._foot_contact_state_per_leg()
+        in_stance = np.array([s == 'tip' for s in state])
+        dt = self.model.opt.timestep
+        self._calf_stance_straight_time = np.where(
+            in_straight_zone & in_stance, self._calf_stance_straight_time + dt, 0.0)
 
     def _update_high_pitch_time(self):
         """Advances self._high_pitch_time -- seconds torso pitch has
@@ -5549,9 +5646,14 @@ class DogEnv(gym.Env):
                 / (WALK_BOUND_SYMMETRY_SPEED_RATIO_FULL - WALK_BOUND_SYMMETRY_SPEED_RATIO_START),
                 0.0, 1.0)
             bound_symmetry_gate = 1.0 - speed_blend * (1.0 - raw_symmetry_gate)
+            stance_straight_deficit_s = float(np.max(
+                np.clip(self._calf_stance_straight_time - STANCE_STRAIGHT_GRACE_S, 0.0, None)))
+            stance_straight_gate = max(STANCE_STRAIGHT_GATE_FLOOR, np.exp(
+                -(stance_straight_deficit_s ** 2) / (2 * STANCE_STRAIGHT_GATE_SIGMA_S ** 2)))
             walk_reward_total = (
                 1.0 * forward_velocity_reward * foot_usage_gate * thigh_rom_gate
-                * calf_rom_gate * calf_joint_margin_gate * bound_symmetry_gate)
+                * calf_rom_gate * calf_joint_margin_gate * bound_symmetry_gate
+                * stance_straight_gate)
         # Floor per-tick reward at 0 (2026-08-19, task #43 item 1 --
         # "fall early to minimize penalty" exploit, confirmed happening in
         # the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean
