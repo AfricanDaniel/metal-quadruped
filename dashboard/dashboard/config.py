@@ -89,7 +89,15 @@ SHEEP_LOG_DIR = f'{SHEEP_WS_ROOT}/dogGymTrain_logs'
 # launch command would silently fail with ModuleNotFoundError.
 SHEEP_VENV_PYTHON = f'{SHEEP_WS_ROOT}/.venv/bin/python3'
 
-SSH_CONNECT_TIMEOUT_S = 5
+# RAISED 5 -> 15s (2026-08-20, user report -- Jetson tab intermittently
+# shows "failed to connect" on the first click, succeeds a try or two
+# later): Tailscale (100.80.152.22 is a Tailscale address) sometimes
+# needs a moment to re-establish a direct/DERP-relayed path to a peer
+# that hasn't been actively connected to recently -- that cold-start
+# handshake can occasionally exceed 5s, while the user's own `jetson`
+# shell alias (no aggressive ConnectTimeout) just waits it out on the
+# first try. 15s gives the dashboard's first attempt the same headroom.
+SSH_CONNECT_TIMEOUT_S = 15
 
 # Connection multiplexing: without this, every single ssh/scp call in
 # this module (there can be a dozen+ in a row for a group checkpoint

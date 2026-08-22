@@ -56,8 +56,15 @@ class SshResult:
         self.returncode = returncode
 
 
-def test_connection(host, timeout_s=8):
-    """True if `ssh host "echo ok"` succeeds within timeout_s."""
+def test_connection(host, timeout_s=18):
+    """True if `ssh host "echo ok"` succeeds within timeout_s.
+
+    18s (2026-08-20, raised alongside SSH_CONNECT_TIMEOUT_S -- see that
+    constant's own comment): this is the OUTER subprocess timeout
+    wrapping the `ssh` call, which itself now has a 15s ConnectTimeout
+    (SSH_OPTS) -- must stay comfortably above that inner value or this
+    outer one cuts the process off first and the raised ConnectTimeout
+    never gets a chance to matter at all."""
     try:
         proc = subprocess.run(
             ['ssh'] + SSH_OPTS + [host, 'echo ok'],

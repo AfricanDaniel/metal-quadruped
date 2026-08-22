@@ -434,6 +434,54 @@ WALK_ROLL_PENALTY_WEIGHT = 5.0
 # Placeholder, not independently swept.
 WALK_ROLL_GATE_SIGMA_RAD = np.radians(10)
 
+# Bound-only guardrail #1: per-leg ground-contact "foot usage" gate
+# (2026-08-19, user report + chatbot.md "front-leg-only vs back-leg-only
+# degenerate gaits" -- direct measurement found running_home/stand_
+# s0_ms250_simple_alr_v3's front legs (leg_a/leg_b) 100% AIRBORNE the
+# entire episode, never once touching the ground; all propulsion came
+# from the back legs alone). Reuses self._contact_duty_cycle -- ALREADY
+# tracked unconditionally every step by _update_swing_duty_cycle() for
+# WALK's existing swing_fairness_penalty, no new per-tick state needed,
+# just a new BOUND-only consumer of it. Deliberately a lenient FLOOR
+# (any real, if uneven, ground use passes), NOT SWING_FAIRNESS_TARGET_
+# DUTY_CYCLE's own 0.75 target -- that value assumes near-constant
+# single/double support (a trot-tuned number), structurally wrong for a
+# bound's much larger simultaneous-flight-phase fraction. Gaussian
+# falloff (same shape as pitch_gate/roll_gate above) once ANY leg's duty
+# cycle drops below the floor -- a multiplicative GATE on forward_
+# velocity_reward, not an additive penalty, matching this file's own
+# established "additive penalty too weak against forward_velocity_
+# reward's dominant weight" precedent (pitch_penalty, then roll_penalty,
+# both needed a gate instead of a 3rd weak competing additive term).
+# Placeholder values -- first attempt, expect a tuning pass (multi-agent
+# review w/ Antigravity, chatbot.md "thigh-ROM-parity guardrail plan").
+WALK_BOUND_MIN_FOOT_DUTY_CYCLE = 0.15
+WALK_BOUND_FOOT_USAGE_GATE_SIGMA = 0.10
+
+# Bound-only guardrail #2: per-leg thigh range-of-motion floor (2026-08-19,
+# same user report -- direct measurement found back-leg thigh ROM roughly
+# HALF the front legs' (e.g. running_stand_s5_ms1000_simple_alr_v1@16.0M:
+# front ~107-109deg, back ~49-62deg); user's own framing: "if the back
+# thighs were angled the same way the front thighs are, the robot would
+# achieve higher speed, like a real dog"). Mirrors calf_activity_
+# penalty's own TRUE-sliding-window design exactly (self._thigh_hinge_
+# window, see _update_thigh_hinge_activity()) -- a genuine tracked range,
+# not an EMA-decayed peak-follower approximation, same "directly
+# verifiable, not a gameable running-average proxy" reasoning as that
+# term's own comment gives. Reuses CALF_ACTIVITY_WINDOW_TICKS's own
+# ~0.5s/one-gait-cycle window length rather than a new constant -- same
+# justification applies unchanged. FLOOR (not a target/deadzone) -- same
+# explicit design call calf_activity_penalty's own comment already made
+# ("penalizing exact-angle deviation would fight healthy stride-to-
+# stride variation"). 50deg calibrated below front legs' comfortably-
+# observed ~72-109deg range (won't clip legitimate front-leg motion)
+# while sitting just above back legs' current worst measured value
+# (~49deg) -- real pressure to improve, not a free pass at the status
+# quo. GATES forward_velocity_reward, same reasoning as the foot-usage
+# gate above. Placeholder -- first attempt, expect a tuning pass.
+WALK_BOUND_THIGH_ROM_FLOOR_RAD = np.radians(50)
+WALK_BOUND_THIGH_ROM_GATE_SIGMA_RAD = np.radians(15)
+
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
 # multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
 # and forward lean" -- sim-to-real motivation: user wants the trained
@@ -2352,6 +2400,15 @@ class DogEnv(gym.Env):
         # stale/default entries.
         self._calf_hinge_window = np.zeros((CALF_ACTIVITY_WINDOW_TICKS, 4))
         self._calf_hinge_window_idx = 0
+        # Same true-sliding-window pattern as self._calf_hinge_window
+        # above, RAW thigh qpos instead of calf -- feeds the BOUND-only
+        # thigh_rom_gate in _compute_reward_walk(). See
+        # WALK_BOUND_THIGH_ROM_FLOOR_RAD's comment. Written by
+        # _update_thigh_hinge_activity(), reset in reset() below (same
+        # "filled with the reset-time reading, not zeros" reasoning as
+        # the calf window).
+        self._thigh_hinge_window = np.zeros((CALF_ACTIVITY_WINDOW_TICKS, 4))
+        self._thigh_hinge_window_idx = 0
         # Seconds torso pitch magnitude has stayed continuously above
         # PITCH_TERMINATION_THRESHOLD_RAD -- see that constant's comment
         # / _pitch_diverging_too_long().
@@ -2679,6 +2736,15 @@ class DogEnv(gym.Env):
             self.motor_qpos_adr[self.calf_idx]]
         self._calf_hinge_window_idx = 0
 
+        # Same reset-time fill, thigh instead of calf -- see
+        # self._thigh_hinge_window's own comment in __init__.
+        # SYMMETRIC_THIGH_IDX gives the 4 thigh motors in leg_a/b/c/d
+        # order (same array _compute_reward_walk()'s thigh_spread already
+        # uses).
+        self._thigh_hinge_window[:] = self.data.qpos[
+            self.motor_qpos_adr[SYMMETRIC_THIGH_IDX]]
+        self._thigh_hinge_window_idx = 0
+
         # Populate initial history (copy the first obs to all history slots)
         initial_obs = self._get_obs()
         for i in range(self.obs_history_len):
@@ -3001,6 +3067,11 @@ class DogEnv(gym.Env):
         # walk(), same off-by-one-tick-lag reasoning as the calls above.
         # See _update_calf_hinge_activity()'s docstring.
         self._update_calf_hinge_activity()
+        # MUST also update before _compute_reward() -- BOUND's thigh_rom_
+        # gate reads self._thigh_hinge_window inside _compute_reward_
+        # walk(), same off-by-one-tick-lag reasoning as the calls above.
+        # See _update_thigh_hinge_activity()'s docstring.
+        self._update_thigh_hinge_activity()
 
         reward = self._compute_reward(action)
 
@@ -3934,6 +4005,24 @@ class DogEnv(gym.Env):
             self.data.qpos[self.motor_qpos_adr[self.calf_idx]])
         self._calf_hinge_window_idx = (
             (self._calf_hinge_window_idx + 1) % CALF_ACTIVITY_WINDOW_TICKS)
+
+    def _update_thigh_hinge_activity(self):
+        """Same true-sliding-window pattern as _update_calf_hinge_
+        activity() above, RAW thigh qpos instead of calf -- feeds the
+        BOUND-only thigh_rom_gate in _compute_reward_walk(). See
+        WALK_BOUND_THIGH_ROM_FLOOR_RAD's comment. Called unconditionally
+        every step (like every other rolling tracker in this class) even
+        though only BOUND's reward currently reads it -- cheap, and
+        keeps this method's own state always warm/correct regardless of
+        gait_style, matching this file's own established pattern (e.g.
+        _update_swing_duty_cycle() also runs unconditionally even though
+        only WALK's reward reads its output). MUST be called once per
+        step, after mj_step, BEFORE _compute_reward() (same reasoning as
+        _update_calf_hinge_activity())."""
+        self._thigh_hinge_window[self._thigh_hinge_window_idx] = (
+            self.data.qpos[self.motor_qpos_adr[SYMMETRIC_THIGH_IDX]])
+        self._thigh_hinge_window_idx = (
+            (self._thigh_hinge_window_idx + 1) % CALF_ACTIVITY_WINDOW_TICKS)
 
     def _update_high_pitch_time(self):
         """Advances self._high_pitch_time -- seconds torso pitch has
@@ -5208,7 +5297,36 @@ class DogEnv(gym.Env):
         # doesn't USE it for bound. Trivially reversible (delete this
         # block) if the simplified version doesn't help either.
         if self.gait_style == 'bound':
-            walk_reward_total = 1.0 * forward_velocity_reward
+            # foot_usage_gate/thigh_rom_gate (2026-08-19, direct user
+            # report on running_home/stand_s0_ms250_simple_alr_v3 and
+            # running_home/stand_s5_ms1000_simple_alr_v1 -- see
+            # WALK_BOUND_MIN_FOOT_DUTY_CYCLE/WALK_BOUND_THIGH_ROM_FLOOR_
+            # RAD's own comments above for the full measured-data
+            # derivation and multi-agent review w/ Antigravity, chatbot.md
+            # "thigh-ROM-parity guardrail plan"). Two lightweight
+            # multiplicative gates on forward_velocity_reward -- NOT a
+            # return to the full ~25-term walk_reward_total above, still
+            # entirely unused for bound -- specifically targeting the two
+            # degenerate patterns measured: a leg permanently retracted
+            # (never grounded) and a thigh barely swinging (tiny ROM
+            # relative to the other legs). Both gates are flat at 1.0 for
+            # any reasonably-behaving leg and only decay once a leg is
+            # CLEARLY degenerate, per Antigravity's explicit tuning
+            # caution (same chatbot.md thread) against an overly-strict
+            # "everything must be perfect simultaneously" regime from
+            # stacking gates.
+            min_foot_duty_cycle = float(np.min(self._contact_duty_cycle))
+            foot_duty_deficit = max(0.0, WALK_BOUND_MIN_FOOT_DUTY_CYCLE - min_foot_duty_cycle)
+            foot_usage_gate = np.exp(
+                -(foot_duty_deficit ** 2) / (2 * WALK_BOUND_FOOT_USAGE_GATE_SIGMA ** 2))
+            thigh_rom = (
+                self._thigh_hinge_window.max(axis=0) - self._thigh_hinge_window.min(axis=0))
+            thigh_rom_deficit = float(np.max(
+                np.clip(WALK_BOUND_THIGH_ROM_FLOOR_RAD - thigh_rom, 0.0, None)))
+            thigh_rom_gate = np.exp(
+                -(thigh_rom_deficit ** 2) / (2 * WALK_BOUND_THIGH_ROM_GATE_SIGMA_RAD ** 2))
+            walk_reward_total = (
+                1.0 * forward_velocity_reward * foot_usage_gate * thigh_rom_gate)
         # Floor per-tick reward at 0 (2026-08-19, task #43 item 1 --
         # "fall early to minimize penalty" exploit, confirmed happening in
         # the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean

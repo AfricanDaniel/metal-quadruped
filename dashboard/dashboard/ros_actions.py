@@ -69,17 +69,31 @@ def set_home():
     return _call('ros2 run dog_deploy set_home_and_cache')
 
 
-def go_to_pose(pose_name, speed_deg_s=None):
+def go_to_pose(pose_name, speed_deg_s=None, log_csv=False, log_csv_path=None):
     """speed_deg_s (2026-08-17, user request -- dashboard "Go to pose"
     section): GoToPose.srv already has a per-call speed_deg_s field
     (0/omitted = actuator's own pose_speed_deg_s param default, a
     positive value overrides it for just this call) -- previously never
     threaded through from the dashboard at all. None/0 omits the field
     from the request entirely, matching the service's own "0 = default"
-    convention exactly rather than sending an explicit 0.0."""
+    convention exactly rather than sending an explicit 0.0.
+
+    log_csv/log_csv_path (2026-08-20, user request -- "is there a way
+    for me to collect data from the basics tab... when i run go to pose
+    home or standing"): GoToPose.srv already supports per-call CSV
+    logging (position/velocity/torque/temp/error per motor for the
+    move's duration) server-side in basic_control.cpp -- this was just
+    never threaded through from the dashboard. log_csv_path left
+    None/blank auto-generates a timestamped path under the actuator
+    package's own data/csv_logs/ dir on whichever host runs this
+    (Jetson for the jetson_ caller)."""
     req = f'pose_name: {pose_name}'
     if speed_deg_s:
         req += f', speed_deg_s: {speed_deg_s}'
+    if log_csv:
+        req += ', log_csv: true'
+        if log_csv_path:
+            req += f', log_csv_path: "{log_csv_path}"'
     return _call(f'ros2 service call /go_to_pose actuator/srv/GoToPose "{{{req}}}"')
 
 

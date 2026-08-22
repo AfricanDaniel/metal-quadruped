@@ -794,6 +794,7 @@ def jetson_basics():
         set_home_url=url_for('jetson_set_home', next=request.path),
         go_to_pose_url=url_for('jetson_go_to_pose', next=request.path),
         last_pose_speed_deg_s=procs.get_last_tool_form('go_to_pose').get('speed_deg_s') or '60',
+        last_pose_log_csv=procs.get_last_tool_form('go_to_pose').get('log_csv'),
         read_motor_url=url_for('jetson_read_motor', next=request.path),
         adjust_motor_url=url_for('jetson_adjust_motor', next=request.path),
         reset_motors_url=url_for('jetson_reset_motors', next=request.path),
@@ -1040,6 +1041,8 @@ def jetson_deploy_toggle(policies_dir, task, fname, basename):
         ros_args.append(f'-p dry_run_hold_pose:={"true" if request.form.get("dry_run_hold_pose") else "false"}')
         if request.form.get('max_delta_deg_per_step_enabled'):
             ros_args.append(f'-p max_delta_deg_per_step:={_ros_float(request.form.get("max_delta_deg_per_step"), 2.0)}')
+        if request.form.get('max_target_lead_deg_enabled'):
+            ros_args.append(f'-p max_target_lead_deg:={_ros_float(request.form.get("max_target_lead_deg"), 10.0)}')
         if request.form.get('freeze_after_sec_enabled'):
             ros_args.append(f'-p freeze_after_sec:={_ros_float(request.form.get("freeze_after_sec"), 5.0)}')
         if request.form.get('control_rate_hz_enabled'):
@@ -1100,12 +1103,16 @@ def jetson_set_home():
 def jetson_go_to_pose():
     pose_name = request.form.get('pose_name', 'home')
     speed_deg_s = request.form.get('pose_speed_deg_s', '').strip()
+    log_csv = bool(request.form.get('log_csv'))
     # Remembered (2026-08-18, user request -- "should remember where i
     # last left off") so the field pre-fills with this same value next
     # time instead of always resetting -- same procs.set_last_tool_form()
-    # mechanism used throughout this dashboard.
-    procs.set_last_tool_form('go_to_pose', {'speed_deg_s': speed_deg_s})
-    result = ros_actions.go_to_pose(pose_name, speed_deg_s=speed_deg_s or None)
+    # mechanism used throughout this dashboard. log_csv (2026-08-20)
+    # added to the same remembered dict -- deliberately NOT remembering
+    # log_csv_path, always auto-generated (see ros_actions.go_to_pose()'s
+    # comment) so repeated calls never collide/overwrite each other.
+    procs.set_last_tool_form('go_to_pose', {'speed_deg_s': speed_deg_s, 'log_csv': log_csv})
+    result = ros_actions.go_to_pose(pose_name, speed_deg_s=speed_deg_s or None, log_csv=log_csv)
     flash(result.stdout.strip() or result.stderr.strip() or f'go_to_pose {pose_name} called.',
           'success' if result.ok else 'error')
     return _redirect_next('jetson_home')

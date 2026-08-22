@@ -52,6 +52,10 @@
       <input type="number" step="0.1" name="max_delta_deg_per_step" value="{{ last_deploy_form.get('max_delta_deg_per_step', '2') }}" style="max-width:100px">
     </div>
     <div class="field-row">
+      <label><input type="checkbox" name="max_target_lead_deg_enabled" {{ 'checked' if last_deploy_form.get('max_target_lead_deg_enabled') }}> max_target_lead_deg (windup guard -- caps how far the target may lead the measured position)</label>
+      <input type="number" step="0.5" name="max_target_lead_deg" value="{{ last_deploy_form.get('max_target_lead_deg', '10') }}" style="max-width:100px">
+    </div>
+    <div class="field-row">
       <label><input type="checkbox" name="freeze_after_sec_enabled" {{ 'checked' if last_deploy_form.get('freeze_after_sec_enabled') }}> freeze_after_sec</label>
       <input type="number" step="0.5" name="freeze_after_sec" value="{{ last_deploy_form.get('freeze_after_sec', '5') }}" style="max-width:100px">
     </div>

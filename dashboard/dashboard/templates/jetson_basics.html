@@ -46,6 +46,7 @@
   <h3>Go to pose</h3>
   <form method="post" action="{{ go_to_pose_url }}" class="field-row">
     <input type="number" step="any" name="pose_speed_deg_s" placeholder="speed deg/s (blank = default)" value="{{ last_pose_speed_deg_s }}" style="max-width:170px">
+    <label><input type="checkbox" name="log_csv" {{ 'checked' if last_pose_log_csv }}> log_csv (per-motor position/velocity/torque for this move, saved on the Jetson under actuator/data/csv_logs/)</label>
     <button type="submit" name="pose_name" value="standing">go_to_pose: standing</button>
     <button type="submit" name="pose_name" value="home">go_to_pose: home</button>
   </form>
