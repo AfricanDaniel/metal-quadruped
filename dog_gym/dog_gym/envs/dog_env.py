@@ -1482,20 +1482,25 @@ NONTIP_TERMINATION_ENABLED = True
 # second layer), not just the original "clumsy scuff after standing"
 # purpose alone.
 NONTIP_TERMINATION_S = 0.0
-# STANDING-start gets its OWN, tighter threshold (2026-08-19, direct user
+# STANDING-start gets its OWN threshold (2026-08-19, direct user
 # request): the 2.0s value above exists specifically to cover 'home's own
 # reset-time penetration violence (see the comment right above) -- a
 # 'standing' start never has that initial penetration at all, so there's
-# no established reason for it to need the same 2.0s of slack. Reverted
-# to the ORIGINAL pre-2026-08-16 value (0.5) for standing specifically --
-# calibrated for "ordinary mid-gait knee scuff" tolerance (see
-# NONTIP_TERMINATION_S's own 2026-08-03 history above), not 0: a hard
-# instant-termination-on-any-touch would reintroduce the exact "crushes
-# early exploration" problem NONTIP_TERMINATION_S's own docstring already
-# warns about, just for standing-start instead of home-start. See
-# _knee_walking_too_long() for where this is selected based on
+# no established reason for it to need the same 2.0s of slack. Was 0.5
+# (calibrated for "ordinary mid-gait knee scuff" tolerance, see
+# NONTIP_TERMINATION_S's own 2026-08-03 history above) -- SET TO 0.0
+# (2026-08-22, direct user request, "for testing for now" -- see direct
+# measurement on PPO_60000_running_stand_s1_ms500_sde_v1 that found
+# shoulder/knee contact staying brief/intermittent, never crossing 0.5s
+# continuous, so the episode ran ~35 more ticks past first contact before
+# a SEPARATE mechanism (torso contact) finally ended it) -- matches
+# NONTIP_TERMINATION_S's own instant-trigger value. Explicitly a
+# temporary test value, not a permanent recalibration -- the "crushes
+# early exploration" risk this constant's own prior 0.5 was chosen to
+# avoid still applies, revisit if training on this shows that problem.
+# See _knee_walking_too_long() for where this is selected based on
 # self._episode_start_pose.
-NONTIP_TERMINATION_S_STANDING = 0.5
+NONTIP_TERMINATION_S_STANDING = 0.0
 
 # BOUND ONLY -- torso_body (main chassis) touching the floor, checked
 # against this much tighter threshold instead of NONTIP_TERMINATION_S/
