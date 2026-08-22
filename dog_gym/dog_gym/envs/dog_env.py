@@ -505,7 +505,7 @@ WALK_BOUND_THIGH_ROM_GATE_SIGMA_RAD = np.radians(15)
 # frozen) with real headroom above it, not to target a specific "correct"
 # ROM.
 WALK_BOUND_CALF_ROM_FLOOR_RAD = np.radians(15)
-WALK_BOUND_CALF_ROM_GATE_SIGMA_RAD = np.radians(15)
+WALK_BOUND_CALF_ROM_GATE_SIGMA_RAD = np.radians(5)
 
 # Bound-only guardrail #4: per-leg calf joint-limit margin, DURATION-based
 # (2026-08-22, direct user concern about the OLDER, removed calf_joint_
@@ -538,6 +538,49 @@ CALF_JOINT_MARGIN_GRACE_S = 0.08
 # (not radians, unlike every other *_GATE_SIGMA_RAD above -- this gate's
 # deficit is a duration, not an angle).
 CALF_JOINT_MARGIN_GATE_SIGMA_S = 0.35
+
+# Bound-only guardrail #5: front/back leg-pair synchronization, ONLY near
+# full running speed (2026-08-22, direct user request -- "when we are
+# running full speed... the front legs synced at rate A, back legs
+# synced at rate B... when i say synced i dont mean perfect/equal, just
+# about a similar movement, because when an animal runs the legs are
+# somewhat in sync"; multi-agent review w/ Antigravity, chatbot.md
+# "Bound-Gait Synchronization" thread -- her explicit recommendation
+# against ALSO rewarding the diagonal (trot-style) pairing pattern the
+# user separately described: front/back and diagonal pairing are
+# mutually exclusive phase relationships on any given tick, so rewarding
+# both at once would be a contradictory objective; the front/back
+# pattern is bound's own signature and is exactly what the already-
+# existing _bound_symmetry_reward() targets -- REUSE it as a
+# multiplicative gate rather than building a new metric).
+#
+# Reuses _bound_symmetry_reward()'s existing CONTINUOUS [-1, 1] output
+# (foot-height-as-phase-proxy, "somewhat in sync" not exact contact-
+# boolean matching -- see that method's own docstring) rather than
+# anything new. deficit = 1.0 - symmetry (0 at perfect sync, up to 2.0
+# at worst-case anti-sync), gaussian-decayed same shape as every other
+# gate above.
+WALK_BOUND_SYMMETRY_GATE_SIGMA = 0.6
+# FLOORED (not allowed to reach 0) -- Antigravity's explicit caution,
+# same "everything must be perfect simultaneously" over-gating risk her
+# own tuning notes already flagged once before (see foot_usage_gate's
+# comment) -- this is the 5th active multiplicative gate for bound, so a
+# sloppy-but-otherwise-good gait must keep at least half its hard-earned
+# forward_velocity_reward, not get crushed toward 0 by yet another gate.
+WALK_BOUND_SYMMETRY_GATE_FLOOR = 0.5
+# Blended in by SPEED RELATIVE TO THE CURRENT CURRICULUM TARGET (reuses
+# forward_progress = forward_velocity_reward / self._walk_forward_
+# progress_target_m_s, already computed above in this same function),
+# NOT a fixed absolute speed -- Antigravity's explicit recommendation:
+# forward_speed_curriculum_target ramps 0.15 -> up to 2.0 m/s over
+# training, so a fixed threshold would either never fire early in
+# training or fire too early relative to what the policy can currently
+# achieve. At/below START, this gate is fully inert (1.0, no effect on
+# reward) -- gait symmetry isn't demanded until the policy is already
+# running close to ITS CURRENT target speed. Ramps to fully engaged by
+# FULL.
+WALK_BOUND_SYMMETRY_SPEED_RATIO_START = 0.6
+WALK_BOUND_SYMMETRY_SPEED_RATIO_FULL = 0.9
 
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
 # multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
@@ -5498,9 +5541,17 @@ class DogEnv(gym.Env):
                 np.clip(self._calf_margin_time - CALF_JOINT_MARGIN_GRACE_S, 0.0, None)))
             calf_joint_margin_gate = np.exp(
                 -(calf_margin_deficit_s ** 2) / (2 * CALF_JOINT_MARGIN_GATE_SIGMA_S ** 2))
+            symmetry_deficit = max(0.0, 1.0 - self._bound_symmetry_reward())
+            raw_symmetry_gate = max(WALK_BOUND_SYMMETRY_GATE_FLOOR, np.exp(
+                -(symmetry_deficit ** 2) / (2 * WALK_BOUND_SYMMETRY_GATE_SIGMA ** 2)))
+            speed_blend = np.clip(
+                (forward_progress - WALK_BOUND_SYMMETRY_SPEED_RATIO_START)
+                / (WALK_BOUND_SYMMETRY_SPEED_RATIO_FULL - WALK_BOUND_SYMMETRY_SPEED_RATIO_START),
+                0.0, 1.0)
+            bound_symmetry_gate = 1.0 - speed_blend * (1.0 - raw_symmetry_gate)
             walk_reward_total = (
                 1.0 * forward_velocity_reward * foot_usage_gate * thigh_rom_gate
-                * calf_rom_gate * calf_joint_margin_gate)
+                * calf_rom_gate * calf_joint_margin_gate * bound_symmetry_gate)
         # Floor per-tick reward at 0 (2026-08-19, task #43 item 1 --
         # "fall early to minimize penalty" exploit, confirmed happening in
         # the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean
