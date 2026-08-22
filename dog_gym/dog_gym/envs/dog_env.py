@@ -482,6 +482,63 @@ WALK_BOUND_FOOT_USAGE_GATE_SIGMA = 0.10
 WALK_BOUND_THIGH_ROM_FLOOR_RAD = np.radians(90)
 WALK_BOUND_THIGH_ROM_GATE_SIGMA_RAD = np.radians(15)
 
+# Bound-only guardrail #3: per-leg CALF range-of-motion floor (2026-08-22,
+# direct empirical finding on running_home_s5_ms1000_simple_alr_v10 and
+# running_home_s5_ms1000_whf60_simple_alr_v9's repeated instant-crash
+# failures -- traced tick-by-tick and found front calves sitting at
+# ~0.5-1deg of RAW range for the ENTIRE episode while thighs swung up to
+# ~90deg: the robot was "standing up" almost entirely via thigh rotation
+# with the calf left folded at its home angle, so the frozen shin swept
+# close enough to the floor for a scrape the instant thigh swing got
+# large -- confirmed the shin genuinely never moves, not just a low-ROM
+# gait). Same true-sliding-window pattern as thigh_rom_gate above,
+# reusing the ALREADY-EXISTING self._calf_hinge_window (written every
+# step by _update_calf_hinge_activity() regardless of gait_style -- see
+# that method's own comment) rather than adding a new tracker.
+#
+# FLOOR deliberately LOWER than the older (removed in the 2026-08-21
+# revert) CALF_ACTIVITY_MIN_RANGE_RAD=35deg trot-derived value -- direct
+# user concern that a genuinely efficient BOUND gait might legitimately
+# use less calf swing than a trot gait does, so a 35deg floor risked
+# taxing a real solution just for not matching trot's own habits. 15deg
+# is calibrated to rule out the CONFIRMED failure (~1deg, essentially
+# frozen) with real headroom above it, not to target a specific "correct"
+# ROM.
+WALK_BOUND_CALF_ROM_FLOOR_RAD = np.radians(15)
+WALK_BOUND_CALF_ROM_GATE_SIGMA_RAD = np.radians(15)
+
+# Bound-only guardrail #4: per-leg calf joint-limit margin, DURATION-based
+# (2026-08-22, direct user concern about the OLDER, removed calf_joint_
+# margin_gate -- "to run fast, the robot will have to sometimes hit near
+# mechanical limit when its running full speed", i.e. an instantaneous
+# distance-to-limit penalty would fight a legitimate fast gait's full
+# leg extension near the limit during push-off, not just catch a calf
+# parked there). Fixed by tracking CONTINUOUS dwell time within the
+# margin band instead of gating on instantaneous distance -- same
+# reset-on-recovery pattern as self._non_tip_contact_time/
+# self._torso_contact_time: a brief high-speed pass through the margin
+# band during one explosive stride never accumulates meaningful dwell
+# time and clears immediately, while a calf genuinely PARKED near a
+# limit (e.g. the home-pose failure above, which sits at qpos=0 -- one
+# of the two hard mechanical limits for every calf joint, see dog.mjcf.
+# xml's own per-leg calf <joint range=...>) accumulates dwell time every
+# tick and gets penalized.
+#
+# FLOOR: how close (rad) to EITHER hard limit counts as "in the margin
+# band" -- distance measured to whichever of the joint's two range
+# endpoints is nearer, so this applies symmetrically to both the folded
+# (near-0) and extended (near the real motor's physical stop, see task
+# #41's shin-walking bug) ends.
+CALF_JOINT_MARGIN_FLOOR_RAD = np.radians(10)
+# GRACE: seconds allowed inside the margin band before it counts against
+# the gate -- short, so a fast dynamic sweep through it isn't penalized,
+# only genuine parking is. ~8 ticks at the sim's dt=0.01s.
+CALF_JOINT_MARGIN_GRACE_S = 0.08
+# Gaussian decay sigma on dwell time PAST the grace period, in seconds
+# (not radians, unlike every other *_GATE_SIGMA_RAD above -- this gate's
+# deficit is a duration, not an angle).
+CALF_JOINT_MARGIN_GATE_SIGMA_S = 0.35
+
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
 # multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
 # and forward lean" -- sim-to-real motivation: user wants the trained
@@ -2297,6 +2354,15 @@ class DogEnv(gym.Env):
         self.calf_thigh_qpos_adr = self.motor_qpos_adr[self.calf_thigh_idx]
         self.calf_thigh_dof_adr = self.motor_dof_adr[self.calf_thigh_idx]
 
+        # Per-leg RAW calf joint hard limits (rad), same self.calf_idx
+        # order as self._calf_hinge_window's columns -- feeds BOUND-only
+        # calf_joint_margin_gate's distance-to-nearest-limit computation.
+        # See CALF_JOINT_MARGIN_FLOOR_RAD's comment.
+        calf_joint_ranges = np.array(
+            [self.model.joint(joint_names[i]).range for i in self.calf_idx])
+        self._calf_joint_range_lo = calf_joint_ranges[:, 0]
+        self._calf_joint_range_hi = calf_joint_ranges[:, 1]
+
         calf_belt_sign = []
         for i in self.calf_idx:
             calf_joint_id = self.model.joint(joint_names[i]).id
@@ -2383,6 +2449,12 @@ class DogEnv(gym.Env):
         # _non_tip_contact_time) -- see NONTIP_TERMINATION_S_BOUND's
         # comment / _knee_walking_too_long().
         self._torso_contact_time = 0.0
+        # BOUND ONLY -- per-leg seconds spent CONTINUOUSLY within
+        # CALF_JOINT_MARGIN_FLOOR_RAD of either calf joint hard limit
+        # (reset-on-recovery, same pattern as _non_tip_contact_time) --
+        # see CALF_JOINT_MARGIN_FLOOR_RAD's comment / calf_joint_margin_
+        # gate in _compute_reward_walk().
+        self._calf_margin_time = np.zeros(4)
         # Per-leg seconds spent in CONTINUOUS full airborne (no contact at
         # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
         # _not_all_feet_grounded().
@@ -2473,6 +2545,7 @@ class DogEnv(gym.Env):
         self._feet_stance_time = np.zeros(4)
         self._non_tip_contact_time = np.zeros(4)
         self._torso_contact_time = 0.0
+        self._calf_margin_time = np.zeros(4)
         self._airborne_time = np.zeros(4)
         # STAND+WALK ONLY -- seconds spent CONTINUOUSLY at/above
         # WALK_STAND_HOLD_THRESHOLD stand_progress, resets to 0 after a
@@ -3102,6 +3175,11 @@ class DogEnv(gym.Env):
         # walk(), same off-by-one-tick-lag reasoning as the calls above.
         # See _update_thigh_hinge_activity()'s docstring.
         self._update_thigh_hinge_activity()
+        # MUST also update before _compute_reward() -- BOUND's calf_joint_
+        # margin_gate reads self._calf_margin_time inside _compute_reward_
+        # walk(), same off-by-one-tick-lag reasoning as the calls above.
+        # See _update_calf_margin_time()'s docstring.
+        self._update_calf_margin_time()
 
         reward = self._compute_reward(action)
 
@@ -4072,6 +4150,30 @@ class DogEnv(gym.Env):
             self.data.qpos[self.motor_qpos_adr[SYMMETRIC_THIGH_IDX]])
         self._thigh_hinge_window_idx = (
             (self._thigh_hinge_window_idx + 1) % CALF_ACTIVITY_WINDOW_TICKS)
+
+    def _update_calf_margin_time(self):
+        """Advances self._calf_margin_time per calf joint -- MUST be
+        called once per step, after mj_step (same convention as every
+        other rolling tracker in this class). Grows while a calf's RAW
+        qpos stays CONTINUOUSLY within CALF_JOINT_MARGIN_FLOOR_RAD of
+        EITHER of its two hard mechanical limits (distance to whichever
+        endpoint of self._calf_joint_range_lo/hi is nearer), resets to 0
+        the instant it moves back out -- same reset-on-recovery pattern
+        as _update_nontip_contact_time(). Deliberately duration-based
+        rather than an instantaneous distance penalty -- see
+        CALF_JOINT_MARGIN_FLOOR_RAD's own comment for why (a fast dynamic
+        sweep through the margin band during one stride must NOT
+        accumulate here, only genuine parking should). Called
+        unconditionally every step regardless of gait_style, matching
+        _update_thigh_hinge_activity()'s own precedent."""
+        calf_qpos = self.data.qpos[self.motor_qpos_adr[self.calf_idx]]
+        margin = np.minimum(
+            calf_qpos - self._calf_joint_range_lo,
+            self._calf_joint_range_hi - calf_qpos)
+        dt = self.model.opt.timestep
+        in_margin_band = margin < CALF_JOINT_MARGIN_FLOOR_RAD
+        self._calf_margin_time = np.where(
+            in_margin_band, self._calf_margin_time + dt, 0.0)
 
     def _update_high_pitch_time(self):
         """Advances self._high_pitch_time -- seconds torso pitch has
@@ -5386,8 +5488,19 @@ class DogEnv(gym.Env):
                 np.clip(WALK_BOUND_THIGH_ROM_FLOOR_RAD - thigh_rom, 0.0, None)))
             thigh_rom_gate = np.exp(
                 -(thigh_rom_deficit ** 2) / (2 * WALK_BOUND_THIGH_ROM_GATE_SIGMA_RAD ** 2))
+            calf_rom = (
+                self._calf_hinge_window.max(axis=0) - self._calf_hinge_window.min(axis=0))
+            calf_rom_deficit = float(np.max(
+                np.clip(WALK_BOUND_CALF_ROM_FLOOR_RAD - calf_rom, 0.0, None)))
+            calf_rom_gate = np.exp(
+                -(calf_rom_deficit ** 2) / (2 * WALK_BOUND_CALF_ROM_GATE_SIGMA_RAD ** 2))
+            calf_margin_deficit_s = float(np.max(
+                np.clip(self._calf_margin_time - CALF_JOINT_MARGIN_GRACE_S, 0.0, None)))
+            calf_joint_margin_gate = np.exp(
+                -(calf_margin_deficit_s ** 2) / (2 * CALF_JOINT_MARGIN_GATE_SIGMA_S ** 2))
             walk_reward_total = (
-                1.0 * forward_velocity_reward * foot_usage_gate * thigh_rom_gate)
+                1.0 * forward_velocity_reward * foot_usage_gate * thigh_rom_gate
+                * calf_rom_gate * calf_joint_margin_gate)
         # Floor per-tick reward at 0 (2026-08-19, task #43 item 1 --
         # "fall early to minimize penalty" exploit, confirmed happening in
         # the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean
