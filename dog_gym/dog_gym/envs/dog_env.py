@@ -629,10 +629,39 @@ STANCE_STRAIGHT_ZONE_RAD = np.radians(25)
 # brief straightening right at push-off never accumulates enough dwell
 # time to matter.
 STANCE_STRAIGHT_GRACE_S = 0.05
-STANCE_STRAIGHT_GATE_SIGMA_S = 0.3
-# FLOORED, same "5th/6th multiplicative gate, don't crush reward to 0"
-# reasoning as WALK_BOUND_SYMMETRY_GATE_FLOOR above.
-STANCE_STRAIGHT_GATE_FLOOR = 0.5
+# TIGHTENED 0.3 -> 0.12 (2026-08-22, direct empirical finding on
+# PPO_4500000_running_home_s5_ms1000_simple_alr_v1c -- deterministic
+# rollout is 100% reproducible across 6 seeds (no domain randomization,
+# fixed home start -> no actual stochasticity): the policy reliably rides
+# a 0.26s dwell in the straight-leg zone right before a late-episode
+# torso collapse terminates it (tick 164 every time), while under
+# STOCHASTIC action sampling (8 seeds, closer to real training
+# exploration) only 1/8 rollouts collapse at all and dwell times up to
+# 0.34s appear in NON-collapsing runs too -- i.e. the OLD sigma=0.3 gate
+# barely discounted the exact dwell value (~0.78 gate multiplier at
+# deficit=0.21, computed against this gate's own actual max(FLOOR,
+# gaussian) formula, not a smooth blend) that the deterministic/
+# exploitation policy was happy to ride. Multi-agent review w/
+# Antigravity, chatbot.md "final numeric recommendation" thread --
+# verified her proposed values against this gate's REAL formula (she'd
+# assumed a different smooth-blend shape) before adopting: at sigma=0.12,
+# the same deficit=0.21 (dwell=0.26s) now gates to ~0.22 (a real, sharp
+# deterrent), while a brief stochastic touch (dwell<grace) still passes
+# at 1.0 -- floor only engages as a backstop past ~0.28s dwell.
+STANCE_STRAIGHT_GATE_SIGMA_S = 0.12
+# LOWERED 0.5 -> 0.15 (same finding as SIGMA_S above) -- deliberate
+# exception below the other gates' own 0.5 floor: Antigravity's
+# reasoning, confirmed against this gate's actual formula, a 0.5 floor
+# mathematically can't outweigh a "collapse cheat" trajectory that scores
+# even modestly better than honest walking on OTHER terms, since the
+# policy always keeps at least half credit no matter how long the dwell.
+# Only this gate is lowered -- the other 5 active bound gates keep their
+# own 0.5 floor unchanged, matching the "same 5th/6th-gate, don't crush
+# reward to 0" reasoning everywhere else, just calibrated tighter here
+# specifically because THIS failure mode (a full torso collapse, not
+# just a suboptimal stride) is more severe than what the other gates
+# guard against.
+STANCE_STRAIGHT_GATE_FLOOR = 0.15
 
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
 # multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
