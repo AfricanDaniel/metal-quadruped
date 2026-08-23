@@ -5537,7 +5537,19 @@ class DogEnv(gym.Env):
         # (tip_reward/non_tip_penalty only judge contact AFTER it
         # happens, not the swing trajectory leading up to it).
         walk_reward_total = (
-            5.0 * forward_velocity_reward
+            # RAISED 5.0 -> 25.0 (2026-08-22, direct user request, "for
+            # testing purposes" -- trot's own fine-tunes (walk_position_
+            # hf_v16_*) were tracking well behind their curriculum target
+            # despite nothing else in the reward actively fighting speed
+            # (confirmed directly -- pitch/roll/lateral-vel penalties all
+            # stayed tiny and even slightly favored higher speed). This
+            # is a blunt lever to see whether just dominating the reward
+            # sum harder gets speed moving faster, not a permanent
+            # recalibration -- revisit/reconsider if it destabilizes
+            # other terms the way an earlier weight-5.0 forward_velocity_
+            # reward already twice needed pitch/roll gating to counter
+            # (see WALK_PITCH_PENALTY_WEIGHT/roll_penalty's own history).
+            25.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 1.0 * climb_posture_reward
             + 2.5 * height_reward
