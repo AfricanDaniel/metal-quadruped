@@ -378,7 +378,32 @@ WALK_HEIGHT_OVERSHOOT_PENALTY_WEIGHT = 100.0
 # WALK raised 10x, calibrated against measured forward_velocity_reward
 # magnitude, not a formal sweep.
 STAND_ANGULAR_VEL_PENALTY_WEIGHT = -0.02
-WALK_ANGULAR_VEL_PENALTY_WEIGHT = -0.2
+# RAISED 0.2 -> 1.5 (2026-08-23, direct user request + data investigation
+# into walk_position_hf_v16/walk_home_fv25_v1/fv25_ramp_v1's termination
+# traces -- see NONTIP_TERMINATION_S's own comment for the zero-grace
+# knee-touch mechanism these episodes were ending on). Root cause chain
+# confirmed directly from those 3 traces: forward_velocity_reward climbs
+# through a pitch buildup unchecked (pitch_penalty is centered on
+# WALK_TARGET_PITCH_RAD=10deg, the DELIBERATE lean target -- the crash
+# pitch values, 9.85-13.2deg, sit almost exactly AT that target, so
+# pitch_penalty stays near-zero right when it matters most; steepening
+# it or lowering the target would fight the intentional lean instead of
+# fixing this). angular_vel_penalty (rotation RATE, not angle) is the
+# term that actually discriminates the dangerous accelerating dive from
+# calm walking -- but at the old weight it was still only 1.4-6.7% of
+# forward_velocity_reward's own magnitude at the exact tick each dive's
+# rotation rate peaked (measured post-rise-phase, excluding the reset-
+# transient false peak at tick 1-2). Solved for a weight putting this at
+# ~30-40% of forward_velocity_reward at that peak-rotation moment for
+# each of the 3 traces (v16 needed ~1.2, fv25_v1 needed ~5.6, fv25_
+# ramp_v1 needed ~1.7) -- 1.5 sits in the cluster two of three pointed
+# to. Checked this doesn't swamp ordinary walking: at 1.5, typical calm-
+# gait combined angular-velocity-squared (~0.7-1.9 in these same traces)
+# only reaches roughly -1.0 to -2.9, well under half of calm-walking
+# forward_velocity_reward (~3.8-9.5) in the same stretches. NOT a formal
+# sweep -- derived from 3 single-moment crash snapshots, a hypothesis to
+# validate with a real training run, not a guaranteed fix.
+WALK_ANGULAR_VEL_PENALTY_WEIGHT = -1.5
 
 # Weight for -( _torso_pitch_rad() )**2 in the WALK task only -- see that
 # method's docstring for why up_z's cosine-based sensitivity wasn't
@@ -662,6 +687,79 @@ STANCE_STRAIGHT_GATE_SIGMA_S = 0.12
 # just a suboptimal stride) is more severe than what the other gates
 # guard against.
 STANCE_STRAIGHT_GATE_FLOOR = 0.15
+
+# CALF_STANCE_SIDE_* -- BOUND ONLY (2026-08-22, direct user report + data
+# investigation: leg_a's calf on PPO_6500000_running_home_s5_ms1000_
+# simple_alr_v1d swept from ~10deg, THROUGH its straight-leg center
+# (~103deg), all the way to ~187deg -- near the joint's OPPOSITE folded
+# limit -- within a single stance phase; calf_ROM_in_stance measured
+# ~195deg, nearly the whole ~206deg range, instead of extending toward
+# straight and holding/folding back like a controlled propulsive stride.
+# STANCE_STRAIGHT_GATE above only tracks TIME spent DWELLING near
+# center -- it has no preference for which direction the calf continues
+# in once it leaves that zone, so "cross center, fold back on the entry
+# side" (the intended controlled tuck) and "cross center, keep going to
+# the far side" (this flailing pattern) score IDENTICALLY under that
+# gate alone. This gate closes that gap directly: tracks, per leg, which
+# side of straight-center the calf was on when the CURRENT stance phase
+# began, and penalizes dwelling on the OPPOSITE side past
+# STANCE_STRAIGHT_ZONE_RAD (reusing that same zone width, so a brief
+# pass-through right at center doesn't trip it) during that same stance
+# phase. NOT a formal sweep -- same "revisit if it doesn't help"
+# caveat as every other gate here.
+CALF_STANCE_SIDE_GRACE_S = 0.03
+# TIGHTENED 0.15 -> 0.12, FLOOR 0.3 -> 0.15 (2026-08-23, direct user
+# report + data investigation: PPO_7500000_running_home_s5_ms1000_
+# simple_alr_v1e -- 2.5M steps into training under this exact gate --
+# still shows leg_a sweeping thigh AND calf together through ~182deg in
+# a single stance phase (t=114 thigh=9.3/calf=5.0 -> t=162 thigh=191.4/
+# calf=187.0), the identical opposite-fold pattern this gate exists to
+# catch. Measured self._calf_wrong_side_time directly on that rollout:
+# distinct wrong-side dwell peaks cluster at 0.22-0.28s (deficit
+# 0.19-0.25s) -- at the OLD sigma=0.15/floor=0.3, this range gates to
+# 0.30-0.45, i.e. the gate was ALREADY SATURATING AT ITS FLOOR for the
+# durations actually occurring in practice, leaving no further gradient
+# to push against once a leg committed to the crossing (confirmed via
+# the gate's own formula, not assumed). Simply steepening sigma without
+# also lowering the floor would have changed nothing at these durations
+# -- the floor, not the falloff shape, was the binding constraint.
+# Retuned to mirror STANCE_STRAIGHT_GATE_SIGMA_S/_FLOOR exactly (same
+# "0.5-style floor can't outweigh a cheat trajectory that scores well on
+# other terms" reasoning that motivated THAT gate's own 2026-08-22
+# tightening) -- at sigma=0.12/floor=0.15, the same 0.22-0.28s dwell
+# range now gates to 0.15-0.19, roughly half the old penalty at the
+# worst observed durations, while a brief sub-grace crossing still
+# passes at 1.0. NOT a formal sweep -- revisit if this still isn't
+# enough once retrained.
+CALF_STANCE_SIDE_GATE_SIGMA_S = 0.12
+CALF_STANCE_SIDE_GATE_FLOOR = 0.15
+
+# CALF_THIGH_TRACKING_* -- BOUND ONLY (same investigation as above, plus
+# the ORIGINAL 2026-08-22 user report on PPO_4500000_running_home_s5_
+# ms1000_simple_alr_v1c: "when the thighs rotate towards the back...the
+# calfs need stay tucked in, rotate along with the thigh, almost same
+# rate/speed"). CALF_STANCE_SIDE above only catches a leg crossing fully
+# past the far zone boundary -- it says nothing about whether the calf
+# is otherwise moving WITH the thigh (v1c's complaint: calf too static)
+# or just happens to share a side/zone while doing its own uncoupled
+# thing. This gate measures coupling directly: while a leg is in stance
+# AND its thigh is actually rotating (above a noise floor), the calf is
+# expected to rotate in the SAME direction at a MEANINGFUL fraction of
+# the thigh's own rate -- either a near-zero calf rate (v1c's static-leg
+# complaint) or an opposite-sign calf rate (v1d's flailing/fighting-the-
+# thigh pattern) counts as poor tracking, so this single gate covers
+# both failure modes. Uses the SAME raw (thigh-relative) calf qvel
+# convention as _calf_swing_motion_reward() -- see that method's own
+# comment for why ABSOLUTE (belt-compensated) qvel would be wrong here
+# (a calf held rigid relative to the thigh still shows nonzero absolute
+# velocity whenever the thigh moves, which would falsely read as
+# "tracking"). MIN_CALF_FRACTION/thresholds are a first cut, not a
+# formal sweep -- revisit if this doesn't help.
+CALF_THIGH_TRACKING_THIGH_QVEL_FLOOR_RAD_S = np.radians(20)
+CALF_THIGH_TRACKING_MIN_CALF_FRACTION = 0.2
+CALF_THIGH_TRACKING_GRACE_S = 0.05
+CALF_THIGH_TRACKING_GATE_SIGMA_S = 0.2
+CALF_THIGH_TRACKING_GATE_FLOOR = 0.3
 
 # Deliberate forward-lean reward target (2026-08-15, direct user request,
 # multi-agent review w/ Antigravity, chatbot.md "swing_fairness_penalty
@@ -2599,6 +2697,23 @@ class DogEnv(gym.Env):
         # STANCE_STRAIGHT_ZONE_RAD's comment / stance_straight_gate in
         # _compute_reward_walk().
         self._calf_stance_straight_time = np.zeros(4)
+        # BOUND ONLY -- per-leg side (-1.0/0.0/+1.0) of its own straight-
+        # leg calf center the calf was on when the CURRENT stance phase
+        # began, and per-leg seconds spent CONTINUOUSLY on the OPPOSITE
+        # side (past STANCE_STRAIGHT_ZONE_RAD) since -- reset-on-recovery,
+        # same pattern as _calf_margin_time above. See CALF_STANCE_SIDE_
+        # GRACE_S's comment / calf_stance_side_gate in
+        # _compute_reward_walk().
+        self._calf_stance_entry_side = np.zeros(4)
+        self._calf_wrong_side_time = np.zeros(4)
+        self._prev_in_stance = np.zeros(4, dtype=bool)
+        # BOUND ONLY -- per-leg seconds spent CONTINUOUSLY in stance with
+        # the calf failing to rotate WITH its thigh (wrong direction, or
+        # too slow relative to the thigh's own rate) -- reset-on-
+        # recovery, same pattern as _calf_margin_time above. See
+        # CALF_THIGH_TRACKING_GRACE_S's comment / calf_thigh_tracking_
+        # gate in _compute_reward_walk().
+        self._calf_poor_tracking_time = np.zeros(4)
         # Per-leg seconds spent in CONTINUOUS full airborne (no contact at
         # all) -- see STAND_AIRBORNE_TERMINATION_S's comment /
         # _not_all_feet_grounded().
@@ -2691,6 +2806,10 @@ class DogEnv(gym.Env):
         self._torso_contact_time = 0.0
         self._calf_margin_time = np.zeros(4)
         self._calf_stance_straight_time = np.zeros(4)
+        self._calf_stance_entry_side = np.zeros(4)
+        self._calf_wrong_side_time = np.zeros(4)
+        self._prev_in_stance = np.zeros(4, dtype=bool)
+        self._calf_poor_tracking_time = np.zeros(4)
         self._airborne_time = np.zeros(4)
         # STAND+WALK ONLY -- seconds spent CONTINUOUSLY at/above
         # WALK_STAND_HOLD_THRESHOLD stand_progress, resets to 0 after a
@@ -3331,6 +3450,18 @@ class DogEnv(gym.Env):
         # the calls above. See _update_calf_stance_straight_time()'s
         # docstring.
         self._update_calf_stance_straight_time()
+        # MUST also update before _compute_reward() -- BOUND's calf_
+        # stance_side_gate reads self._calf_wrong_side_time inside
+        # _compute_reward_walk(), same off-by-one-tick-lag reasoning as
+        # the calls above. See _update_calf_stance_side_time()'s
+        # docstring.
+        self._update_calf_stance_side_time()
+        # MUST also update before _compute_reward() -- BOUND's calf_
+        # thigh_tracking_gate reads self._calf_poor_tracking_time inside
+        # _compute_reward_walk(), same off-by-one-tick-lag reasoning as
+        # the calls above. See _update_calf_thigh_tracking_time()'s
+        # docstring.
+        self._update_calf_thigh_tracking_time()
 
         reward = self._compute_reward(action)
 
@@ -4348,6 +4479,78 @@ class DogEnv(gym.Env):
         dt = self.model.opt.timestep
         self._calf_stance_straight_time = np.where(
             in_straight_zone & in_stance, self._calf_stance_straight_time + dt, 0.0)
+
+    def _update_calf_stance_side_time(self):
+        """Advances self._calf_wrong_side_time per leg -- MUST be called
+        once per step, after mj_step. Tracks, for each leg's CURRENT
+        stance phase, which side of that leg's straight-leg calf center
+        (self._calf_straight_center_rad) the calf was on at the moment
+        stance began (self._calf_stance_entry_side, latched on the
+        swing->stance transition, using self._prev_in_stance) -- then
+        accumulates seconds spent PAST STANCE_STRAIGHT_ZONE_RAD on the
+        OPPOSITE side during that SAME stance phase. Resets to 0 the
+        instant the leg returns within the zone/entry side, or leaves
+        stance entirely (a fresh entry side is latched next time stance
+        begins). See CALF_STANCE_SIDE_GRACE_S's own comment for the
+        PPO_6500000_running_home_s5_ms1000_simple_alr_v1d finding this
+        exists to catch -- stance_straight_gate's plain dwell-near-center
+        penalty can't distinguish "crossed center, folded back on the
+        entry side" from "crossed center, kept going to the far side";
+        this gate penalizes only the latter. Called unconditionally
+        every step regardless of gait_style, matching every other
+        rolling tracker in this class."""
+        calf_qpos = self.data.qpos[self.motor_qpos_adr[self.calf_idx]]
+        side = np.sign(calf_qpos - self._calf_straight_center_rad)
+        distance_from_straight = np.abs(calf_qpos - self._calf_straight_center_rad)
+        state = self._foot_contact_state_per_leg()
+        in_stance = np.array([s == 'tip' for s in state])
+        dt = self.model.opt.timestep
+
+        entering_stance = in_stance & ~self._prev_in_stance
+        self._calf_stance_entry_side = np.where(
+            entering_stance, side, self._calf_stance_entry_side)
+
+        on_wrong_side = (
+            in_stance & (side != 0.0) & (self._calf_stance_entry_side != 0.0)
+            & (side != self._calf_stance_entry_side)
+            & (distance_from_straight > STANCE_STRAIGHT_ZONE_RAD))
+        self._calf_wrong_side_time = np.where(
+            on_wrong_side, self._calf_wrong_side_time + dt, 0.0)
+
+        self._prev_in_stance = in_stance
+
+    def _update_calf_thigh_tracking_time(self):
+        """Advances self._calf_poor_tracking_time per leg -- MUST be
+        called once per step, after mj_step. Grows while a leg is BOTH
+        (a) in stance AND (b) its thigh is actually rotating (raw qvel
+        above CALF_THIGH_TRACKING_THIGH_QVEL_FLOOR_RAD_S) AND (c) the
+        calf's own raw qvel is either the WRONG sign (fighting the
+        thigh) or under CALF_THIGH_TRACKING_MIN_CALF_FRACTION of the
+        thigh's rate (too static to count as "tracking") -- resets to 0
+        the instant none of those hold. Same reset-on-recovery, duration-
+        based pattern as _update_calf_margin_time(). Uses RAW (thigh-
+        relative) qvel for both joints -- see _calf_swing_motion_reward()'s
+        own comment for why the belt-compensated ABSOLUTE calf qvel would
+        be wrong here (a calf held rigid relative to the thigh still
+        shows nonzero absolute velocity whenever the thigh moves, which
+        would falsely read as "tracking"). See CALF_THIGH_TRACKING_
+        GRACE_S's own comment for the two user-reported failure modes
+        (v1c: calf too static; v1d: calf flailing/fighting the thigh)
+        this single gate is meant to catch. Called unconditionally every
+        step regardless of gait_style, matching every other rolling
+        tracker in this class."""
+        calf_qvel = self.data.qvel[self.motor_dof_adr[self.calf_idx]]
+        thigh_qvel = self.data.qvel[self.calf_thigh_dof_adr]
+        state = self._foot_contact_state_per_leg()
+        in_stance = np.array([s == 'tip' for s in state])
+        dt = self.model.opt.timestep
+
+        thigh_moving = np.abs(thigh_qvel) > CALF_THIGH_TRACKING_THIGH_QVEL_FLOOR_RAD_S
+        wrong_direction = np.sign(calf_qvel) != np.sign(thigh_qvel)
+        too_slow = np.abs(calf_qvel) < CALF_THIGH_TRACKING_MIN_CALF_FRACTION * np.abs(thigh_qvel)
+        poor_tracking = in_stance & thigh_moving & (wrong_direction | too_slow)
+        self._calf_poor_tracking_time = np.where(
+            poor_tracking, self._calf_poor_tracking_time + dt, 0.0)
 
     def _update_high_pitch_time(self):
         """Advances self._high_pitch_time -- seconds torso pitch has
@@ -5696,10 +5899,26 @@ class DogEnv(gym.Env):
                 np.clip(self._calf_stance_straight_time - STANCE_STRAIGHT_GRACE_S, 0.0, None)))
             stance_straight_gate = max(STANCE_STRAIGHT_GATE_FLOOR, np.exp(
                 -(stance_straight_deficit_s ** 2) / (2 * STANCE_STRAIGHT_GATE_SIGMA_S ** 2)))
+            # calf_stance_side_gate / calf_thigh_tracking_gate (2026-08-22,
+            # direct user report + data investigation -- see CALF_STANCE_
+            # SIDE_GRACE_S/CALF_THIGH_TRACKING_GRACE_S's own comments for
+            # the full PPO_6500000_running_home_s5_ms1000_simple_alr_v1d
+            # (calf flailing all the way to the opposite folded limit
+            # during stance) and PPO_4500000_..._v1c (calf too static,
+            # not rotating with the thigh at all) findings these two
+            # gates were added to close.
+            calf_side_deficit_s = float(np.max(
+                np.clip(self._calf_wrong_side_time - CALF_STANCE_SIDE_GRACE_S, 0.0, None)))
+            calf_stance_side_gate = max(CALF_STANCE_SIDE_GATE_FLOOR, np.exp(
+                -(calf_side_deficit_s ** 2) / (2 * CALF_STANCE_SIDE_GATE_SIGMA_S ** 2)))
+            calf_tracking_deficit_s = float(np.max(
+                np.clip(self._calf_poor_tracking_time - CALF_THIGH_TRACKING_GRACE_S, 0.0, None)))
+            calf_thigh_tracking_gate = max(CALF_THIGH_TRACKING_GATE_FLOOR, np.exp(
+                -(calf_tracking_deficit_s ** 2) / (2 * CALF_THIGH_TRACKING_GATE_SIGMA_S ** 2)))
             walk_reward_total = (
                 1.0 * forward_velocity_reward * foot_usage_gate * thigh_rom_gate
                 * calf_rom_gate * calf_joint_margin_gate * bound_symmetry_gate
-                * stance_straight_gate)
+                * stance_straight_gate * calf_stance_side_gate * calf_thigh_tracking_gate)
         # Floor per-tick reward at 0 (2026-08-19, task #43 item 1 --
         # "fall early to minimize penalty" exploit, confirmed happening in
         # the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean
