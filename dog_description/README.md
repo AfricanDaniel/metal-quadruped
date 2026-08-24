@@ -29,9 +29,7 @@ dog_description/
 ```
 
 See `converter_context.md` (this directory) for the full onshape-to-robot
-export methodology and its history, and `daniel_cl_context.md` (workspace
-root, gitignored personal working notes) for the day-by-day debugging
-log this package's current state is the result of.
+export methodology and its history.
 
 ## Where this came from
 
@@ -86,7 +84,7 @@ by default so they don't overlap-render.
   since the belt-decoupling compensation (see `dog_gym/README.md`), a
   calf's raw `<joint range>` is just headroom for that compensation
   math, not a real limit; the real absolute calf angle limit isn't
-  enforced anywhere yet (a deferred TODO, see `daniel_cl_context.md`).
+  enforced anywhere yet (a deferred TODO).
 
 Treat sim results accordingly — geometry, masses, and thigh limits are
 now real, but a trained policy still won't sim-to-real transfer
@@ -116,7 +114,7 @@ the two can never drift out of sync. The convention:
   front" is *increasing* for the right legs (motors 2, 6) but
   *decreasing* for the left (motors 3, 7). Don't assume uniformity
   across legs — that assumption is what caused this project's long sign
-  saga (see `daniel_cl_context.md`).
+  saga.
 - If a future CAD re-export or motor re-mount changes any direction:
   re-measure BOTH sides per motor (real: isolated single-motor delta
   with no policy running; sim: the FK `d(foot_y)/d(theta)` sweep)

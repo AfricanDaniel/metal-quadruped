@@ -92,7 +92,7 @@ def launch_view_training(zip_path, env_id, episodes, start_pose=None, control_mo
     down to 250 by a few million steps in). Viewing under the wrong
     (looser) clamp than a checkpoint actually trained with makes it look
     more violent/unstable than it really is -- confirmed directly
-    (chatbot.md-adjacent investigation, 2026-08-17): re-testing
+    (2026-08-17): re-testing
     PPO_5500000_roll_gate_standing_v1 at its OWN real trained clamp
     (250) instead of the loose test-default (1000) dropped its peak
     front-leg swing from 7.08 to 3.41deg/tick and let it survive the

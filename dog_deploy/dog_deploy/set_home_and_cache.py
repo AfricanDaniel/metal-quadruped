@@ -6,7 +6,7 @@ a local file -- so `policy_node.py` can load it explicitly (via
 `home_position_deg` from whatever position the robot happens to be in when
 it starts.
 
-Why this exists (2026-08-10, chatbot.md "running STAND then WALK-from-
+Why this exists (2026-08-10, "running STAND then WALK-from-
 standing back to back"): `policy_node.py`'s own auto-capture reads whatever
 the CURRENT motor positions are at THAT node's startup -- correct only if
 the robot happens to be physically tucked at that exact moment. Running two

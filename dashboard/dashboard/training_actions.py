@@ -95,8 +95,8 @@ def build_train_args(form):
     if form.get('domain_randomization'):
         args.append('--domain-randomization')
 
-    # gSDE (2026-08-17, chatbot.md "Analysis of Issue.md" -- Antigravity's
-    # exploration-noise recommendation): plain boolean, same pattern as
+    # gSDE (2026-08-17, added after an investigation into exploration
+    # noise recommended it): plain boolean, same pattern as
     # domain_randomization above. --sde-sample-freq (Advanced) is harmless
     # to also pass even when this is unchecked.
     if form.get('use_sde'):

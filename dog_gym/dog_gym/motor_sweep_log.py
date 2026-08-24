@@ -8,8 +8,9 @@ robot and swing a leg" test.
 Purpose-built for isolating exactly how far a single motor gets (and why)
 while its paired motor just holds still -- deliberately SIMPLER than
 verify_belt_decoupling.py, which re-asserts the held motor's ABSOLUTE
-world orientation every step (a harder, different demand -- see
-chatbot.md, 2026-08-16 "torque vs gravity equilibrium" investigation).
+world orientation every step (a harder, different demand, identified
+during a 2026-08-16 investigation into torque-vs-gravity equilibrium
+behavior).
 Here the held motor's target is just whatever it happened to be at
 reset, never touched again -- same as manual_motor_control.py when you
 only ever select one motor.

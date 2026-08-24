@@ -27,8 +27,7 @@ later re-exports dropped the numeric suffix (`robot_full_dog` /
 name pattern; check `onshape_folders/` directly for the newest pair. The
 **current** pair, used by the generator script's defaults, is
 `robot_dog` / `urdf_dog` (all 4 legs, same design as `robot_full_dog`
-plus a real battery + real IMU added to the CAD -- see
-`claude_context.md` for what changed). Earlier pairs (`_1`, `_2`) were
+plus a real battery + real IMU added to the CAD). Earlier pairs (`_1`, `_2`) were
 single-leg validation exports; `_3` was the first all-4-legs export;
 `_4` and `robot_full_dog` were later re-exports of the same design;
 all kept for history.

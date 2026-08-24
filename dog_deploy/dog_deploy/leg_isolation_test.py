@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real-hardware isolation test: distinguishes a real leg_d_thigh hardware/
-CoM issue from a WALK-policy-specific learned asymmetry (see chatbot.md,
-"does leg_d_thigh actually have a hardware fault?" -- STAND deployment
+CoM issue from a WALK-policy-specific learned asymmetry ("does
+leg_d_thigh actually have a hardware fault?" -- STAND deployment
 showed no issue, WALK deployments showed leg_d_thigh as a dominant,
 one-directional outlier both times).
 

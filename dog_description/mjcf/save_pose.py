@@ -50,8 +50,8 @@ def main():
             viewer.sync()
 
     # calf_belt_sign=1 for every leg since AXIS_FLIP (generate_dog_mjcf.py,
-    # verified directly -- see daniel_cl_context.md) -- absolute = raw -
-    # thigh, matching dog_env.py's _get_obs() exactly. Pairing detected
+    # verified directly) -- absolute = raw - thigh, matching dog_env.py's
+    # _get_obs() exactly. Pairing detected
     # generically by joint name, same convention as dog_env.py's
     # calf_idx/calf_thigh_idx and dog_deploy's find_calf_thigh_pairs().
     CALF_BELT_SIGN = 1.0

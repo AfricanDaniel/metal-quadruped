@@ -14,10 +14,9 @@ are RAW motor-degree readings (the exact same convention
 `set_home`'s own reference) -- see `generate_dog_mjcf.py`'s
 `JOINT_RANGE_OVERRIDES_DEG` for where bench-measured hard-stops like this
 eventually get consumed once fully calibrated (that dict is the sim-side
-consumer; this file is the raw-data side, same relationship
-`JOINT_RANGE_OVERRIDES_DEG`'s own comment describes for `daniel_cl_context.md`,
-just scoped specifically to the belt-decoupling recalibration effort
-instead of the general log).
+consumer; this file is the raw-data side, scoped specifically to the
+belt-decoupling recalibration effort rather than serving as a general
+log).
 
 Motor -> joint mapping (`dog_description/config/motor_mapping.yaml`):
 `1`=leg_a_thigh, `2`=leg_a_calf, `3`=leg_b_calf, `4`=leg_b_thigh,

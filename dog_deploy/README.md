@@ -50,7 +50,7 @@ previous one finished (`self.busy` guards that).
 | `policy_path`              | string | `''`    | Path to a TorchScript `.pt` file (from `dog_gym/export_policy.py`). Required unless `dry_run_hold_pose` is true. |
 | `control_rate_hz`          | double | `20.0`  | Policy inference / command rate. |
 | `control_mode`              | string | `'position'` | `'position'` (default, unchanged) sends `set_motor_targets`; `'torque'` sends the new `set_motor_torque` instead — see [Torque-mode deployment](#torque-mode-deployment-2026-08-04). **Must match whatever `control_mode` the loaded `policy_path` was actually trained with** (`dog_gym.train`'s `--control-mode`) — nothing here can detect a mismatch (the exported `.pt` has no action-space metadata), it'll just silently send nonsense-scaled commands. |
-| `max_delta_deg_per_step`   | double | `5.0`   | `control_mode='position'` only. Safety clamp: max per-motor target movement per control tick. Since 2026-07-27 this slews the target relative to the **previous commanded target** (matching sim's slew limiter), not the measured position — measurement-anchoring fed motor overshoot back into the reference and caused severe stand-up chatter (see daniel_cl_context.md). Note 5°@20Hz = 100°/s = exactly sim's training slew rate. |
+| `max_delta_deg_per_step`   | double | `5.0`   | `control_mode='position'` only. Safety clamp: max per-motor target movement per control tick. Since 2026-07-27 this slews the target relative to the **previous commanded target** (matching sim's slew limiter), not the measured position — measurement-anchoring fed motor overshoot back into the reference and caused severe stand-up chatter. Note 5°@20Hz = 100°/s = exactly sim's training slew rate. |
 | `max_torque_nm`            | double[8] | `[1.0]*8` | `control_mode='torque'` only. **Per-motor** (motor 1..8 order) client-side torque magnitude clamp — deliberately redundant with `actuator`'s own per-motor server-side `max_torque_nm` (neither should be the only thing standing between a bad policy output and full motor torque). Was a single shared double — changed 2026-08-04 after real data (uniform `1.0`) showed the 4 thigh motors pinned at the ceiling 99.7% of a run (genuinely underpowered) while the 4 calf motors swung 150-200+ degrees at that SAME limit (a slipping foot). `dog_gym` sim training itself used `±20 N·m`. Example: `-p max_torque_nm:="[2.0, 1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0]"` (thighs 2.0, calves 1.0). |
 | `max_delta_torque_nm_per_step` | double | `2.0` | `control_mode='torque'` only. Per-tick torque rate clamp, anchored to the previous commanded torque (same reasoning as `max_delta_deg_per_step`). NOT something `dog_gym`'s sim training itself enforces (`control_mode='torque'` has no slew clamp in `DogEnv.step()`) — an extra conservative safety net specific to real hardware, not a sim-fidelity requirement. |
 | `max_target_lead_deg`      | double | `10.0`  | Windup guard for the prev-target-anchored clamp above: max degrees the commanded target may lead the measured position. Keeps a jammed motor from winding up a large error and violently catching up on release. |
@@ -175,9 +175,8 @@ limit (calf link hitting the thigh link) is fixed in a RELATIVE
 coordinate and slides in absolute terms as the thigh moves. `policy_node`
 now enforces this explicitly, using the live thigh reading, in
 `_on_positions_read()` — see `CALF_RANGE_DEG`'s comment (values MUST
-match `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` calf entries)
-and `daniel_cl_context.md`'s TODO 13 for the full measurement. Verified
-against a synthetic test matching a case sim itself hit: an out-of-range
+match `generate_dog_mjcf.py`'s `JOINT_RANGE_OVERRIDES_DEG` calf entries).
+Verified against a synthetic test matching a case sim itself hit: an out-of-range
 request gets clamped identically to how MuJoCo's own `<joint range>`
 clamps it in sim.
 

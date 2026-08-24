@@ -4,9 +4,9 @@ the regular capture) and policy_node.py (to compute the mid-walk switch
 target from whatever 'regular' reference was just loaded, at deploy
 time -- see home_switch_back_leg_fraction's declare_parameter comment).
 
-Origin (daniel_cl_context.md, 2026-08-15, "hf_v17_fixed: real-hardware
-back thighs sit ~35-40deg past where swing_amplitude_penalty holds them
-in sim"): real-hardware back thighs (leg_c/motor 5, leg_d/motor 8) sit
+Origin (2026-08-15, hf_v17_fixed: real-hardware back thighs sit ~35-40deg
+past where swing_amplitude_penalty holds them in sim): real-hardware back
+thighs (leg_c/motor 5, leg_d/motor 8) sit
 much further from home than sim ever produces for the same trained
 policy -- a genuine sim-to-real gap, not a reward-shaping problem.
 Manually re-posing the back legs further forward at set_home time and
@@ -27,7 +27,7 @@ BACK_LEG_HOME_CORRECTION_DEG = {5: MOTOR_5_CORRECTION_DEG, 8: MOTOR_8_CORRECTION
 # away, the exact opposite issue as the back legs"): motors 1/4 (leg_a/
 # leg_b thigh, see dog_description/config/motor_mapping.yaml) need an
 # analogous correction, same empirical procedure as the back legs
-# (chatbot.md/daniel_cl_context.md "hf_v17_fixed" origin above): read
+# (same "hf_v17_fixed" origin noted above): read
 # motor 1/4 at the regular home pose, physically re-pose to the correct-
 # looking position, read again, delta = correction. MEASURED 2026-08-18
 # on real hardware: regular was motor1=48.16, motor4=45.70; re-posed was

@@ -111,8 +111,8 @@ you actually want. Both commands below assume `source install/setup.bash`
   - **Sim directions match the real robot motor-for-motor since
     2026-07-26** (`AXIS_FLIP` in `generate_dog_mjcf.py`, the final
     chapter of this project's long sign saga — see that dict's comment
-    and daniel_cl_context.md for the full history of wrong turns that
-    preceded it). The generator deliberately negates the URDF's
+    for the history of wrong turns that preceded it). The generator
+    deliberately negates the URDF's
     auto-detected joint axis for 6 of the 8 joints so that every
     joint's raw sim qpos direction equals the real motor's direction;
     consequently `motor_mapping.yaml`'s sign is `+1` for all 8 motors,

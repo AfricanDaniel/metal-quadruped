@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Interactively drive each motor's target by hand, to double-check the
 belt/pulley calf-decoupling fix yourself instead of watching the
-automated sweep in verify_belt_decoupling.py (see that file's docstring,
-and daniel_cl_context.md's "Real root cause found: belt/pulley calf
-decoupling was never modeled in sim" section, 2026-07-25).
+automated sweep in verify_belt_decoupling.py (see that file's docstring
+for the root cause: belt/pulley calf decoupling was never modeled in
+sim, found 2026-07-25).
 
 Deliberately NOT using MuJoCo's native Control-tab sliders: those are a
 direct read/write on the raw MJCF actuator's ctrl value, which for a calf
@@ -55,8 +55,7 @@ _COS45, _SIN45 = np.cos(np.pi / 4), np.sin(np.pi / 4)
 # configuration. That's what "legs not affected by gravity" means here:
 # not zero weight, zero TORQUE about each joint's own rotation axis, so
 # the position PD controller isn't fighting gravity droop at all in this
-# orientation (see daniel_cl_context.md 2026-07-25 for the derivation and
-# the verification script).
+# orientation.
 PIN_QUATS = {
     'upside-down': np.array([0.0, 1.0, 0.0, 0.0]),
     'sideways': np.array([_COS45, 0.0, _SIN45, 0.0]),

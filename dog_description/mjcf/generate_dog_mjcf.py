@@ -78,13 +78,12 @@ ACTUATOR_ORDER = [
 # Superseded 2026-07-25 by REAL hardware-measured ranges (see below) --
 # history of the prior self-collision-derived placeholders (set
 # 2026-07-23, widened 2026-07-25 for the belt-decoupling compensation) is
-# kept in git history / daniel_cl_context.md, not repeated here.
+# kept in git history, not repeated here.
 #
 # REAL measurement (2026-07-25): robot hung in the air, each of the 8
 # motors individually driven to both mechanical hard-stops via
 # /adjust_motor_position + read back via /read_motor_positions (raw
-# absolute readings, see daniel_cl_context.md's "real hardware max-range
-# measurement" section). IMPORTANT, caught by the user on the first pass:
+# absolute readings). IMPORTANT, caught by the user on the first pass:
 # /set_home has no fixed physical meaning -- it just captures whatever
 # pose the robot happens to be in when called, and go_to_pose/
 # preset_pose.yaml store everything relative to THAT. The first version
@@ -98,7 +97,7 @@ ACTUATOR_ORDER = [
 # didn't need retaking, only which pose "home" itself refers to.
 #
 # Real motor sign vs sim joint sign is NOT uniform (this project's
-# long-running sign saga -- see daniel_cl_context.md), and NEITHER IS
+# long-running sign saga), and NEITHER IS
 # SIM'S OWN NATIVE AXIS CONVENTION between legs a/c and b/d -- this took
 # several wrong turns to nail down, worth recording precisely:
 #   - First derivation (2026-07-25) compared the SIGN of real bench
@@ -140,9 +139,8 @@ ACTUATOR_ORDER = [
 #     values (the FIRST derivation was right all along), and reverted
 #     motor_mapping.yaml/motor_mapping_thigh_test.yaml's motors 1, 5
 #     back to sign=-1 to match.
-#   - FINAL CHAPTER (2026-07-26, later, user-approved -- was TODO item
-#     12 in daniel_cl_context.md): rather than keep carrying the
-#     raw-viewer-vs-real-life direction mismatch in everyone's head,
+#   - FINAL CHAPTER (2026-07-26, later, user-approved): rather than keep
+#     carrying the raw-viewer-vs-real-life direction mismatch in everyone's head,
 #     the user decided to flip sim's own native axis convention to
 #     match the REAL robot motor-for-motor (so `python3 -m
 #     mujoco.viewer --mjcf=dog.mjcf.xml` shows real-life directions
@@ -164,8 +162,8 @@ ACTUATOR_ORDER = [
 # convention (see the "final chapter" note above).
 #
 # CALF values below are REAL-HARDWARE-DERIVED as of 2026-07-27 (were a
-# wide +-360deg placeholder before this -- see git history / earlier
-# comments in daniel_cl_context.md for that saga, not repeated here).
+# wide +-360deg placeholder before this -- see git history for that saga,
+# not repeated here).
 #
 # This dict sets the RAW MJCF joint's <joint range> -- the thigh-relative
 # hinge, which since the belt-decoupling fix (dog_gym/envs/dog_env.py)
@@ -179,8 +177,7 @@ ACTUATOR_ORDER = [
 # each; confirmed the "calf_absolute + thigh_absolute" invariant is
 # constant at each stop (independent of which thigh position it was
 # measured from) to within ~1-2deg, well inside hand-adjustment noise --
-# see daniel_cl_context.md's TODO 13 entries for the full raw data and
-# derivation, all 4 legs.
+# derivation covered all 4 legs.
 #
 # One stop is HOME ITSELF for every leg (by deliberate design choice, so
 # the calf's physical max is easy to orient by -- user's explicit
@@ -189,8 +186,7 @@ ACTUATOR_ORDER = [
 # again just measurement noise) for all 4 legs. That side of the range is
 # therefore EXACTLY 0 below, no margin -- 0 is qpos=0 by construction,
 # trivially satisfied at reset regardless of the small measurement noise
-# on the true mechanical stop (see the discussion in daniel_cl_context.md
-# for why this isn't actually a boundary-clipping risk). Right/left legs
+# on the true mechanical stop. Right/left legs
 # mirror (matches the AXIS_FLIP mirroring elsewhere): leg_a/leg_c (right)
 # have home at the LOWER end, range extends positive; leg_b/leg_d (left)
 # have home at the UPPER end, range extends negative. The one OPEN
@@ -215,9 +211,9 @@ JOINT_RANGE_OVERRIDES_DEG = {
 
 # Joints whose <joint axis> gets NEGATED relative to the URDF's
 # auto-detected value, so that sim's own raw qpos direction matches the
-# REAL robot's motor direction 1:1 (user decision 2026-07-26, was TODO
-# item 12 in daniel_cl_context.md -- see the "final chapter" note above
-# for the full story and how the set was determined). Exactly the 6
+# REAL robot's motor direction 1:1 (user decision 2026-07-26 -- see the
+# "final chapter" note above for the full story and how the set was
+# determined). Exactly the 6
 # joints whose raw sim direction disagreed with the real motor;
 # leg_b_calf/leg_c_calf (motors 3, 6) already matched and are NOT
 # flipped. Axis negation only reverses the rotation direction -- body
@@ -264,8 +260,8 @@ def parse_args():
                          'instead, for a sim-only comparison of training behavior under direct '
                          'torque control (2026-08-03, user request) -- NOT deployable to real '
                          "hardware as-is, since actuator has no torque-command service yet. "
-                         "'torque_belt' (2026-08-05, user request, see daniel_cl_context.md's "
-                         "TODO 4 refinement): same as 'torque' for the 4 thigh motors, but each "
+                         "'torque_belt' (2026-08-05, user request): same as 'torque' for the "
+                         "4 thigh motors, but each "
                          'calf motor actuates a <fixed> tendon expressing its ABSOLUTE '
                          '(belt-decoupled) angle -- raw_calf_qpos - calf_belt_sign*thigh_qpos -- '
                          'instead of its raw joint directly, so torque is applied in the same '
@@ -856,10 +852,9 @@ def main():
     driving each motor to both physical limits, sign-corrected into
     sim's convention, 5% margin pulled in from each side) -- not
     self-collision placeholders anymore. See JOINT_RANGE_OVERRIDES_DEG's
-    own comment for the measurement/sign-correction methodology, and
-    daniel_cl_context.md for the raw bench data. Still confirmed
-    self-collision-free at these exact values (300-sample random-pose
-    sweep of the other 7 joints).
+    own comment for the measurement/sign-correction methodology. Still
+    confirmed self-collision-free at these exact values (300-sample
+    random-pose sweep of the other 7 joints).
 
     NOTE: <compiler angle="degree"> below means <joint range> values in
     this file are DEGREES (MuJoCo auto-converts them at compile time).
@@ -879,9 +874,9 @@ def main():
   -->
   <compiler angle="degree" coordinate="local" inertiafromgeom="false" meshdir="{meshdir_rel}"/>
   <default>
-    <!-- stiffness="0" (2026-08-16, real-vs-sim torque investigation --
-         chatbot.md "why did a full-range sweep need 20N*m in sim but only
-         ~1.3N*m on real hardware"): the previous stiffness="10" here was
+    <!-- stiffness="0" (2026-08-16, investigation into why a full-range
+         torque sweep needed 20N*m in sim but only ~1.3N*m on real
+         hardware): the previous stiffness="10" here was
          an UNREVIEWED leftover from this file's very first commit -- no
          comment, no tuning, never touched since -- and creates a PASSIVE
          SPRING pulling every leg joint back toward qpos=0 (torque =

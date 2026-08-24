@@ -2,7 +2,7 @@
 """Behavior-cloning warm start for position-mode WALK training.
 
 Position-mode WALK has never learned to walk from scratch, even at 27-35M
-steps (DR_walk/walk_decay lines -- see daniel_cl_context.md). Torque-mode
+steps (DR_walk/walk_decay lines). Torque-mode
 WALK, by contrast, already works (models/walk_home_torque/*_v8.zip). The
 working hypothesis (see train.py's --position-kp/--position-kd) is that
 free RL exploration under a stiff PD servo (kp=60) turns exploration noise

@@ -25,8 +25,7 @@ touched):
 
 This URDF has no prismatic/loop-closure joints to fix up (unlike
 half_dog_view.launch.py's single-leg export) -- it's the ORIGINAL 4-leg
-export, from before the (not-rolled-out, see daniel_cl_context.md's
-"Cylindrical mate fix" section) cylindrical-mate CAD fix.
+export, from before the (not-yet-rolled-out) cylindrical-mate CAD fix.
 """
 
 import ast

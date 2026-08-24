@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Interactively visualize the belt/pulley calf-decoupling fix (see
-daniel_cl_context.md's "Real root cause found: belt/pulley calf
-decoupling was never modeled in sim" section, 2026-07-25).
+"""Interactively visualize the belt/pulley calf-decoupling fix (root
+cause found 2026-07-25: belt/pulley calf decoupling was never modeled
+in sim).
 
 Opens the MuJoCo viewer and sweeps one leg's THIGH back and forth while
 holding every other action -- including that leg's own CALF -- fixed at
@@ -149,8 +149,8 @@ def main():
         # (xmat's z column) instead -- BLIND to rotation about that axis,
         # which for this calf is exactly the hinge axis, so it printed
         # ~0 drift even while the calf visibly rotated (the same flawed
-        # metric that once hid a real sign bug -- see daniel_cl_context.md's
-        # "flip the sign" section). Never compare a single axis vector.
+        # metric that once hid a real sign bug). Never compare a single
+        # axis vector.
         cos_theta = (np.trace(R1 @ R0.T) - 1.0) / 2.0
         return np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
 

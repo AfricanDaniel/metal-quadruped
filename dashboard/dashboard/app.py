@@ -1,9 +1,8 @@
 """Flask app: browse local/Jetson/sheep checkpoints, launch the MuJoCo
-viewer or export a policy, deploy/control the real robot. See
-`daniel_cl_context.md` and the plan this was built from for the full
-context -- this module is deliberately thin, it wires local_fs/
-remote_fs/ssh/procs/policy_actions/ros_actions together into routes,
-not a place for new logic.
+viewer or export a policy, deploy/control the real robot. This module
+is deliberately thin -- it wires local_fs/remote_fs/ssh/procs/
+policy_actions/ros_actions together into routes, not a place for new
+logic.
 """
 import datetime
 import json

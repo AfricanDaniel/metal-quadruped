@@ -60,19 +60,15 @@ source install/setup.bash
 venv setup that doesn't fight ROS's own Python packages. `dog_deploy` needs
 `torch` on the Jetson at inference time only.
 
-## Where this came from
+## Acknowledgments / where this came from
 
 The RL/sim pieces (`dog_description`, `dog_gym`) started from a teammate's
-reference project (`shane_ws/Fast-Quadruped-`) — an 8-DOF, thigh+calf,
-no-hip MuJoCo cheetah model and a PPO/Stable-Baselines3 training pipeline.
-They were rewritten on the modern `mujoco` Python bindings + current
-Gymnasium API rather than ported as-is (the reference project used the
-deprecated `mujoco_py`). See `dog_gym/README.md` and
+reference project, [`shane_ws` — Quadruped design and improved gaits](https://sdalal1.github.io/projects/Quadruped-design-and-Improved-gaits/):
+an 8-DOF, thigh+calf, no-hip MuJoCo cheetah model and a PPO/Stable-Baselines3
+training pipeline. They were rewritten on the modern `mujoco` Python bindings
++ current Gymnasium API rather than ported as-is (the reference project used
+the deprecated `mujoco_py`). See `dog_gym/README.md` and
 `dog_description/README.md` for what changed and why.
 
-## Status / open items
-
-See `daniel_cl_context.md` (gitignored, not shared/committed — personal
-working notes) for a running log of design decisions, what's built, and
-what's still open (placeholder robot geometry, unconfirmed leg-corner
-naming, IMU mounting-orientation calibration, no trained policy yet).
+Some reward-shaping and gait-structuring ideas in `dog_gym`'s walking
+environment were informed by [`saifs_ws` — go2-sim2real-locomotion-rl](https://github.com/saifahmadgit/go2-sim2real-locomotion-rl/blob/main/examples/locomotion/final/go2_env_walk.py).

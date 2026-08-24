@@ -14,8 +14,8 @@
 #     sim-convention angle.
 #   - ALL 8 SIGNS ARE +1 SINCE 2026-07-26, BY CONSTRUCTION: sim's own
 #     joint axes were deliberately flipped in generate_dog_mjcf.py
-#     (AXIS_FLIP -- user decision, formerly TODO item 12 in
-#     daniel_cl_context.md) so that every joint's raw sim direction
+#     (AXIS_FLIP -- user decision, formerly a tracked TODO item)
+#     so that every joint's raw sim direction
 #     matches the real motor's direction 1:1, motor for motor. The
 #     per-joint set of flips was derived by measuring BOTH sides
 #     independently: the user's real bench table (which way each real
@@ -37,7 +37,7 @@
 #     delta, no policy; sim: FK d(foot_y)/d(theta) sweep) before
 #     touching sign or AXIS_FLIP -- never infer from a documented
 #     convention or by comparing two sim-only references, which is what
-#     caused this project's long sign saga (see daniel_cl_context.md).
+#     caused this project's long sign saga.
 #
 # leg_a/b/c/d are internal names (also used as dog.mjcf.xml body/joint name
 # prefixes, e.g. "leg_a_thigh") -- their physical corners are confirmed

@@ -77,10 +77,9 @@
     driving each motor to both physical limits, sign-corrected into
     sim's convention, 5% margin pulled in from each side) -- not
     self-collision placeholders anymore. See JOINT_RANGE_OVERRIDES_DEG's
-    own comment for the measurement/sign-correction methodology, and
-    daniel_cl_context.md for the raw bench data. Still confirmed
-    self-collision-free at these exact values (300-sample random-pose
-    sweep of the other 7 joints).
+    own comment for the measurement/sign-correction methodology. Still
+    confirmed self-collision-free at these exact values (300-sample
+    random-pose sweep of the other 7 joints).
 
     NOTE: <compiler angle="degree"> below means <joint range> values in
     this file are DEGREES (MuJoCo auto-converts them at compile time).

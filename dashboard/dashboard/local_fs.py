@@ -74,8 +74,8 @@ def resolve_env_id(folder):
     training() was then invoked with the WRONG env-id for a WALK-trained
     checkpoint, mismatching its observation/action space and failing
     before MuJoCo ever opened (explaining the viewer not launching).
-    trot_home/trot_stand are WALK-task checkpoints (see chatbot.md "user
-    wants to push toward faster walking") under a new naming scheme this
+    trot_home/trot_stand are WALK-task checkpoints introduced when
+    pushing toward faster walking, under a new naming scheme this
     prefix check hadn't been updated for.
 
     'running' ADDED same day (models/running_home, models/running_stand --

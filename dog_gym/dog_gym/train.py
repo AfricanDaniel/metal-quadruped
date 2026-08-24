@@ -67,9 +67,9 @@ class DecayScheduleCallback(BaseCallback):
     the applied values every step, independent of SB3's own progress
     tracking.
 
-    Added 2026-07-30 to investigate a real, repeated finding logged in
-    daniel_cl_context.md's TODO 16: every stand-task reward variant
-    tried (flat action_rate_penalty, gated -1.0, gated -0.4) looked good
+    Added 2026-07-30 to investigate a real, repeated finding: every
+    stand-task reward variant tried (flat action_rate_penalty, gated
+    -1.0, gated -0.4) looked good
     early in training and then degraded substantially with enough
     further training -- the SAME divergence pattern regardless of the
     reward shape, pointing at something more fundamental than reward
@@ -223,9 +223,9 @@ class HomeStartCurriculumCallback(BaseCallback):
     """Widens the probability DogEnv.reset() uses to start a WALK episode
     from 'home' (tucked) instead of 'standing', linearly, from
     prob_start to prob_end, over decay_steps cumulative timesteps -- only
-    relevant when walk_start_pose='random' (2026-08-09, multi-agent
-    review w/ Antigravity re: single WALK policy that stands up from
-    home AND walks, chatbot.md). Same rationale/pattern as
+    relevant when walk_start_pose='random' (2026-08-09, added while
+    working toward a single WALK policy that stands up from home AND
+    walks). Same rationale/pattern as
     GainRangeCurriculumCallback: mostly 'standing' (the proven-working
     regime) early, increasing 'home' frequency once the policy already
     has a basic walking gait to fall back on, rather than handing it the
@@ -265,8 +265,7 @@ class SlewCurriculumCallback(BaseCallback):
     HomeStartCurriculumCallback (which both start widening/relaxing from
     step 0), this one deliberately stays PINNED at the loose start value
     until start_step is reached, only beginning to tighten after that
-    (2026-08-16, multi-agent review w/ Antigravity, chatbot.md "sim-side
-    slew-rate curriculum design" -- tightening before a gait has been
+    (2026-08-16 -- tightening before a gait has been
     discovered risks reproducing the exact 2026-08-07 failure that
     MAX_SLEW_DEG_PER_S's own history documents: PPO's early exploration
     noise needs that full headroom, or no gait is ever found).
@@ -312,9 +311,8 @@ class ForwardSpeedCurriculumCallback(BaseCallback):
     toward) UP to a higher end_value, linearly, over decay_steps
     cumulative timesteps -- mirrors SlewCurriculumCallback above exactly,
     including staying PINNED at the start value until start_step is
-    reached (2026-08-18, multi-agent review w/ Antigravity, chatbot.md
-    "user wants to push toward faster walking" -- her answer (b): an
-    INSTANT target change would drop forward_progress, which gates
+    reached (2026-08-18, added while pushing toward faster walking --
+    an INSTANT target change would drop forward_progress, which gates
     upright_reward/trot_symmetry_reward/climb_gate/hold_gate/the front+
     back clearance terms, from ~1.0 to ~0.55 immediately for an already-
     converged policy, risking a stability collapse before it ever learns
@@ -522,8 +520,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         # mean at 1M steps to 148.5deg at 20M, roughly back to the
         # original pre-fix policy's level -- large gradient steps on an
         # already-near-optimal network are more likely to destabilize
-        # existing behavior than refine it smoothly; see
-        # daniel_cl_context.md).
+        # existing behavior than refine it smoothly).
         print(f'Fine-tuning from {init_from} on {env_id}')
         if algo != 'PPO':
             raise ValueError('--init-from is only wired up for PPO so far')
@@ -555,9 +552,9 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
                                  # DecayScheduleCallback for optional decay over training.
             vf_coef=0.5,
             max_grad_norm=0.5,
-            # use_sde (2026-08-17, multi-agent review w/ Antigravity,
-            # chatbot.md "Analysis of Issue.md: The Secret 'Auto-Retract'
-            # Bungee Cord"): gSDE replaces PPO's default per-tick
+            # use_sde (2026-08-17, added after diagnosing a mechanism
+            # nicknamed the "Secret Auto-Retract Bungee Cord"): gSDE
+            # replaces PPO's default per-tick
             # INDEPENDENT Gaussian action noise with noise sampled once
             # per sde_sample_freq steps and held smoothly correlated in
             # between (State-Dependent Exploration, Raffin et al. 2021).
@@ -818,7 +815,7 @@ def main():
                               'get an automatic belt-compensation servo (dog_torque_belt.mjcf.xml, '
                               '<fixed> tendons) so the policy\'s calf output represents only genuine '
                               'flexion effort, not the "carried along by the thigh" motion the real '
-                              'belt cancels for free -- see daniel_cl_context.md TODO 4\'s refinement. '
+                              'belt cancels for free. '
                               'Same --fname/checkpoints as any other run; keep torque-mode runs under '
                               'a clearly separate --fname so they never get mixed up with a '
                               'position-mode lineage (the action spaces are incompatible, same '
@@ -905,15 +902,14 @@ def main():
                               'stays pinned at 1000 until this step is reached -- tightening before a '
                               'gait has been discovered risks reproducing the 2026-08-07 MAX_SLEW_DEG_'
                               'PER_S failure (PPO\'s early exploration noise needs the full 1000 '
-                              'headroom). Multi-agent review (chatbot.md, "sim-side slew-rate '
-                              'curriculum design") recommended 2_000_000 as a confident buffer past '
+                              'headroom). 2_000_000 was chosen as a confident buffer past '
                               'gait discovery.')
     parser.add_argument('--slew-curriculum-decay-steps', type=int, default=None,
                          help='Cumulative timesteps AFTER --slew-curriculum-start-step over which the '
                               'slew clamp linearly tightens from 1000 to 250, then holds at 250. '
                               'Defaults to --decay-steps if not set, same convention as --gain-'
-                              'curriculum-steps. Multi-agent review recommended 3_000_000 (finishing '
-                              'the anneal around 5M total steps with the default 2M start).')
+                              'curriculum-steps. 3_000_000 was chosen to finish '
+                              'the anneal around 5M total steps with the default 2M start.')
     parser.add_argument('--max-slew-deg-per-s', type=float, default=None,
                          help='--train and --test (2026-08-16, user request): runtime override of '
                               "dog_env.py's MAX_SLEW_DEG_PER_S starting ceiling (module default 1000, "
@@ -936,8 +932,7 @@ def main():
                               'raising the speed target before a policy has settled at its current '
                               'fine-tune point risks collapsing the forward_progress-gated terms '
                               '(upright_reward/trot_symmetry_reward/clearance gates) it currently relies '
-                              'on. Multi-agent review (chatbot.md, "user wants to push toward faster '
-                              'walking") recommended starting from an already-converged checkpoint '
+                              'on. In practice this is best started from an already-converged checkpoint '
                               'rather than step 0 of a fresh run.')
     parser.add_argument('--forward-speed-curriculum-decay-steps', type=int, default=None,
                          help='Cumulative timesteps AFTER --forward-speed-curriculum-start-step over '
@@ -947,8 +942,8 @@ def main():
     parser.add_argument('--forward-speed-curriculum-target', type=float, default=None,
                          help='WALK_FORWARD_PROGRESS_TARGET_M_S value the curriculum ramps toward. '
                               'Defaults to 0.15 (the module constant, i.e. a no-op) if the curriculum '
-                              'is enabled without this set. Multi-agent review recommended 0.25-0.3 '
-                              '(roughly double the original 0.15) as a first step given a real measured '
+                              'is enabled without this set. 0.25-0.3 '
+                              '(roughly double the original 0.15) is a reasonable first target given a real measured '
                               'steady-state of ~0.165 m/s on PPO_10500000_init_from_hf_v17_home_v1 -- '
                               'close to something already demonstrated as reachable rather than an '
                               'untested leap.')
@@ -962,8 +957,8 @@ def main():
                               'back pair (c+d) synced, offset from each other -- the pattern a genuine '
                               'aerial-phase running gait needs (all 4 feet airborne together, not '
                               'just fast walking), gated in via WALK_BOUND_SYMMETRY_GATE_START/_FULL '
-                              'so it doesn\'t disturb an already-converged trot-style policy. Per '
-                              'multi-agent review (chatbot.md, "genuine running" thread): train a '
+                              'so it doesn\'t disturb an already-converged trot-style policy. '
+                              'Should be trained as a '
                               '--gait-style bound run FROM SCRATCH (no --init-from), not by '
                               'fine-tuning a trot checkpoint, since the two terms actively disagree '
                               'on what "good" looks like.')
@@ -1041,8 +1036,7 @@ def main():
                               'Default: same as --learning-rate, i.e. no decay -- opt-in. '
                               'Added 2026-07-30 to test whether a never-decaying learning '
                               'rate/ent_coef is why every stand reward variant tried degraded '
-                              'with enough further training regardless of reward shape (TODO '
-                              '16 in daniel_cl_context.md).')
+                              'with enough further training regardless of reward shape.')
     parser.add_argument('--ent-coef', type=float, default=0.01,
                          help='PPO only: entropy bonus coefficient (or decay START value, see '
                               '--ent-coef-end). 0.01 matches this project\'s established '

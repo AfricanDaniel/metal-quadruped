@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unloaded-observation calibration check (2026-08-12, chatbot.md "front
+"""Unloaded-observation calibration check (2026-08-12, "front
 knees tucked in / walking on shins" -- real-hardware deficit isolated to
 motors 1-4's front-leg thigh amplitude, next step is checking whether
 that's an observation-build/calibration bug vs. a genuine physical
@@ -73,7 +73,7 @@ from dog_deploy.policy_node import (
 # `walk_default_rad[calf_idx] -= calf_belt_sign * qpos[thigh_idx]` builds
 # the ABSOLUTE/belt-decoupled equivalent FROM this constant, meaning the
 # constant itself is NOT already absolute. Bug found 2026-08-12 (user
-# caught it, chatbot.md "front knees tucked in / walking on shins"): an
+# caught it -- "front knees tucked in / walking on shins"): an
 # earlier version of this file compared this raw array directly against
 # `obs_deg` (which IS absolute/decoupled, matching real hardware's own
 # motor_qpos_deg convention) -- an apples-to-oranges comparison that

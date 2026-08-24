@@ -38,8 +38,7 @@ needed on this side (see dog_gym/envs/dog_env.py's belt-decoupling
 comments for the sim-side half of this story). But the calf's real
 physical limit -- the calf link hitting the thigh link -- is fixed in a
 RELATIVE coordinate (calf_absolute + thigh_absolute, both home-relative)
-and therefore SLIDES in absolute terms as the thigh moves (see
-daniel_cl_context.md's TODO 13 for the full measurement). MuJoCo enforces
+and therefore SLIDES in absolute terms as the thigh moves. MuJoCo enforces
 this automatically via dog.mjcf.xml's <joint range> in sim; the real
 robot has no such clamp, so _on_positions_read() enforces it explicitly
 using the live thigh reading -- see CALF_RANGE_DEG below.
@@ -109,10 +108,9 @@ RAD_TO_DEG = 57.29577951308232
 # -- MUST match generate_dog_mjcf.py's JOINT_RANGE_OVERRIDES_DEG's calf
 # entries exactly (that file is the single source of truth; keep these
 # in sync if the range is ever re-measured). See this module's
-# docstring's "Sliding calf range" section and daniel_cl_context.md's
-# TODO 13 for the full derivation (one stop is home itself, by design,
-# for every leg -- home-side has no margin; the other side has the
-# usual 5% pulled in from the measured stop).
+# docstring's "Sliding calf range" section for background (one stop is
+# home itself, by design, for every leg -- home-side has no margin; the
+# other side has the usual 5% pulled in from the measured stop).
 CALF_RANGE_DEG = {
     'leg_a_calf': (0, 206.1),
     'leg_b_calf': (-213.3, 0),
@@ -121,8 +119,7 @@ CALF_RANGE_DEG = {
 }
 
 # calf_belt_sign in dog_env.py's terms -- came out uniformly +1 for all
-# 4 legs after AXIS_FLIP (verified directly, see daniel_cl_context.md's
-# "AXIS_FLIP" section), i.e. raw_hinge = calf_absolute + thigh_absolute
+# 4 legs after AXIS_FLIP (verified directly), i.e. raw_hinge = calf_absolute + thigh_absolute
 # for every leg, no per-leg sign needed. Re-verify (recompute per leg
 # from the model's own joint axes, matching dog_env.py's __init__) if
 # the CAD or AXIS_FLIP ever changes.
@@ -179,9 +176,8 @@ class PolicyNode(Node):
         super().__init__('policy_node')
 
         self.declare_parameter('policy_path', '')
-        # 50.0 (raised from 20.0, 2026-08-16, chatbot.md "can the Jetson
-        # actually sustain your recommended 50Hz control_rate_hz?" thread):
-        # gated on empirically proving the Jetson could sustain it first --
+        # 50.0 (raised from 20.0, 2026-08-16): raising it was gated on
+        # empirically proving the Jetson could sustain it first --
         # real hardware measured at 61.4Hz sustained control_rate_hz=100.0
         # request AFTER fixing the executor-contention bug that had been
         # capping actual throughput far below any requested rate. Also
@@ -257,9 +253,9 @@ class PolicyNode(Node):
         # CURRENTLY in. See dog_deploy/set_home_and_cache.py -- written by
         # that node's own /set_home call, at the moment the robot is
         # PROVABLY tucked (not whenever this policy_node happens to
-        # start). Added 2026-08-10 (chatbot.md "running STAND then
-        # WALK-from-standing back to back") after auto-capture was found
-        # to silently corrupt a SECOND policy_node run's home reference if
+        # start). Added 2026-08-10 after testing running STAND then
+        # WALK-from-standing back to back found that auto-capture could
+        # silently corrupt a SECOND policy_node run's home reference if
         # it starts while the robot is already standing (from a prior
         # policy) rather than tucked -- every subsequent observation then
         # reads as "near home" even though the robot is actually fully
@@ -553,9 +549,8 @@ class PolicyNode(Node):
         (delay_s<=0) if the previous cycle already used up its whole
         period or more, otherwise via a self-canceling one-shot timer for
         the remainder. Replaces the old fixed-rate `create_timer(1.0 /
-        control_rate_hz, self._control_step)` (2026-08-16, chatbot.md
-        "timer overrun and chaining fix", multi-agent review w/
-        Antigravity): measured directly that a plain fixed-rate timer +
+        control_rate_hz, self._control_step)` (2026-08-16, timer overrun
+        and chaining fix): measured directly that a plain fixed-rate timer +
         busy-flag-skip silently DOUBLES effective latency whenever a
         cycle's real work (read+inference+write) exceeds one period --
         the timer's next firing lands while still busy, gets dropped as a
@@ -564,10 +559,10 @@ class PolicyNode(Node):
         spacing at a 50ms/20Hz period, real hardware). Chaining from the
         previous cycle's own completion instead means a slow cycle is
         immediately followed by the next one (no double-period stall),
-        while a fast cycle still waits out the rest of its period
-        (Antigravity's explicit requirement: sim trains against a fixed
-        dt, so running unboundedly fast on 'good' ticks would itself
-        become a new sim-to-real timing mismatch) -- control_rate_hz is a
+        while a fast cycle still waits out the rest of its period --
+        required because sim trains against a fixed dt, so running
+        unboundedly fast on 'good' ticks would itself become a new
+        sim-to-real timing mismatch -- control_rate_hz is a
         rate CAP now, not a guaranteed rate."""
         if delay_s <= 0.0:
             self._control_step()
@@ -725,8 +720,8 @@ class PolicyNode(Node):
         # that overshoot straight back into the next target, flipping it
         # to the other side every tick -- a measurement-coupled limit
         # cycle, observed as severe stand-up chatter (velocity direction
-        # flipping on ~half of all ticks in the v5 run log, see
-        # daniel_cl_context.md 2026-07-27). Anchoring to prev_action
+        # flipping on ~half of all ticks in the v5 run log, 2026-07-27).
+        # Anchoring to prev_action
         # gives the firmware PD a clean, monotone ramp regardless of how
         # the motor rings around it.
         clamped_action_rad = [

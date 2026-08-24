@@ -228,8 +228,8 @@ public:
 
         serial_ = std::make_unique<SerialPort>(port_.c_str());
 
-        // Dedicated I/O thread, not a ROS timer (2026-08-16, chatbot.md
-        // "single-threaded executor contention" -- the timer-driven version
+        // Dedicated I/O thread, not a ROS timer (2026-08-16, diagnosed as
+        // single-threaded executor contention) -- the timer-driven version
         // ran control_loop() ON the same single-threaded executor that also
         // dispatches every service call, so a service request arriving
         // mid-cycle had to wait for 8 sequential blocking real serial
@@ -765,9 +765,10 @@ private:
     // into a local stack struct, UNLOCK, then do the real blocking serial
     // round-trip on the local copies only -- the lock is deliberately never
     // held across serial_->sendRecv() so a service handler on the executor
-    // thread never has to wait behind it (Antigravity-confirmed design,
-    // chatbot.md "single-threaded executor contention"). Re-locks briefly
-    // afterward just to write the result back into the shared MotorState.
+    // thread never has to wait behind it -- this is the fix for the
+    // single-threaded executor contention described above in the
+    // constructor. Re-locks briefly afterward just to write the result
+    // back into the shared MotorState.
     void control_loop() {
         std::vector<int32_t> motor_ids;
         {
