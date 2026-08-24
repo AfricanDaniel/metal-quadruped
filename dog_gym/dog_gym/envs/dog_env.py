@@ -21,7 +21,7 @@ DEFAULT_MOTOR_MAPPING_PATH = os.path.join(DOG_DESCRIPTION_SHARE, 'config', 'moto
 
 # Standing height and STANDING_QPOS_DEG below: measured by hand-posing the robot fully extended in the interactive viewer (mjcf/save_pose.py) and reading qpos back
 STAND_HEIGHT_M = 0.313
-STAND_HEIGHT_TOLERANCE_M = 0.02  # user: "small range allowed for error"
+STAND_HEIGHT_TOLERANCE_M = 0.02  # Small tolerance band allowed around STAND_HEIGHT_M.
 
 # STAND + WALK, opt-in via domain_randomization
 FLOOR_FRICTION_RANGE = (0.05, 0.8)
@@ -30,28 +30,28 @@ FLOOR_FRICTION_RANGE = (0.05, 0.8)
 PUSH_PROB_PER_STEP = 0.01  # ~1 push/second on average at dt=0.01s
 # Real-hardware tilting exceeded what earlier sim push perturbations trained recovery for, so this range was widened to include stronger shoves
 PUSH_FORCE_RANGE_N = (10.0, 40.0)  # magnitude range, horizontal only
-# Direct torque component (roll/pitch only, not yaw
+# Direct torque component of the push (roll/pitch only, not yaw).
 PUSH_TORQUE_RANGE_NM = (2.0, 10.0)  # magnitude range, roll/pitch only
 PUSH_DURATION_S = 0.15  # roughly a real shove, not a sustained force
 
 # Back-leg attachment position domain randomization
 BACK_LEG_X_OFFSET_RANGE_M = (0.000, 0.015)  # 5-15mm inward, sampled independently per leg per episode
 
-# Battery position domain randomization battery is physically removable/swappable
+# Battery position domain randomization (the battery is physically removable/swappable on the real robot).
 BATTERY_Y_JITTER_RANGE_M = 0.005  # +-5mm along the insertion axis
 
-# Overall robot center-of-mass domain randomization user request to add domain randomization to the center of mass of the overall robot).
+# Overall robot center-of-mass domain randomization.
 TORSO_COM_JITTER_XY_RANGE_M = 0.008  # +-8mm, X (left-right) and Y (front-back)
 TORSO_COM_JITTER_Z_RANGE_M = 0.003  # +-3mm, Z (up-down)
 
 # Walk task's target torso height, as a fraction of STAND_HEIGHT_M.
 WALK_HEIGHT_FRACTION = 0.95
 
-# action_rate_penalty's weight for the STAND task, linearly interpolated by height_progress (0 = sitting, 1 = at standing height
+# action_rate_penalty's weight for the STAND task, linearly interpolated by height_progress (0 = sitting, 1 = at standing height).
 ACTION_RATE_PENALTY_WEIGHT_RISING = -0.1
 ACTION_RATE_PENALTY_WEIGHT_STANDING = -0.4
 
-# WALK-only, SEPARATE from STAND's ACTION_RATE_PENALTY_WEIGHT_RISING/ _STANDING above revert EMA and implement two reward-based fixes instead)
+# WALK-only; separate from STAND's ACTION_RATE_PENALTY_WEIGHT_RISING/_STANDING above.
 WALK_ACTION_RATE_PENALTY_WEIGHT = -0.01
 
 # WALK-only
@@ -62,7 +62,7 @@ WALK_HEIGHT_OVERSHOOT_PENALTY_WEIGHT = 100.0
 
 # _angular_vel_penalty()'s per-task weights
 STAND_ANGULAR_VEL_PENALTY_WEIGHT = -0.02
-# RAISED 0.2 -> 1.5 into walk_position_hf_v16/walk_home_fv25_v1/fv25_ramp_v1's termination traces
+# Penalizes torso angular velocity during WALK; weighted heavily to suppress excessive spinning/wobbling.
 WALK_ANGULAR_VEL_PENALTY_WEIGHT = -1.5
 
 # Weight for -( _torso_pitch_rad() )**2 in the WALK task only
@@ -71,52 +71,52 @@ WALK_PITCH_PENALTY_WEIGHT = 3.0
 # Weight for -( _torso_roll_rad() )**2 in the WALK task only
 WALK_ROLL_PENALTY_WEIGHT = 5.0
 
-# Sigma for roll_gate in _compute_reward_walk() "roll_penalty tuning" round)
+# Sigma for the roll_gate Gaussian in _compute_reward_walk().
 WALK_ROLL_GATE_SIGMA_RAD = np.radians(10)
 
-# Bound-only guardrail #1: per-leg ground-contact "foot usage" gate degenerate gaits
+# Bound-only guardrail #1: minimum per-leg ground-contact duty cycle, to discourage degenerate gaits that barely use a leg.
 WALK_BOUND_MIN_FOOT_DUTY_CYCLE = 0.15
 WALK_BOUND_FOOT_USAGE_GATE_SIGMA = 0.10
 
-# Bound-only guardrail #2: per-leg thigh range-of-motion floor same user report
+# Bound-only guardrail #2: minimum per-leg thigh range of motion.
 WALK_BOUND_THIGH_ROM_FLOOR_RAD = np.radians(90)
 WALK_BOUND_THIGH_ROM_GATE_SIGMA_RAD = np.radians(15)
 
-# Bound-only guardrail #3: per-leg CALF range-of-motion floor direct empirical finding on running_home_s5_ms1000_simple_alr_v10 and running_home_s5_ms1000_whf60_simple_alr_v9's repeated instant-crash failures
+# Bound-only guardrail #3: minimum per-leg calf range of motion, added after policies with near-zero calf motion caused repeated instant-crash failures.
 WALK_BOUND_CALF_ROM_FLOOR_RAD = np.radians(15)
 WALK_BOUND_CALF_ROM_GATE_SIGMA_RAD = np.radians(5)
 
-# Bound-only guardrail #4: per-leg calf joint-limit margin, DURATION-based margin_gate
+# Bound-only guardrail #4: per-leg calf joint-limit margin; the gate is duration-based (see grace/sigma below).
 CALF_JOINT_MARGIN_FLOOR_RAD = np.radians(10)
 # GRACE: seconds allowed inside the margin band before it counts against the gate
 CALF_JOINT_MARGIN_GRACE_S = 0.08
-# Gaussian decay sigma on dwell time PAST the grace period, in seconds (not radians, unlike every other *_GATE_SIGMA_RAD above
+# Gaussian decay sigma on dwell time past the grace period, in seconds (not radians, unlike every other *_GATE_SIGMA_RAD above).
 CALF_JOINT_MARGIN_GATE_SIGMA_S = 0.35
 
-# Bound-only guardrail #5: front/back leg-pair synchronization, ONLY near full running speed running full speed...
+# Bound-only guardrail #5: front/back leg-pair synchronization, only enforced near full running speed.
 WALK_BOUND_SYMMETRY_GATE_SIGMA = 0.6
 # FLOORED (not allowed to reach 0)
 WALK_BOUND_SYMMETRY_GATE_FLOOR = 0.5
-# Blended in by SPEED RELATIVE TO THE CURRENT CURRICULUM TARGET (reuses forward_progress = forward_velocity_reward / self._walk_forward_ progress_target_m_s, already computed above in this same function), NOT a fixed absolute speed
+# Blended in based on current speed relative to the curriculum's target speed (reuses forward_progress, already computed above in this function), not a fixed absolute speed.
 WALK_BOUND_SYMMETRY_SPEED_RATIO_START = 0.6
 WALK_BOUND_SYMMETRY_SPEED_RATIO_FULL = 0.9
 
-# Bound-only guardrail #6: stance-phase straight-leg (kinematic singularity) avoidance PPO_5500000_running_home_s5_ms1000_simple_alr_v1b
+# Bound-only guardrail #6: stance-phase straight-leg (kinematic singularity) avoidance.
 STANCE_STRAIGHT_ZONE_RAD = np.radians(25)
 # DURATION-based, same reset-on-recovery dwell-time pattern as CALF_JOINT_MARGIN_GRACE_S/_GATE_SIGMA_S above, and for the same reason
 STANCE_STRAIGHT_GRACE_S = 0.05
-# TIGHTENED 0.3 -> 0.12 PPO_4500000_running_home_s5_ms1000_simple_alr_v1c
+# Gaussian decay sigma for the stance-straight-leg gate.
 STANCE_STRAIGHT_GATE_SIGMA_S = 0.12
-# LOWERED 0.5 -> 0.15 (same finding as SIGMA_S above)
+# Floor for the stance-straight-leg gate (never drops all the way to zero).
 STANCE_STRAIGHT_GATE_FLOOR = 0.15
 
-# CALF_STANCE_SIDE_* investigation: leg_a's calf on PPO_6500000_running_home_s5_ms1000_ simple_alr_v1d swept from ~10deg, THROUGH its straight-leg center (~103deg), all the way to ~187deg
+# Detects a calf swinging past its straight-leg center to the wrong side during stance (a failure mode seen in testing).
 CALF_STANCE_SIDE_GRACE_S = 0.03
-# TIGHTENED 0.15 -> 0.12, FLOOR 0.3 -> 0.15 report + data investigation: PPO_7500000_running_home_s5_ms1000_ simple_alr_v1e
+# Gaussian decay sigma and floor for the calf-stance-side gate above.
 CALF_STANCE_SIDE_GATE_SIGMA_S = 0.12
 CALF_STANCE_SIDE_GATE_FLOOR = 0.15
 
-# CALF_THIGH_TRACKING_*
+# Detects a calf that isn't tracking the thigh's motion correctly during stance (moving too slowly, or in the wrong direction).
 CALF_THIGH_TRACKING_THIGH_QVEL_FLOOR_RAD_S = np.radians(20)
 CALF_THIGH_TRACKING_MIN_CALF_FRACTION = 0.2
 CALF_THIGH_TRACKING_GRACE_S = 0.05
@@ -126,10 +126,10 @@ CALF_THIGH_TRACKING_GATE_FLOOR = 0.3
 # Deliberate forward-lean reward target
 WALK_TARGET_PITCH_RAD = np.radians(10)
 
-# Built-in forward lean for the 'home' reset pose itself following investigation into "no_stiffness_slew_100/ _200: still falling backward despite WALK_TARGET_PITCH_RAD"
+# Built-in forward lean baked into the 'home' reset pose itself, added because the robot kept falling backward on rise despite WALK_TARGET_PITCH_RAD.
 HOME_START_FORWARD_LEAN_RAD = np.radians(8)
 
-# Height offset paired with HOME_START_FORWARD_LEAN_RAD above bug found the same day the lean was added
+# Height offset paired with HOME_START_FORWARD_LEAN_RAD above, to keep the leaned home pose from clipping into the floor.
 HOME_START_LEAN_HEIGHT_OFFSET_M = 0.05
 
 # Weight for rise_backward_pitch_penalty in _compute_reward_walk()
@@ -138,23 +138,23 @@ WALK_RISE_BACKWARD_PITCH_PENALTY_WEIGHT = 5.0
 # pitch_gate's sigma (see pitch_penalty's comment/pitch_gate's own comment in _compute_reward_walk() for the full mechanism)
 WALK_PITCH_GATE_SIGMA_RAD = np.radians(15)
 
-# WALK-only, added straight"
+# WALK-only penalties on lateral (sideways) velocity and yaw rate, to discourage sideways drifting and spinning.
 WALK_LATERAL_VEL_PENALTY_WEIGHT = 5.0
 WALK_YAW_RATE_PENALTY_WEIGHT = 2.0
 
 # WALK-wide (not is_stand_and_walk-scoped, same as the two weights above)
 WALK_HEADING_DEVIATION_PENALTY_WEIGHT = 4.0
 
-# WALK-wide diagnostic + swing-time-fairness" investigation) after dropping trot_symmetry_reward (see that term's DROPPED comment in the return statement below) left a real gap: v27's per-leg diagnostic showed leg_c (back-right) stuck at ~80-85% ground-contact share by 3M-5M steps (vs ~55-65% for the other three), timing its brief lifts right at FEET_STANCE_TIME_MAX_S's 0.3s cap rather than taking a genuine ~0.3s swing like the other legs
+# Rewards balanced per-leg ground-contact duty cycle (slow EMA), added to replace the cross-leg timing constraint lost when trot_symmetry_reward was dropped (see the DROPPED note near the return statement below).
 SWING_FAIRNESS_EMA_ALPHA = 0.02
 SWING_FAIRNESS_TARGET_DUTY_CYCLE = 0.75
 SWING_FAIRNESS_GATE_START = 0.2
 SWING_FAIRNESS_GATE_FULL = 0.4
 WALK_SWING_FAIRNESS_WEIGHT = 5.0
 
-# front_clearance_reward/back_clearance_reward "three follow-up asks...
+# Weight for front_clearance_reward (front-leg foot-clearance reward).
 WALK_FRONT_CLEARANCE_WEIGHT = 2.0
-# RAISED 2.0 -> 3.0 clearance: user wants MORE than the current split fix gives" round)
+# Weight for back_clearance_reward; higher than the front weight since back feet tend to drag more.
 WALK_BACK_CLEARANCE_WEIGHT = 3.0
 
 # Back legs' own higher foot-clearance target
@@ -164,20 +164,20 @@ BACK_FOOT_CLEARANCE_TARGET_M = 0.08
 WALK_BACK_CLEARANCE_GATE_START = 0.2
 WALK_BACK_CLEARANCE_GATE_FULL = 0.4
 
-# swing_amplitude_penalty proposing a new swing-AMPLITUDE-discrepancy term (front vs back)).
+# Weight for swing_amplitude_penalty, which penalizes excessive front-vs-back swing-amplitude discrepancy.
 WALK_SWING_AMPLITUDE_PENALTY_WEIGHT = 3.0
 
 # Absolute per-leg deadzone for swing_amplitude_penalty (see that term's own comment/WALK_SWING_AMPLITUDE_PENALTY_WEIGHT above)
 SWING_AMPLITUDE_MAX_DEVIATION_RAD = np.radians(70)
 
-# calf_amplitude_penalty "calf tuck persists after the thigh-amplitude fix worked").
+# Weight for calf_activity_penalty, and the sliding-window length (in ticks) used to measure calf range of motion. Penalizes a calf that stays nearly fixed (a "tucked" calf) instead of swinging.
 WALK_CALF_ACTIVITY_PENALTY_WEIGHT = 3.0
 CALF_ACTIVITY_WINDOW_TICKS = 50
 
-# RAISED 20deg -> 35deg "forward_tilt_walk_v1@4M checkpoint check"): measured directly on forward_tilt_walk_v1@4M that leg_d's calf ROM (25.5deg) clears the old 20deg floor cleanly, reading exactly zero penalty, despite being notably smaller than the other three legs' 42-51deg
+# Minimum calf range-of-motion (within the CALF_ACTIVITY_WINDOW_TICKS window) below which calf_activity_penalty kicks in.
 CALF_ACTIVITY_MIN_RANGE_RAD = np.radians(35)
 
-# JOINT_LIMIT_MARGIN_PENALTY_WEIGHT/_joint_limit_margin_penalty() REMOVED jointlimit_probe_v1 real deployment" review).
+# JOINT_LIMIT_MARGIN_PENALTY_WEIGHT / _joint_limit_margin_penalty() were removed after real-hardware deployment testing found they weren't needed.
 
 # STAND+WALK ONLY (walk_start_pose='random')
 WALK_CLIMB_GATE_THRESHOLD = 0.8
@@ -185,10 +185,10 @@ WALK_CLIMB_GATE_THRESHOLD = 0.8
 # STAND+WALK ONLY (walk_start_pose='random')
 WALK_STAND_HOLD_S = 2.0
 
-# STAND+WALK ONLY following "stand, hold X seconds" review): the first draft reused WALK_CLIMB_GATE_THRESHOLD (0.8) to also start the hold-timer
+# STAND+WALK ONLY. Threshold (stricter than WALK_CLIMB_GATE_THRESHOLD) at which the stand-hold timer starts counting.
 WALK_STAND_HOLD_THRESHOLD = 0.884
 
-# STAND+WALK ONLY, added alongside the WALK_STAND_HOLD_THRESHOLD loosening above : even at the loosened 0.884 threshold, a plain instant-reset-on-dip still capped continuous holds around 0.5-0.66s
+# STAND+WALK ONLY. Grace period allowing a brief dip below WALK_STAND_HOLD_THRESHOLD without resetting the stand-hold timer to zero.
 WALK_STAND_HOLD_DIP_GRACE_S = 0.2
 
 # Reference forward speed (m/s) for gating WALK's upright_reward
@@ -197,15 +197,15 @@ WALK_FORWARD_PROGRESS_TARGET_M_S = 0.15
 # Weight for _trot_symmetry_reward().
 WALK_TROT_SYMMETRY_WEIGHT = 2.5
 
-# _bound_symmetry_reward()'s weight/gate genuine running with an aerial phase, not just faster trotting, see gait_style's own comment
+# _bound_symmetry_reward()'s weight and gate thresholds. Bound gait targets genuine running with an aerial phase, not just a faster trot (see gait_style's own comment).
 WALK_BOUND_SYMMETRY_WEIGHT = 5.0
 WALK_BOUND_SYMMETRY_GATE_START = 0.2
 WALK_BOUND_SYMMETRY_GATE_FULL = 0.4
 
-# WALK-specific RESIDUAL action space reference repos in this workspace (quadrupeds_locomotion/friend_code), which structure their action as target = default_pose + action_scale*residual rather than an absolute target the way this project's action space always has been.
+# WALK-specific residual action-space range: target = default_pose + action_scale*residual, following the pattern used by reference quadruped-RL repos in this workspace (quadrupeds_locomotion/friend_code), instead of the absolute-target action space used elsewhere in this project.
 WALK_ACTION_RESIDUAL_RANGE_RAD = np.radians(150)
 
-# Interpolate the WALK residual-action baseline from 'home' (all-zero, in this belt-compensated absolute-action space) to the full standing target (_walk_default_action_rad) smoothly over this many seconds at the START of a 'home'-start episode, instead of the baseline being _walk_default_action_rad from tick 0 "Analysis of Issue.md" investigation and its "Rise Asymmetry Fix").
+# Duration (seconds) over which a 'home'-start episode smoothly interpolates the WALK residual-action baseline from all-zero up to the full standing target (_walk_default_action_rad), instead of starting at the standing baseline from tick 0.
 HOME_RISE_INTERPOLATION_DURATION_S = 0.75
 # Sitting/home height (see FALL_HEIGHT_M's comment)
 SIT_HEIGHT_M = 0.14
@@ -213,35 +213,35 @@ SIT_HEIGHT_M = 0.14
 # Motor-id order (1..8), hand-verified sim qpos at the standing pose above (NOT converted from real hardware degrees).
 STANDING_QPOS_DEG = np.array([107.507, 104.071, -86.789, -98.804, 98.743, 98.011, -93.049, -103.804])
 
-# Motor-order (0-indexed, i.e.
+# Motor order (0-indexed) of the four thigh joints used for the STAND task's left/right symmetry penalty.
 SYMMETRIC_THIGH_IDX = [0, 3, 4, 7]  # motors 1, 4, 5, 8 (leg_a, leg_b, leg_c, leg_d)
-# [1,-1,1,-1] since the : sim's raw directions now match the real robot motor-for-motor, and the real robot's left/right motors are mirror-mounted
+# [1,-1,1,-1] because the sim's raw joint directions now match the real robot motor-for-motor, and the real robot's left/right motors are mirror-mounted.
 THIGH_SYMMETRY_SIGN = np.array([1, -1, 1, -1])
 SYMMETRIC_CALF_IDX = [1, 2, 5, 6]   # motors 2, 3, 6, 7 (leg_a, leg_b, leg_c, leg_d)
 # [1,-1,1,-1] since the same AXIS_FLIP (was [-1,-1,1,1] under the old axes): "calf towards front" is now POSITIVE qpos for the right legs' calves (a, c) and NEGATIVE for the left legs' (b, d), matching the real robot's mirror-mounted motors
 CALF_SYMMETRY_SIGN = np.array([1, -1, 1, -1])
-# NOT YET AUDITED (flagged : _compute_reward_stand() computes calf_spread from self.data.qpos directly
+# NOT YET AUDITED: _compute_reward_stand() computes calf_spread from self.data.qpos directly, so this sign convention should be double-checked there too.
 
 # Sitting/home height settles around 0.14m (measured the same way as STAND_HEIGHT_M, at qpos=0)
 FALL_HEIGHT_M = 0.10
 MAX_TILT_RAD = 0.9  # ~51 degrees from vertical before an episode ends
-# WALK-specific, MUCH tighter tilt termination by two reference quadruped-RL repos (quadrupeds_locomotion/friend_code in this workspace), both of which terminate hard on tilt (10deg and 45deg respectively) rather than relying only on a soft reward penalty the way this project's WALK_PITCH_PENALTY_WEIGHT/ WALK_ANGULAR_VEL_PENALTY_WEIGHT do.
+# WALK-specific, much tighter tilt termination than the stand task's MAX_TILT_RAD, following two reference quadruped-RL repos in this workspace (quadrupeds_locomotion/friend_code) that both terminate hard on tilt rather than relying only on a soft reward penalty.
 WALK_MAX_TILT_RAD = np.radians(20)
 
 # Soft-trigger termination on prolonged knee/thigh/shin contact
 NONTIP_TERMINATION_ENABLED = True
-# LOWERED 1.0 -> 0.5 : checked directly against walk_policy_home_v11/v12
+# Seconds of continuous non-tip (knee/thigh/shin) ground contact allowed before an episode terminates.
 NONTIP_TERMINATION_S = 0.0
-# STANDING-start gets its OWN threshold request): the 2.0s value above exists specifically to cover 'home's own reset-time penetration violence (see the comment right above)
+# Same as NONTIP_TERMINATION_S above, but applied specifically to episodes that start already standing.
 NONTIP_TERMINATION_S_STANDING = 0.0
 
 # BOUND ONLY
 NONTIP_TERMINATION_S_BOUND = 0.0
 
-# Hard cutoff for _knee_walking_too_long()'s gate same review as NONTIP_TERMINATION_S's fix above
+# Torso height below which _knee_walking_too_long()'s check is skipped entirely (covers reset-time contact right after spawning).
 NONTIP_TERMINATION_MIN_RISE_HEIGHT_M = 0.19460596
 
-# STAND only user request: measured directly that the instant/zero-grace version terminates ~20 ticks in on average under PPO's normal STOCHASTIC exploration noise, EVERY episode, 20/20
+# STAND only. Grace period before airborne-related termination, since a zero-grace version was found to terminate almost every episode within the first ~20 ticks due to PPO's normal exploration noise.
 STAND_AIRBORNE_TERMINATION_S = 3.0
 
 MAX_EPISODE_STEPS = 1000
@@ -253,16 +253,16 @@ MAX_SLEW_DEG_PER_S = 1000.0
 # Curriculum end target for SlewCurriculumCallback (train.py)
 SLEW_CURRICULUM_TARGET_DEG_PER_S = 250.0
 
-# EMA output-smoothing filter TRIED AND REVERTED investigation titled "the alpha=0.3 fix made things worse").
+# An EMA output-smoothing filter was tried here and reverted; it made behavior worse in testing.
 
-# TORQUE mode only : velocity damping, applied in step() as ctrl = action - TORQUE_KD_GAIN*qvel
+# TORQUE mode only: velocity damping, applied in step() as ctrl = action - TORQUE_KD_GAIN*qvel.
 TORQUE_KD_GAIN = 0.2
 
-# TORQUE_BELT mode only : PD gains for the automatic calf belt-compensation servo applied in step()'s control_mode='torque_belt' branch, ON TOP of (not replacing) the policy's own calf torque
+# TORQUE_BELT mode only: PD gains for the automatic calf belt-compensation servo applied in step()'s control_mode='torque_belt' branch, on top of (not replacing) the policy's own calf torque.
 BELT_SERVO_KP = 30.0
 BELT_SERVO_KD = 2.0
 
-# TORQUE_BELT mode only : per-tick adaptation rate for self._belt_target_abs_calf
+# TORQUE_BELT mode only: per-tick adaptation rate for self._belt_target_abs_calf.
 BELT_TARGET_ADAPT_RATE_STAND = 0.02
 BELT_TARGET_ADAPT_RATE_WALK = 0.15
 
@@ -281,7 +281,7 @@ FOOT_CLEARANCE_TARGET_M = 0.06
 # sigma for _foot_clearance_reward()'s Gaussian
 FOOT_CLEARANCE_SIGMA_M = FOOT_CLEARANCE_TARGET_M / 2
 
-# RAISED 0.1 -> 3.0 on for 3 seconds in the air")
+# Target swing (airborne) duration per foot, in seconds, for _feet_air_time_reward().
 FEET_AIR_TIME_TARGET_S = 0.1
 
 # Cap (seconds) beyond which a currently-airborne leg starts accruing a GROWING per-tick penalty in _feet_air_time_reward(), even before it ever lands.
@@ -290,13 +290,13 @@ FEET_AIR_TIME_MAX_S = 3.0 * FEET_AIR_TIME_TARGET_S
 # Mirror image of FEET_AIR_TIME_MAX_S: cap (seconds) beyond which a currently-PLANTED leg starts accruing a GROWING per-tick penalty in _feet_air_time_reward(), even before it ever swings.
 FEET_STANCE_TIME_MAX_S = 0.3
 
-# _trot_symmetry_reward()'s stuck-phase gate : a leg that's held the SAME contact state (grounded or swinging, via self._leg_phase_time) longer than this returns the worst possible score regardless of the instantaneous 4-leg pattern
+# _trot_symmetry_reward()'s stuck-phase gate: a leg that's held the same contact state (grounded or swinging, via self._leg_phase_time) longer than this returns the worst possible score regardless of the instantaneous 4-leg pattern.
 MAX_LEG_PHASE_S = 0.5
 
-# _calf_swing_motion_reward()'s ceiling : that reward is mean squared calf angular velocity (rad/s)^2 across swinging legs, with NO upper bound before this
+# _calf_swing_motion_reward()'s ceiling: that reward is mean squared calf angular velocity (rad/s)^2 across swinging legs, with no upper bound before this.
 CALF_SWING_REWARD_CAP = 4.0
 
-# Three additional WALK-only early-termination conditions user request: training was wasting clock time letting clearly-doomed "leaning forward and dragging" episodes run for another 100+ ticks before the existing _is_fallen()/_knee_walking_too_long() eventually caught them).
+# Three additional WALK-only early-termination conditions, added to stop clearly-doomed episodes (leaning forward and dragging) from running for many more ticks before _is_fallen()/_knee_walking_too_long() eventually catches them.
 
 # _leg_stuck_too_long()'s threshold: reuses self._leg_phase_time (already tracked for _trot_symmetry_reward()'s MAX_LEG_PHASE_S gate above) as a hard termination too.
 LEG_PHASE_TERMINATION_S = 3.0
@@ -351,14 +351,14 @@ class DogEnv(gym.Env):
                 'Pass either position_kp/position_kd (fixed) or position_kp_range/'
                 'position_kd_range (randomized per episode), not both.')
         if model_path is None:
-            # torque_belt gets its OWN model file (DEFAULT_TORQUE_BELT_ MODEL_PATH, generate_dog_mjcf.py --actuator-type torque_belt)
+            # torque_belt gets its own model file (DEFAULT_TORQUE_BELT_MODEL_PATH, from generate_dog_mjcf.py --actuator-type torque_belt).
             model_path = {
                 'torque': DEFAULT_TORQUE_MODEL_PATH,
                 'torque_belt': DEFAULT_TORQUE_BELT_MODEL_PATH,
             }.get(control_mode, DEFAULT_MODEL_PATH)
-        # WALK-only parameter instead of a hardcoded constant).
+        # WALK-only target height, as a fraction of STAND_HEIGHT_M, exposed as a parameter instead of a hardcoded constant.
         self._walk_target_height_m = walk_height_fraction * STAND_HEIGHT_M
-        # WALK-only approach of training one policy to climb from home AND walk, rather than assuming a separate stand policy always runs first).
+        # WALK-only: controls whether episodes start from a standing pose, the 'home' (sitting) pose, or randomly between the two, supporting training one policy that both climbs to standing and walks, rather than assuming a separate stand policy always runs first.
         if walk_start_pose not in ('standing', 'home', 'random'):
             raise ValueError(
                 f"walk_start_pose must be 'standing', 'home', or 'random', got {walk_start_pose!r}")
@@ -368,11 +368,11 @@ class DogEnv(gym.Env):
         # Per-episode-independent (unlike position_kp_range/home_start_prob above): step()'s slew clamp reads this fresh every single step, not just at reset(), so set_max_slew_deg_per_s() below takes effect immediately, not on the next episode
         self._max_slew_deg_per_s = (
             max_slew_deg_per_s if max_slew_deg_per_s is not None else MAX_SLEW_DEG_PER_S)
-        # walk_forward_progress_target_m_s "start creating what we need to train...
+        # Forward-speed target (m/s) for the WALK task's reward; falls back to WALK_FORWARD_PROGRESS_TARGET_M_S if not overridden.
         self._walk_forward_progress_target_m_s = (
             walk_forward_progress_target_m_s if walk_forward_progress_target_m_s is not None
             else WALK_FORWARD_PROGRESS_TARGET_M_S)
-        # gait_style trot, all 4 legs off the ground"): WALK-only, picks which gait- pattern reward _compute_reward_walk() uses
+        # WALK-only: picks which gait-pattern reward _compute_reward_walk() uses ('trot' for a diagonal-pair gait, 'bound' for a front/back-pair gait with an aerial phase).
         if gait_style not in ('trot', 'bound'):
             raise ValueError(f"gait_style must be 'trot' or 'bound', got {gait_style!r}")
         self.gait_style = gait_style
@@ -387,13 +387,13 @@ class DogEnv(gym.Env):
         self.model = mujoco.MjModel.from_xml_path(self.model_path)
         self.data = mujoco.MjData(self.model)
 
-        # position_kp/position_kd : runtime override of the MJCF's baked-in <position> actuator gains (generate_dog_mjcf.py --kp/--kv, default 60/4
+        # position_kp/position_kd: runtime override of the MJCF's baked-in <position> actuator gains (see generate_dog_mjcf.py's --kp/--kv flags for the defaults).
         if control_mode == 'position' and position_kp is not None and position_kd is not None:
             self._apply_position_gains(position_kp, position_kd)
         self.position_kp = position_kp
         self.position_kd = position_kd
 
-        # position_kp_range/position_kd_range domain randomization + curriculum over position_kp/position_kd, not just a single fixed override): each tuple is (low, high); when set, reset() below samples a FRESH kp/kd uniformly from the CURRENT range every episode (not once at construction), so the same training run sees a spread of servo stiffnesses instead of committing to one value for its whole lifetime
+        # position_kp_range/position_kd_range: domain randomization plus curriculum over position_kp/position_kd, instead of a single fixed override. Each tuple is (low, high); when set, reset() below samples a fresh kp/kd uniformly from the current range every episode (not once at construction), so the same training run sees a spread of servo stiffnesses instead of committing to one value for its whole lifetime.
         self._position_kp_range = position_kp_range
         self._position_kd_range = position_kd_range
 
@@ -408,7 +408,7 @@ class DogEnv(gym.Env):
             self.model, mujoco.mjtObj.mjOBJ_GEOM, 'torso_body')
         self.default_floor_friction = self.model.geom_friction[self.floor_geom_id].copy()
 
-        # Back-leg attachment offset domain randomization see BACK_LEG_X_OFFSET_RANGE_M's comment)
+        # Back-leg attachment offset domain randomization (see BACK_LEG_X_OFFSET_RANGE_M's comment).
         self.leg_c_thigh_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, 'leg_c_thigh')
         self.leg_d_thigh_body_id = mujoco.mj_name2id(
@@ -416,12 +416,12 @@ class DogEnv(gym.Env):
         self.default_leg_c_thigh_pos = self.model.body_pos[self.leg_c_thigh_body_id].copy()
         self.default_leg_d_thigh_pos = self.model.body_pos[self.leg_d_thigh_body_id].copy()
 
-        # Battery position domain randomization BATTERY_Y_JITTER_RANGE_M's comment)
+        # Battery position domain randomization (see BATTERY_Y_JITTER_RANGE_M's comment).
         self.battery_body_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, 'battery_mass')
         self.default_battery_pos = self.model.body_pos[self.battery_body_id].copy()
 
-        # Overall robot CoM domain randomization TORSO_COM_JITTER_XY_RANGE_M's comment)
+        # Overall robot CoM domain randomization (see TORSO_COM_JITTER_XY_RANGE_M's comment).
         self.default_torso_ipos = self.model.body_ipos[self.torso_body_id].copy()
 
         # Each leg's collision capsule is named "<leg>_calf" (same name as the calf joint, different MuJoCo namespace) and runs knee->foot as ONE capsule (no separate foot geom)
@@ -429,7 +429,7 @@ class DogEnv(gym.Env):
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, f'{leg}_calf')
             for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
         ]
-        # Added distinct contact geom this project's contact-checking logic previously never looked at at all (only ever checked calf_geom_ids)
+        # Distinct thigh contact geoms, which this project's contact-checking logic previously never looked at at all (only ever checked calf_geom_ids).
         self.thigh_geom_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, f'{leg}_thigh')
             for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
@@ -439,7 +439,7 @@ class DogEnv(gym.Env):
             for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
         ]
 
-        # control_mode='torque_belt' only : the 4 <fixed> tendons DEFAULT_TORQUE_BELT_MODEL_PATH defines, each equal to one leg's calf ABSOLUTE (belt-decoupled) angle
+        # control_mode='torque_belt' only: the 4 <fixed> tendons DEFAULT_TORQUE_BELT_MODEL_PATH defines, each equal to one leg's calf absolute (belt-decoupled) angle.
         self.calf_tendon_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_TENDON, f'{leg}_calf_absolute')
             for leg in ('leg_a', 'leg_b', 'leg_c', 'leg_d')
@@ -452,14 +452,14 @@ class DogEnv(gym.Env):
         self.motor_dof_adr = np.array(
             [self.model.joint(name).dofadr[0] for name in joint_names])
 
-        # joint_stiffness user request
+        # Optional passive joint stiffness override, applied to the thigh joints only.
         self._thigh_joint_ids = np.array([
             self.model.joint(name).id for name in joint_names if name.endswith('_thigh')])
         if joint_stiffness is not None:
             self._apply_joint_stiffness(joint_stiffness)
         self.joint_stiffness = joint_stiffness
 
-        # Belt/pulley coupling compensation (real robot confirmed : each leg's calf motor drives its lower pulley through a timing belt to an upper pulley mounted on the (non-rotating-with-the-thigh) torso/shoulder; the lower pulley itself free-spins on a bearing relative to the thigh.
+        # Belt/pulley coupling compensation. Confirmed on the real robot: each leg's calf motor drives its lower pulley through a timing belt to an upper pulley mounted on the (non-rotating-with-the-thigh) torso/shoulder; the lower pulley itself free-spins on a bearing relative to the thigh.
         self.calf_idx = np.array(
             [i for i, n in enumerate(joint_names) if n.endswith('_calf')])
         self.calf_thigh_idx = np.array([
@@ -560,7 +560,7 @@ class DogEnv(gym.Env):
         # Same true-sliding-window pattern as self._calf_hinge_window above, RAW thigh qpos instead of calf
         self._thigh_hinge_window = np.zeros((CALF_ACTIVITY_WINDOW_TICKS, 4))
         self._thigh_hinge_window_idx = 0
-        # Seconds torso pitch magnitude has stayed continuously above PITCH_TERMINATION_THRESHOLD_RAD
+        # Seconds torso pitch magnitude has stayed continuously outside [PITCH_TERMINATION_BACKWARD_RAD, PITCH_TERMINATION_FORWARD_RAD].
         self._high_pitch_time = 0.0
         # World +y torso position at episode start
         self._episode_start_y = 0.0
@@ -606,7 +606,7 @@ class DogEnv(gym.Env):
         self._contact_duty_cycle = np.zeros(4)
         self._high_pitch_time = 0.0
         self._step_count = 0
-        # _climb_progress()/_get_rise_progress() reference see HOME_START_LEAN_HEIGHT_OFFSET_M's own comment)
+        # _climb_progress()/_get_rise_progress() reference height offset (see HOME_START_LEAN_HEIGHT_OFFSET_M's own comment).
         self._rise_progress_height_offset = 0.0
 
         if self.task == 'walk':
@@ -622,7 +622,7 @@ class DogEnv(gym.Env):
                 # Start already standing
                 qpos_rad = np.radians(STANDING_QPOS_DEG)
             else:
-                # 'home' : start from the sitting/home pose instead, same starting state STAND's task uses
+                # 'home': start from the sitting/home pose instead, the same starting state the STAND task uses.
                 qpos_rad = np.zeros(NUM_MOTORS)
             if self.domain_randomization:
                 qpos_rad = qpos_rad + self.np_random.uniform(-0.02, 0.02, size=NUM_MOTORS)
@@ -636,13 +636,13 @@ class DogEnv(gym.Env):
                 # The free joint's own z (qpos[2]) still defaults to the model's qpos=0 spawn height (0.287m, chosen to clear the floor at the CAD-captured/sitting leg pose)
                 self.data.qpos[2] = STAND_HEIGHT_M
             else:
-                # 'home' very first ~16 ticks were pure free-fall, all 4 feet 'air', height dropping smoothly 0.287->~0.15m with ZERO ground contact the whole time, before the policy had any physical grounding to act from
+                # 'home': without this, the first ~16 ticks were pure free-fall (all 4 feet airborne, no ground contact) before the policy had any physical grounding to act from.
                 self.data.qpos[2] = SIT_HEIGHT_M
-                # HOME_START_FORWARD_LEAN_RAD : bias the free joint's own orientation, not just height
+                # HOME_START_FORWARD_LEAN_RAD: bias the free joint's own orientation, not just height.
                 half = HOME_START_FORWARD_LEAN_RAD / 2.0
                 self.data.qpos[3:7] = [np.cos(-half), np.sin(-half), 0.0, 0.0]
         elif self.task == 'stand':
-            # FIXED up from a sitting position ON THE GROUND, will this still work?"): motor qpos is already 0 (mj_resetData's default), but the free joint's z (qpos[2]) was previously left at the model's raw qpos=0 spawn height (0.287m, chosen only to clear the floor at the CAD pose, not the real settled height)
+            # STAND starts from a sitting position on the ground: motor qpos is already 0 (mj_resetData's default), but the free joint's z (qpos[2]) was previously left at the model's raw qpos=0 spawn height (0.287m, chosen only to clear the floor at the CAD pose, not the real settled height).
             self.data.qpos[2] = SIT_HEIGHT_M
 
         if self.domain_randomization:
@@ -730,7 +730,7 @@ class DogEnv(gym.Env):
         self.model.actuator_biasprm[:, 2] = -kd
 
     def _apply_joint_stiffness(self, value):
-        """Writes a passive restoring-spring stiffness directly into the loaded model's per-THIGH-joint jnt_stiffness (MuJoCo's ..."""
+        """Writes a passive restoring-spring stiffness directly into the loaded model's per-thigh-joint jnt_stiffness."""
 
         self.model.jnt_stiffness[self._thigh_joint_ids] = value
 
@@ -746,7 +746,7 @@ class DogEnv(gym.Env):
         self._home_start_prob = prob
 
     def set_max_slew_deg_per_s(self, value):
-        """Updates the per-step slew clamp step() applies to position-mode actions, effective IMMEDIATELY on the very next step(..."""
+        """Updates the per-step slew clamp step() applies to position-mode actions, effective immediately on the very next step()."""
 
         self._max_slew_deg_per_s = value
 
@@ -758,19 +758,19 @@ class DogEnv(gym.Env):
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)
         if self.control_mode == 'torque':
-            # Direct torque control see control_mode's comment in __init__): action IS the <motor> actuator's ctrl value, already clipped to ctrlrange above.
+            # Direct torque control (see control_mode's comment in __init__): action is the <motor> actuator's ctrl value, already clipped to ctrlrange above.
             self.data.ctrl[:] = action - TORQUE_KD_GAIN * self.data.qvel[self.motor_dof_adr]
         elif self.control_mode == 'torque_belt':
             # Same base torque + damping as 'torque' above (thighs completely untouched), PLUS an automatic, NON-learned belt-compensation PD servo added to the calf motors only
             ctrl = action - TORQUE_KD_GAIN * self.data.qvel[self.motor_dof_adr]
             abs_calf = self.data.ten_length[self.calf_tendon_ids]
             abs_calf_vel = self.data.ten_velocity[self.calf_tendon_ids]
-            # ADAPTIVE target _WALK's comment)
+            # Adaptive target (see BELT_TARGET_ADAPT_RATE_STAND/_WALK's comment).
             self._belt_target_abs_calf += self._belt_target_adapt_rate * (abs_calf - self._belt_target_abs_calf)
             belt_pd = (BELT_SERVO_KP * (self._belt_target_abs_calf - abs_calf)
                        + BELT_SERVO_KD * (0.0 - abs_calf_vel))
             ctrl[self.calf_idx] += belt_pd
-            # REACTION CANCELLATION @16M): the <fixed> tendon combines BOTH the calf and thigh joints (coef=[1, -calf_belt_sign], see generate_dog_mjcf.py), so MuJoCo distributes belt_pd back to the THIGH too, not just the calf
+            # Reaction cancellation: the <fixed> tendon combines both the calf and thigh joints (coef=[1, -calf_belt_sign], see generate_dog_mjcf.py), so MuJoCo distributes belt_pd back to the thigh too, not just the calf.
             ctrl[self.calf_thigh_idx] += self.calf_belt_sign * belt_pd
             self.data.ctrl[:] = ctrl
         else:
@@ -801,7 +801,7 @@ class DogEnv(gym.Env):
                 magnitude = self.np_random.uniform(*PUSH_FORCE_RANGE_N)
                 self._push_force = np.array(
                     [magnitude * np.cos(angle), magnitude * np.sin(angle), 0.0])
-                # Direct roll/pitch torque RANGE_NM's comment)
+                # Direct roll/pitch torque (see PUSH_TORQUE_RANGE_NM's comment).
                 torque_angle = self.np_random.uniform(0.0, 2 * np.pi)
                 torque_magnitude = self.np_random.uniform(*PUSH_TORQUE_RANGE_NM)
                 self._push_torque = np.array(
@@ -830,7 +830,7 @@ class DogEnv(gym.Env):
         # MUST update before _compute_reward()
         self._update_leg_phase_time()
         self._update_high_pitch_time()
-        # MUST also update before _compute_reward() during implementation
+        # MUST also update before _compute_reward()
         self._update_standing_hold_time()
         # MUST also update before _compute_reward()
         self._update_swing_duty_cycle()
@@ -889,7 +889,7 @@ class DogEnv(gym.Env):
         motor_qvel[self.calf_idx] -= self.calf_belt_sign * self.data.qvel[self.calf_thigh_dof_adr]
         sensordata = self.data.sensordata
 
-        # SENSOR NOISE : real-hardware deployment of a "converged"-looking stand policy showed persistent chatter at a settled stand pose, traced directly to the raw policy action itself being unstable at steady state (see action_rate_penalty's comment in _common_penalties())
+        # Sensor noise, opt-in via domain_randomization: real-hardware deployment of a policy trained without this showed persistent chatter at a settled stand pose, caused by the policy being oversensitive to small observation changes.
         if self.domain_randomization:
             motor_qpos = motor_qpos + self.np_random.normal(
                 0.0, MOTOR_POS_NOISE_STD_RAD, size=NUM_MOTORS)
@@ -940,7 +940,7 @@ class DogEnv(gym.Env):
         return xmat[2, 2]
 
     def _torso_pitch_rad(self):
-        """Forward/backward tilt (radians): 0 = level, positive = nose- down (pitching forward)."""
+        """Forward/backward tilt (radians): 0 = level, positive = nose-down (pitching forward)."""
 
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         return np.arcsin(np.clip(-xmat[2, 1], -1.0, 1.0))
@@ -952,13 +952,13 @@ class DogEnv(gym.Env):
         return np.arcsin(np.clip(xmat[2, 0], -1.0, 1.0))
 
     def _torso_yaw_rad(self):
-        """Heading angle (radians) about the world z-axis: 0 = facing the model's native forward (+y) direction, matching atan2'..."""
+        """Heading angle (radians) about the world z-axis: 0 = facing the model's native forward (+y) direction."""
 
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         return np.arctan2(xmat[0, 1], xmat[1, 1])
 
     def _body_frame_xy_velocity(self):
-        """(forward, lateral) components of the free joint's world-frame xy velocity (qvel[0:2]), projected onto the torso's OWN..."""
+        """(forward, lateral) components of the free joint's world-frame xy velocity (qvel[0:2]), projected onto the torso's own forward/right axes."""
 
         xmat = self.data.xmat[self.torso_body_id].reshape(3, 3)
         forward_axis_xy = xmat[0:2, 1]
@@ -981,7 +981,7 @@ class DogEnv(gym.Env):
         return len(grounded)
 
     def _foot_contact_per_leg(self):
-        """[bool x4] (leg_a, leg_b, leg_c, leg_d order, matching calf_geom_ids/foot_site_ids): True if that leg has ANY floor co..."""
+        """[bool x4] (leg_a, leg_b, leg_c, leg_d order, matching calf_geom_ids/foot_site_ids): True if that leg has any floor contact at all."""
 
         return [state != 'air' for state in self._foot_contact_state_per_leg()]
 
@@ -1019,9 +1019,9 @@ class DogEnv(gym.Env):
         indices = leg_indices if leg_indices is not None else range(len(self.foot_site_ids))
         swinging_indices = [i for i in indices if swinging[i]]
         if not swinging_indices:
-            return 0.0  # no (selected) leg is swinging right now -- neutral, NOT rewarded (see bug note above)
+            return 0.0  # no (selected) leg is swinging right now -- neutral, not rewarded.
         total = 0.0
-        # target_m MORE than the current split fix gives" investigation): optional override of FOOT_CLEARANCE_TARGET_M, for back_clearance_reward's own higher BACK_FOOT_CLEARANCE_TARGET_M (real-hardware back legs still drag somewhat even with the front/back split's equal-weight fix
+        # target_m: optional override of FOOT_CLEARANCE_TARGET_M, used by back_clearance_reward's own higher BACK_FOOT_CLEARANCE_TARGET_M since the back legs tend to drag more.
         target = target_m if target_m is not None else FOOT_CLEARANCE_TARGET_M
         sigma = target / 2
         for i in swinging_indices:
@@ -1031,7 +1031,7 @@ class DogEnv(gym.Env):
         return total / len(swinging_indices)
 
     def _calf_swing_motion_reward(self):
-        """Rewards a SWINGING leg's calf (knee) for actively moving, not staying near-fixed while the thigh does all the work of..."""
+        """Rewards a swinging leg's calf (knee) for actively moving, instead of staying near-fixed while the thigh does all the work."""
 
         contacted = self._foot_contact_per_leg()
         swinging = [not c for c in contacted]
@@ -1042,7 +1042,7 @@ class DogEnv(gym.Env):
         return min(total / sum(swinging), CALF_SWING_REWARD_CAP)
 
     def _foot_horizontal_speed_sq(self, leg_idx):
-        """Squared horizontal (world x/y) speed of a leg's foot site right now, via MuJoCo's site-Jacobian velocity (mj_objectVe..."""
+        """Squared horizontal (world x/y) speed of a leg's foot site right now, via MuJoCo's site-Jacobian velocity (mj_objectVelocity)."""
 
         site_id = self.foot_site_ids[leg_idx]
         vel = np.zeros(6)  # [angular(3), linear(3)]
@@ -1115,13 +1115,13 @@ class DogEnv(gym.Env):
         return state
 
     def _foot_tip_contact_count(self):
-        """(num_tip, num_non_tip): aggregate counts derived from _foot_contact_state_per_leg() (the single source of truth for p..."""
+        """(num_tip, num_non_tip): aggregate counts derived from _foot_contact_state_per_leg(), the single source of truth for per-leg contact state."""
 
         state = self._foot_contact_state_per_leg()
         return state.count('tip'), state.count('nontip')
 
     def _foot_placement_terms(self):
-        """(tip_reward, non_tip_penalty) shared by both tasks: tip_reward in [0, 1] is the fraction of the 4 feet grounded at th..."""
+        """(tip_reward, non_tip_penalty) shared by both tasks: tip_reward in [0, 1] is the fraction of the 4 feet grounded at the foot tip; non_tip_penalty is -1 per leg grounded on its knee/shin instead."""
 
         num_tip, num_non_tip = self._foot_tip_contact_count()
         return num_tip / 4.0, -1.0 * num_non_tip
@@ -1205,7 +1205,7 @@ class DogEnv(gym.Env):
             + (1.0 - SWING_FAIRNESS_EMA_ALPHA) * self._contact_duty_cycle)
 
     def _update_calf_hinge_activity(self):
-        """Writes this tick's RAW calf hinge angle (rad, the actual physical knee joint."""
+        """Writes this tick's raw calf hinge angle (rad, the actual physical knee joint angle) into the sliding window."""
 
         self._calf_hinge_window[self._calf_hinge_window_idx] = (
             self.data.qpos[self.motor_qpos_adr[self.calf_idx]])
@@ -1284,7 +1284,7 @@ class DogEnv(gym.Env):
             poor_tracking, self._calf_poor_tracking_time + dt, 0.0)
 
     def _update_high_pitch_time(self):
-        """Advances self._high_pitch_time"""
+        """Advances self._high_pitch_time while pitch is past the termination thresholds, resets to 0 otherwise."""
 
         dt = self.model.opt.timestep
         pitch_rad = self._torso_pitch_rad()
@@ -1294,21 +1294,21 @@ class DogEnv(gym.Env):
             self._high_pitch_time = 0.0
 
     def _leg_stuck_too_long(self):
-        """WALK only: True if any leg has held the SAME contact phase (grounded or swinging, self._leg_phase_time) for longer th..."""
+        """WALK only: True if any leg has held the same contact phase (grounded or swinging, via self._leg_phase_time) for longer than LEG_PHASE_TERMINATION_S."""
 
         if self.task != 'walk':
             return False
         return bool(np.any(self._leg_phase_time > LEG_PHASE_TERMINATION_S))
 
     def _pitch_diverging_too_long(self):
-        """WALK only: True if torso pitch has stayed outside [PITCH_TERMINATION_BACKWARD_RAD, PITCH_TERMINATION_FORWARD_RAD] con..."""
+        """WALK only: True if torso pitch has stayed outside [PITCH_TERMINATION_BACKWARD_RAD, PITCH_TERMINATION_FORWARD_RAD] continuously for longer than PITCH_TERMINATION_DURATION_S."""
 
         if self.task != 'walk':
             return False
         return self._high_pitch_time > PITCH_TERMINATION_DURATION_S
 
     def _no_forward_progress(self):
-        """WALK only: True if, past an initial NO_PROGRESS_GRACE_S grace period, this episode still hasn't moved NO_PROGRESS_MIN..."""
+        """WALK only: True if, past an initial NO_PROGRESS_GRACE_S grace period, this episode still hasn't moved NO_PROGRESS_MIN_DISTANCE_M forward from its start."""
 
         if self.task != 'walk':
             return False
@@ -1337,7 +1337,7 @@ class DogEnv(gym.Env):
         return False
 
     def _not_all_feet_grounded(self):
-        """STAND only: True if any leg has been fully airborne (no floor contact at all."""
+        """STAND only: True if any leg has been fully airborne (no floor contact at all) for longer than STAND_AIRBORNE_TERMINATION_S."""
 
         if self.task != 'stand':
             return False
@@ -1352,7 +1352,7 @@ class DogEnv(gym.Env):
         gravity_m_s2 = 9.81
         accel_shock_penalty = -0.01 * (np.linalg.norm(linear_accel) - gravity_m_s2) ** 2
 
-        # SCALE BUG FIXED against position mode's action (radians, ~4-8 rad span per motor).
+        # Normalized by ctrlrange for torque modes, so the effort penalty is comparable in scale to position mode's action (radians, ~4-8 rad span per motor).
         if self.control_mode in ('torque', 'torque_belt'):
             normalized_action = action / self.action_space.high
             effort_penalty = -0.001 * float(np.dot(normalized_action, normalized_action))
@@ -1383,7 +1383,7 @@ class DogEnv(gym.Env):
         return self._compute_reward_walk(action)
 
     def _compute_reward_stand(self, action):
-        # UNCAPPED height reward robot stand to its maximum height")
+        # Uncapped height reward, so there's no ceiling discouraging the robot from standing to its maximum height.
         height_reward = self._torso_height() - SIT_HEIGHT_M
         height_error = abs(self._torso_height() - STAND_HEIGHT_M)
         # Bonus on top of the continuous shaping term once within tolerance
@@ -1403,13 +1403,13 @@ class DogEnv(gym.Env):
         # qvel[0:2] is the free joint's world-frame x/y linear velocity.
         drift_penalty = -0.1 * float(np.dot(self.data.qvel[0:2], self.data.qvel[0:2]))
 
-        # All 4 feet should be on the ground AT THE FOOT TIP once actually standing (user observed a trained policy reaching the target height on only 3 legs, and separately a walk policy standing on its knees instead of its feet
+        # All 4 feet should be on the ground at the foot tip once actually standing, not on 3 legs or on the knees/shins.
         tip_reward, non_tip_penalty = self._foot_placement_terms()
-        # AIRBORNE PENALTY ADDED came back" investigation
+        # Additional penalty for any fully airborne leg.
         num_airborne_legs = 4 - sum(self._foot_contact_per_leg())
         grounded_reward = (tip_reward + non_tip_penalty - num_airborne_legs) * height_progress
 
-        # Gated by height_progress, same pattern as upright_reward/ grounded_reward above
+        # Gated by height_progress, same pattern as upright_reward/grounded_reward above.
         action_rate_weight = (
             ACTION_RATE_PENALTY_WEIGHT_RISING
             + (ACTION_RATE_PENALTY_WEIGHT_STANDING - ACTION_RATE_PENALTY_WEIGHT_RISING) * height_progress
@@ -1417,11 +1417,11 @@ class DogEnv(gym.Env):
         action_rate_penalty = self._action_rate_penalty(action, action_rate_weight)
         angular_vel_penalty = self._angular_vel_penalty(STAND_ANGULAR_VEL_PENALTY_WEIGHT)
 
-        # NEW : direct penalty on JOINT velocity (qvel), distinct from angular_vel_ penalty above (that's the TORSO's angular velocity from the IMU/gyro, torso wobble
+        # Direct penalty on joint velocity (qvel), distinct from angular_vel_penalty above (that penalizes the torso's angular velocity from the IMU/gyro, i.e. torso wobble).
         motor_qvel = self.data.qvel[self.motor_dof_adr]
         joint_velocity_penalty = -float(np.dot(motor_qvel, motor_qvel))
 
-        # action_rate_penalty/common_penalties ZEROED request, matching _compute_reward_walk()'s simple_rewards treatment)
+        # action_rate_penalty and common_penalties are zeroed out below, matching _compute_reward_walk()'s simplified-reward treatment.
         return (
             3.0 * height_reward
             + height_bonus
@@ -1436,25 +1436,25 @@ class DogEnv(gym.Env):
         )
 
     def _compute_reward_walk(self, action):
-        # dog.mjcf.xml is still in the CAD's own native frame (+y=front, +x=right
+        # dog.mjcf.xml is still in the CAD's own native frame (+y=front, +x=right).
         forward_velocity_reward, lateral_velocity = self._body_frame_xy_velocity()
         # Gated by forward progress (0 at zero/negative velocity, 1 at WALK_FORWARD_PROGRESS_TARGET_M_S+)
         forward_progress = np.clip(forward_velocity_reward / self._walk_forward_progress_target_m_s, 0.0, 1.0)
-        # CAPPED the robot is not moving smoothly")
+        # Capped with a Gaussian falloff past the target speed, so overshooting doesn't reward the robot for moving unsustainably fast.
         if forward_velocity_reward > self._walk_forward_progress_target_m_s:
             overshoot = forward_velocity_reward - self._walk_forward_progress_target_m_s
             sigma = self._walk_forward_progress_target_m_s
             forward_velocity_reward = self._walk_forward_progress_target_m_s * np.exp(
                 -(overshoot ** 2) / (2 * sigma ** 2))
 
-        # PITCH-GATED : the additive pitch_penalty further below was measured too weak to counteract this term during an actual forward dive (only -0.164 weighted at 13.4deg pitch vs +0.750 here, on the same v10 checkpoint).
+        # Pitch-gated: the additive pitch_penalty further below was found too weak on its own to counteract this reward term during a forward dive, so this term is also directly scaled down as pitch deviates from the target.
         if forward_velocity_reward > 0:
             pitch_gate = np.exp(
                 -((self._torso_pitch_rad() - WALK_TARGET_PITCH_RAD) ** 2)
                 / (2 * WALK_PITCH_GATE_SIGMA_RAD ** 2))
             forward_velocity_reward = forward_velocity_reward * pitch_gate
 
-        # ROLL-GATED investigation
+        # Roll-gated, following the same reasoning as the pitch gate above.
         if forward_velocity_reward > 0:
             roll_gate = np.exp(
                 -(self._torso_roll_rad() ** 2) / (2 * WALK_ROLL_GATE_SIGMA_RAD ** 2))
@@ -1464,7 +1464,7 @@ class DogEnv(gym.Env):
         is_stand_and_walk = (self.walk_start_pose == 'random')
         climb_progress = self._climb_progress()
 
-        # forward_velocity_reward CLIMB-GATED watched PPO_77000000_walk_position_obshistory_home_and_stand_v1 and found it "did not even finish standing up before moving forward"
+        # forward_velocity_reward is climb-gated: without this, policies were observed moving forward before they'd even finished standing up.
         if is_stand_and_walk:
             climb_gate = np.clip(
                 (climb_progress - WALK_CLIMB_GATE_THRESHOLD) / (1.0 - WALK_CLIMB_GATE_THRESHOLD),
@@ -1472,10 +1472,10 @@ class DogEnv(gym.Env):
             hold_gate = 1.0 if self._standing_hold_time >= WALK_STAND_HOLD_S else 0.0
             forward_velocity_reward = forward_velocity_reward * climb_gate * hold_gate
 
-        # NOT re-centered on WALK_TARGET_PITCH_RAD deferral
+        # Not re-centered on WALK_TARGET_PITCH_RAD; upright_reward simply rewards being level and moving forward.
         upright_reward = self._torso_up_z() * forward_progress
 
-        # climb_posture_reward that stands up from home AND walks" investigation, RE-SCOPED header comment): height_reward below is an ungated, dense pull toward standing height, but NOTHING rewards good POSTURE (upright, level) while still below that height, since upright_reward above is gated by forward_progress (~0 during the climb, no forward velocity yet
+        # climb_posture_reward: height_reward below is an ungated, dense pull toward standing height, but nothing rewards good posture (upright, level) while still below that height, since upright_reward above is gated by forward_progress (~0 during the climb, before there's any forward velocity).
         climb_posture_reward = (
             self._torso_up_z() * (1.0 - climb_progress) if is_stand_and_walk else 0.0)
         # ===== END STAND+WALK ONLY SECTION ===== See _trot_symmetry_reward()'s docstring
@@ -1483,7 +1483,7 @@ class DogEnv(gym.Env):
         trot_symmetry_reward = (
             self._trot_symmetry_reward() if leg_stuck
             else self._trot_symmetry_reward() * forward_progress)
-        # gait_symmetry_reward/gait_symmetry_weight gait_style/WALK_BOUND_SYMMETRY_WEIGHT's own comments)
+        # gait_symmetry_reward/gait_symmetry_weight (see gait_style/WALK_BOUND_SYMMETRY_WEIGHT's own comments).
         if self.gait_style == 'bound':
             bound_symmetry_reward = (
                 self._bound_symmetry_reward() if leg_stuck
@@ -1504,12 +1504,12 @@ class DogEnv(gym.Env):
             0.0, 1.0)
         swing_fairness_penalty = -float(np.sum(
             (self._contact_duty_cycle - SWING_FAIRNESS_TARGET_DUTY_CYCLE) ** 2)) * swing_fairness_gate
-        # swing_amplitude_penalty
+        # Penalizes a thigh swinging farther than SWING_AMPLITUDE_MAX_DEVIATION_RAD from center.
         thigh_deviation = np.abs(self.data.qpos[self.calf_thigh_qpos_adr])
         swing_amplitude_excess = np.clip(
             thigh_deviation - SWING_AMPLITUDE_MAX_DEVIATION_RAD, 0.0, None)
         swing_amplitude_penalty = -float(np.sum(swing_amplitude_excess ** 2))
-        # calf_activity_penalty
+        # Penalizes a calf with too little range of motion within the CALF_ACTIVITY_WINDOW_TICKS window.
         calf_hinge_range = (
             self._calf_hinge_window.max(axis=0) - self._calf_hinge_window.min(axis=0))
         calf_activity_deficit = np.clip(
@@ -1522,22 +1522,22 @@ class DogEnv(gym.Env):
             height_target = self._walk_target_height_m
         height_reward = -abs(self._torso_height() - height_target)
 
-        # height_sag_penalty "revert EMA and implement the two reward-based fixes")
+        # height_sag_penalty: extra penalty for sagging below the target height, on top of height_reward's linear term.
         height_deficit = max(0.0, height_target - self._torso_height())
         height_sag_penalty = -(height_deficit ** 2)
 
-        # height_overshoot_penalty fraction 0.7 crouch experiment, same date)
+        # height_overshoot_penalty: extra penalty for rising above the target height, mirroring height_sag_penalty.
         height_overshoot_penalty = -(
             max(0.0, self._torso_height() - height_target) ** 2)
 
         # Walk on the feet, not the knees/shins
         tip_reward, non_tip_penalty = self._foot_placement_terms()
-        # GATED by forward_progress upright_reward and trot_symmetry_reward: measured directly on walk_policy_home_v2 (1M steps, --walk-start-pose home) at 1.10/step weighted (73% of its 1.5 ceiling) while forward_velocity_reward was only 0.066/step
+        # Gated by forward_progress, same pattern as upright_reward and trot_symmetry_reward, so tip_reward can't be collected just by standing still on all 4 feet.
         tip_reward = tip_reward * forward_progress
 
-        # This alone wasn't enough
+        # Front-leg foot-clearance reward.
         front_clearance_reward = self._foot_clearance_reward(leg_indices=[0, 1]) * (0.5 + 0.5 * forward_progress)
-        # back_clearance_reward is NEW
+        # Back-leg foot-clearance reward, with its own gate and higher target height (back feet tend to drag more).
         back_clearance_gate = np.clip(
             (forward_progress - WALK_BACK_CLEARANCE_GATE_START)
             / (WALK_BACK_CLEARANCE_GATE_FULL - WALK_BACK_CLEARANCE_GATE_START),
@@ -1545,29 +1545,29 @@ class DogEnv(gym.Env):
         back_clearance_reward = (self._foot_clearance_reward(leg_indices=[2, 3], target_m=BACK_FOOT_CLEARANCE_TARGET_M)
                                   * (0.5 + 0.5 * forward_progress) * back_clearance_gate)
 
-        # NEW 's own docstring for the full "stiff-legged gait" diagnosis this is meant to fix).
+        # Rewards active calf motion during swing (see _calf_swing_motion_reward()'s own docstring); added to fix a "stiff-legged gait" where the thigh did all the work.
         calf_swing_motion_reward = self._calf_swing_motion_reward() * forward_progress
 
         # foot_clearance_reward only judges SWING legs (rewards them for being elevated); nothing above judges STANCE legs, so a policy could still satisfy every term while sliding a planted foot along the ground the whole stance phase
         foot_slip_penalty = self._foot_slip_penalty()
         # touchdown_velocity_penalty MUST be computed before _feet_air_time_reward()
         touchdown_velocity_penalty = self._touchdown_velocity_penalty()
-        # GATED by forward_progress pattern/reason as upright_reward/trot_symmetry_reward/tip_reward: ungated, correct swing-duration cadence is fully collectible (including the per-tick stance-cap penalty component
+        # Gated by forward_progress, same pattern/reason as upright_reward/trot_symmetry_reward/tip_reward, so correct swing-duration cadence (including the per-tick stance-cap penalty component) isn't fully collectible while standing still.
         feet_air_time_reward = self._feet_air_time_reward() * forward_progress
 
-        # Flat, NOT gated by height_progress (unlike the stand task's, see ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING's comment)
+        # Flat, not gated by height_progress (unlike the stand task's, see ACTION_RATE_PENALTY_WEIGHT_RISING/STANDING's comment).
         action_rate_penalty = self._action_rate_penalty(action, WALK_ACTION_RATE_PENALTY_WEIGHT)
 
-        # forward_velocity_reward weight raised 2.0 -> 5.0 : PPO_13000000_walk_policy_v3 measured foot_clearance_reward's weighted contribution at +0.99/step (near its 1.0 ceiling, trivially reached by permanently holding one leg up) against forward_velocity_reward's actual +0.0067/step (the robot wasn't moving, 0.000m traveled over 10s)
+        # Penalizes torso angular velocity (see WALK_ANGULAR_VEL_PENALTY_WEIGHT's own comment).
         angular_vel_penalty = self._angular_vel_penalty(WALK_ANGULAR_VEL_PENALTY_WEIGHT)
 
         # -(pitch - target)^2, already negative
         pitch_penalty = -((self._torso_pitch_rad() - WALK_TARGET_PITCH_RAD) ** 2)
 
-        # roll_penalty WALK_ROLL_PENALTY_WEIGHT/_torso_roll_rad()'s own comments)
+        # roll_penalty (see WALK_ROLL_PENALTY_WEIGHT/_torso_roll_rad()'s own comments).
         roll_penalty = -(self._torso_roll_rad() ** 2)
 
-        # Phase-gated EXTRA penalty for backward pitch specifically DURING the 'home'->standing rise  from the same investigation as HOME_START_FORWARD_LEAN_RAD above
+        # Phase-gated extra penalty for backward pitch specifically during the 'home'->standing rise, addressing the same failure mode as HOME_START_FORWARD_LEAN_RAD above.
         rise_backward_pitch_penalty = -(1.0 - climb_progress) * (min(0.0, self._torso_pitch_rad()) ** 2)
 
         # -(lateral_velocity)^2, -(yaw_rate)^2
@@ -1579,26 +1579,26 @@ class DogEnv(gym.Env):
         yaw_diff = (yaw_diff + np.pi) % (2 * np.pi) - np.pi
         heading_deviation_penalty = -(yaw_diff ** 2)
 
-        # SIMPLIFIED-REWARD EXPERIMENT user request: "only include forward movement, base height").
+        # Total WALK reward, combining all terms above with their weights.
         walk_reward_total = (
-            # RAISED 5.0 -> 25.0 testing purposes"
+            # Dominant weight, so forward velocity is the primary driver of the reward.
             25.0 * forward_velocity_reward
             + 0.5 * upright_reward
             + 1.0 * climb_posture_reward
             + 2.5 * height_reward
-            # UNSTASHED unstash all the things we deleted"
+            # Height sag/overshoot penalties (quadratic, see their own comments above).
             + WALK_HEIGHT_SAG_PENALTY_WEIGHT * height_sag_penalty
             + WALK_HEIGHT_OVERSHOOT_PENALTY_WEIGHT * height_overshoot_penalty
             + 0.0 * tip_reward
             + 1.0 * non_tip_penalty
-            # RAISED 1.0 -> 2.0 FOOT_CLEARANCE_SIGMA_M
+            # Front/back foot-clearance rewards (see WALK_FRONT_CLEARANCE_WEIGHT/WALK_BACK_CLEARANCE_WEIGHT's own comments).
             + WALK_FRONT_CLEARANCE_WEIGHT * front_clearance_reward
             + WALK_BACK_CLEARANCE_WEIGHT * back_clearance_reward
             + 1.0 * foot_slip_penalty
             + 1.0 * touchdown_velocity_penalty
             + 0.5 * feet_air_time_reward
             + 1.0 * action_rate_penalty
-            # angular_vel_penalty RESTORED 0.0 -> 1.0 code review): found zeroed here with no dated justification anywhere nearby, unlike every other weight in this return statement
+            # angular_vel_penalty: full weight, penalizing torso angular velocity.
             + 1.0 * angular_vel_penalty
             + 1.0 * WALK_PITCH_PENALTY_WEIGHT * pitch_penalty
             + 1.0 * WALK_ROLL_PENALTY_WEIGHT * roll_penalty
@@ -1606,9 +1606,9 @@ class DogEnv(gym.Env):
             + 1.0 * WALK_LATERAL_VEL_PENALTY_WEIGHT * lateral_velocity_penalty
             + 1.0 * WALK_YAW_RATE_PENALTY_WEIGHT * yaw_rate_penalty
             + 1.0 * WALK_HEADING_DEVIATION_PENALTY_WEIGHT * heading_deviation_penalty
-            # DROPPED investigation
+            # gait_symmetry_reward: weighted only for bound gait; trot's cross-leg symmetry term was dropped (weight zeroed above) in favor of swing_fairness_penalty below.
             + gait_symmetry_weight * gait_symmetry_reward
-            # ADDED investigation
+            # swing_fairness_penalty and swing/calf-amplitude penalties (see their own weight comments above).
             + WALK_SWING_FAIRNESS_WEIGHT * swing_fairness_penalty
             + WALK_SWING_AMPLITUDE_PENALTY_WEIGHT * swing_amplitude_penalty
             + WALK_CALF_ACTIVITY_PENALTY_WEIGHT * calf_activity_penalty
@@ -1616,9 +1616,9 @@ class DogEnv(gym.Env):
             + 1.0 * 0.1 # SURVIVAL BONUS: +0.1 per tick just for staying alive
             + 0.0 * self._common_penalties(action)
         )
-        # SIMPLIFIED bound-only reward "reshape and simplify running (bound)...
+        # Bound gait uses a completely different, simplified reward below: forward velocity multiplied by a set of gate terms, instead of the weighted sum above.
         if self.gait_style == 'bound':
-            # foot_usage_gate/thigh_rom_gate report on running_home/stand_s0_ms250_simple_alr_v3 and running_home/stand_s5_ms1000_simple_alr_v1
+            # foot_usage_gate/thigh_rom_gate: multiplicative gates that suppress the reward when a leg is barely used or barely swings.
             min_foot_duty_cycle = float(np.min(self._contact_duty_cycle))
             foot_duty_deficit = max(0.0, WALK_BOUND_MIN_FOOT_DUTY_CYCLE - min_foot_duty_cycle)
             foot_usage_gate = np.exp(
@@ -1651,7 +1651,7 @@ class DogEnv(gym.Env):
                 np.clip(self._calf_stance_straight_time - STANCE_STRAIGHT_GRACE_S, 0.0, None)))
             stance_straight_gate = max(STANCE_STRAIGHT_GATE_FLOOR, np.exp(
                 -(stance_straight_deficit_s ** 2) / (2 * STANCE_STRAIGHT_GATE_SIGMA_S ** 2)))
-            # calf_stance_side_gate / calf_thigh_tracking_gate direct user report + data investigation
+            # calf_stance_side_gate / calf_thigh_tracking_gate: additional multiplicative gates for the calf failure modes described in their own constants' comments above.
             calf_side_deficit_s = float(np.max(
                 np.clip(self._calf_wrong_side_time - CALF_STANCE_SIDE_GRACE_S, 0.0, None)))
             calf_stance_side_gate = max(CALF_STANCE_SIDE_GATE_FLOOR, np.exp(
@@ -1664,7 +1664,7 @@ class DogEnv(gym.Env):
                 1.0 * forward_velocity_reward * foot_usage_gate * thigh_rom_gate
                 * calf_rom_gate * calf_joint_margin_gate * bound_symmetry_gate
                 * stance_straight_gate * calf_stance_side_gate * calf_thigh_tracking_gate)
-        # Floor per-tick reward at 0 "fall early to minimize penalty" exploit, confirmed happening in the running_home_s5_ms1000_* bound-gait trainings: ep_rew_mean improved -3480 -> -63 over training while ep_len_mean COLLAPSED 800 -> 40 steps
+        # Floor the per-tick reward at 0, to prevent a "fall early to minimize penalty" exploit where a negative reward would otherwise make ending the episode quickly more attractive than surviving.
         return max(0.0, walk_reward_total)
 
     def _ensure_viewer(self):
