@@ -13,35 +13,24 @@ simulation and real hardware until it performs well in both.
 |---|---|
 | [`actuator`](actuator/README.md) | ROS 2 node driving the 8 real motors over RS485 (services: velocity/position control, homing, batch position targets). |
 | [`dog_imu`](dog_imu/README.md) | Driver node for the LSM6DSO32 IMU on the Jetson; publishes `sensor_msgs/Imu`. |
-| [`dog_description`](dog_description/README.md) | The MuJoCo model (placeholder geometry — see its README) and the canonical motor-to-joint/sign mapping shared by sim and real code. |
-| [`dog_gym`](dog_gym/README.md) | Gymnasium sim environment + PPO training/export pipeline (dev machine only — heavy deps). |
+| [`dog_description`](dog_description/README.md) | The MuJoCo model and the canonical motor-to-joint/sign mapping shared by sim and real code. |
+| [`dog_gym`](dog_gym/README.md) | Gymnasium sim environment + PPO training/export pipeline. |
 | [`dog_deploy`](dog_deploy/README.md) | Sim-to-real bridge: runs a trained, exported policy against the real robot on the Jetson. |
 
 ## Data flow
 
+```mermaid
+flowchart TD
+    IMU["dog_imu<br/>(real IMU)"] -->|sensor_msgs/Imu| DEPLOY["dog_deploy<br/>(policy_node)"]
+    
+    ACT["actuator<br/>(real motors)"] -->|"read_motor_positions<br/>(position+velocity)"| DEPLOY
+    DEPLOY -->|"set_motor_targets<br/>(8 target angles)"| ACT
+    
+    GYM["dog_gym<br/>(DogEnv, sim)"] -.->|"policy trained in<br/>(same observation/action<br/>shape as the real loop)"| DEPLOY
+    
+    DESC["dog_description<br/>(shared)"] -.->|"MJCF model +<br/>motor_mapping.yaml"| GYM
 ```
-                    ┌─────────────┐
-                    │  dog_imu    │  sensor_msgs/Imu
-                    │ (real IMU)  │───────────┐
-                    └─────────────┘           │
-                                               ▼
-┌──────────────┐  read_motor_positions  ┌─────────────┐  set_motor_targets  ┌──────────────┐
-│  actuator    │◄───────────────────────│ dog_deploy  │────────────────────►│  actuator    │
-│ (real motors)│    (position+velocity) │(policy_node)│   (8 target angles) │ (real motors)│
-└──────────────┘                        └─────────────┘                    └──────────────┘
-                                               ▲
-                                     policy trained in
-                                               │
-                                        ┌─────────────┐
-                                        │  dog_gym     │  same observation/action
-                                        │ (DogEnv, sim)│  shape as the real loop
-                                        └─────────────┘
-                                               ▲
-                                        ┌─────────────┐
-                                        │dog_description│  MJCF model +
-                                        │ (shared)      │  motor_mapping.yaml
-                                        └─────────────┘
-```
+
 
 `dog_description/config/motor_mapping.yaml` is the single source of truth
 for motor-id-to-joint ordering and sign, loaded by both `dog_gym` and
