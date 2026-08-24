@@ -26,16 +26,10 @@ poses:
     6: 4.68
     7: -1.14
     8: -107.25
-  # Derived 2026-07-24 from a real bench range-of-motion sweep: for each
-  # motor, moved to its "toward face" hard-stop max and "away from face"
-  # hard-stop max (relative to home), then took the midpoint of those two
-  # real extremes. Thighs (1,4,5,8) came out almost identical to the
-  # `standing` preset above, confirming that one was already tuned
-  # correctly. Calves (2,3,6,7) came out much larger (~+-97-99deg) than
-  # `standing`'s (~+-0.5-6deg) -- `standing`'s calf values only barely
-  # nudge off home, not a real standing extension. Untested on the robot
-  # yet -- keeping `standing` unchanged alongside this so both can be
-  # compared directly.
+  # Midpoint of each motor's real bench hard-stop range of motion (toward-
+  # face max and away-from-face max, relative to home). Untested on the
+  # robot yet -- keeping `standing` unchanged alongside this so both can
+  # be compared directly.
   standing_max:
     1: 109.16
     2: 96.22
@@ -46,17 +40,12 @@ poses:
     7: -97.55
     8: -113.70
   # Single-leg-lift variants of `standing`, for dog_deploy's
-  # leg_isolation_test.py (2026-08-09) -- each is IDENTICAL to `standing`
-  # except ONE thigh motor's target, shifted by PLACEHOLDER +-60deg (was
-  # +-20deg, user observed that didn't clear the foot off the ground and
-  # asked for 40 more) -- still not independently verified past the
-  # user's own observation, test manually on one leg before trusting the
-  # automated sequence if re-checking. Using go_to_pose for this (proven
-  # working) instead of adjust_motor_position, which was found NOT to
-  # actually move the commanded motor when tested for real (position_deg
-  # stayed flat across every phase of a full test run -- root cause not
-  # yet isolated, switched to this approach instead of debugging it
-  # further).
+  # leg_isolation_test.py -- each is IDENTICAL to `standing` except ONE
+  # thigh motor's target, shifted by PLACEHOLDER +-60deg to clear the foot
+  # off the ground. Not independently verified past visual observation --
+  # test manually on one leg before trusting the automated sequence.
+  # Uses go_to_pose rather than adjust_motor_position, which was not
+  # reliably moving the commanded motor when tested for real.
   standing_lift_a:  # leg_a (front_right) thigh (motor 1) lifted
     1: 47.41
     2: 5.91

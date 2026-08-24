@@ -1,30 +1,6 @@
 #!/usr/bin/env python3
-"""Interactively drive each motor's target by hand, to double-check the
-belt/pulley calf-decoupling fix yourself instead of watching the
-automated sweep in verify_belt_decoupling.py (see that file's docstring
-for the root cause: belt/pulley calf decoupling was never modeled in
-sim, found 2026-07-25).
+"""Interactively drive each motor's target by hand, to double-check the belt/pulley calf-decoupling fix yourself instead..."""
 
-Deliberately NOT using MuJoCo's native Control-tab sliders: those are a
-direct read/write on the raw MJCF actuator's ctrl value, which for a calf
-motor is the UNCOMPENSATED thigh-relative hinge target -- dragging one
-would show the OLD, broken (thigh-dragging-calf) behavior, not the fix.
-Keyboard control below goes through the real DogEnv.step() (same as
-verify_belt_decoupling.py and training), so calf motors keep their
-ABSOLUTE-angle semantics -- same code path, not a reimplementation.
-
-Keys:
-    1-8         select motor 1-8 (see the printed motor->joint table)
-    Up / Down   nudge the selected motor's target by --step-deg
-    R           reset every motor's target back to its startup value
-    Space       pause/resume physics
-
-Usage:
-    python3 -m dog_gym.manual_motor_control [--step-deg 2] [--orientation upside-down] [--pin-height-m 0.6]
-
-Needs a display (mujoco.viewer.launch_passive) -- run this on your dev
-machine, not the headless training VM.
-"""
 import argparse
 import os
 import sys
@@ -43,19 +19,7 @@ GLFW_KEY_UP = 265
 GLFW_KEY_DOWN = 264
 
 _COS45, _SIN45 = np.cos(np.pi / 4), np.sin(np.pi / 4)
-# Quaternions (w,x,y,z), pinning the torso in mid-air. 'upside-down' is a
-# 180deg flip about world X (belly-up). 'sideways' is a 90deg roll about
-# world Y -- for THIS robot specifically (not a general "any 90deg roll
-# works" fact), every hip/knee joint's axis happens to already point
-# along local/world X in the normal standing orientation (verified
-# directly via data.xaxis at qpos=0), so this particular roll swings
-# every joint axis to vertical (parallel to gravity) -- gravity torque
-# about a joint is proportional to axis . (r x gravity_force), which is
-# exactly zero when axis is parallel to gravity, regardless of the leg's
-# configuration. That's what "legs not affected by gravity" means here:
-# not zero weight, zero TORQUE about each joint's own rotation axis, so
-# the position PD controller isn't fighting gravity droop at all in this
-# orientation.
+# Quaternions (w,x,y,z), pinning the torso in mid-air.
 PIN_QUATS = {
     'upside-down': np.array([0.0, 1.0, 0.0, 0.0]),
     'sideways': np.array([_COS45, 0.0, _SIN45, 0.0]),

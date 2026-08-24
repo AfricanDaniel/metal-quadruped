@@ -1,47 +1,6 @@
 #!/usr/bin/env python3
-"""Build a 4-leg dog.mjcf.xml from an onshape-to-robot URDF export +
-MuJoCo (robot.xml) export of the same CAD assembly.
+"""Build a 4-leg dog.mjcf.xml from an onshape-to-robot URDF export + MuJoCo (robot.xml) export of the same CAD assembly...."""
 
-See converter_context.md (dog_description/) for the full methodology and
-why this exists. Short version: onshape-to-robot's MuJoCo exporter
-computes WRONG mesh ORIENTATIONS (verified by direct comparison against
-the URDF exporter's orientation for the same mesh -- positions agreed,
-rotation matrices did not; the URDF exporter is correct, confirmed via
-RViz). So every body/geom pos+quat in the output is derived by
-forward-kinematics composition of the URDF's fixed+revolute joint chain
-instead of trusting robot.xml's own geom_quat -- only mesh files, colors,
-and per-body masses are taken from robot.xml.
-
-Legs and the static torso group are auto-detected by graph traversal of
-the URDF's joint tree (parent/child link name prefixes -- see
-detect_legs()), not hand-enumerated.
-
-Requires: mujoco, numpy, trimesh (dog_ros2_ws/.venv has all three).
-
-Typical usage, after a fresh Onshape re-export into a new
-robot_half_dog_N / urdf_half_dog_N pair:
-
-    # 1. Find the new real body masses (torso/thigh/calf) -- prints
-    #    every body's mass in the MuJoCo export so you can eyeball them.
-    python3 generate_dog_mjcf.py --robot-xml-dir ../onshape_folders/robot_half_dog_N --print-masses
-
-    # 2. Generate, pointing at the new export pair and the masses found above.
-    python3 generate_dog_mjcf.py \\
-        --urdf ../onshape_folders/urdf_half_dog_N/half_dog/urdf/half_dog.urdf \\
-        --robot-xml-dir ../onshape_folders/robot_half_dog_N \\
-        --mass-torso 2.97688 --mass-thigh 0.22746 --mass-calf 0.18357 \\
-        --out dog.mjcf.xml
-
-Masses aren't auto-derived (unlike everything else) because robot.xml's
-own body names don't line up 1:1 with the URDF's per-leg link names (each
-export's mate-fusion groups parts differently), so there's no reliable
-automatic way to attribute "this fused body's mass = this leg's thigh"
-across the two formats. With 9 real bodies to read (1 torso + 4 thigh +
-4 calf, expected to cluster into 3 distinct values for a symmetric
-design), --print-masses makes this a 10-second manual step instead of a
-fragile heuristic that could silently mis-attribute on a different
-design.
-"""
 import argparse
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -56,9 +15,6 @@ DEFAULT_ROBOT_XML_DIR = HERE.parent / 'onshape_folders/robot_dog'
 DEFAULT_OUT = HERE / 'dog.mjcf.xml'
 
 # leg_a=front_right, leg_b=front_left, leg_c=back_right, leg_d=back_left
-# -- matches dog_description/config/motor_mapping.yaml. CAD-native frame
-# convention (established and validated on a single leg first): +y=front,
-# +x=right.
 LEG_NAMES = {(True, True): 'leg_a', (False, True): 'leg_b',
              (True, False): 'leg_c', (False, False): 'leg_d'}
 
@@ -69,135 +25,7 @@ ACTUATOR_ORDER = [
     ('leg_d_calf', 'motor_7'), ('leg_d_thigh', 'motor_8'),
 ]
 
-# Per-joint (lo, hi) range overrides, IN DEGREES -- edit this directly to
-# change any motor's limits. Joints not listed here fall back to symmetric
-# +-args.joint_range (also degrees, see --joint-range). Motor-to-joint
-# mapping is ACTUATOR_ORDER above (motor 1 = leg_a_thigh, motor 2 =
-# leg_a_calf, etc.).
-#
-# Superseded 2026-07-25 by REAL hardware-measured ranges (see below) --
-# history of the prior self-collision-derived placeholders (set
-# 2026-07-23, widened 2026-07-25 for the belt-decoupling compensation) is
-# kept in git history, not repeated here.
-#
-# REAL measurement (2026-07-25): robot hung in the air, each of the 8
-# motors individually driven to both mechanical hard-stops via
-# /adjust_motor_position + read back via /read_motor_positions (raw
-# absolute readings). IMPORTANT, caught by the user on the first pass:
-# /set_home has no fixed physical meaning -- it just captures whatever
-# pose the robot happens to be in when called, and go_to_pose/
-# preset_pose.yaml store everything relative to THAT. The first version
-# of this measurement used /set_home in a "legs fully extended" pose,
-# but sim's qpos=0 (and every real preset_pose.yaml value) has always
-# been referenced to a TUCKED/folded home instead -- so that first pass
-# silently mixed two different physical zero points. Corrected by
-# re-deriving home_deg from a fresh /set_home call in the tucked pose
-# (user confirmed this matches what sim starts in) and recomputing the
-# SAME raw extreme readings relative to that -- the readings themselves
-# didn't need retaking, only which pose "home" itself refers to.
-#
-# Real motor sign vs sim joint sign is NOT uniform (this project's
-# long-running sign saga), and NEITHER IS
-# SIM'S OWN NATIVE AXIS CONVENTION between legs a/c and b/d -- this took
-# several wrong turns to nail down, worth recording precisely:
-#   - First derivation (2026-07-25) compared the SIGN of real bench
-#     presets (actuator/config/preset_pose.yaml's `standing`) against
-#     dog_gym's STANDING_QPOS_DEG (sim), concluding ALL 4 thighs needed
-#     sign=-1 (opposite canonical). Used that -1 to derive these ranges
-#     for legs a/c (legs b/d's canonical sign was already -1).
-#   - An isolated single-motor real-hardware test (send a known +50deg
-#     raw delta to ONE motor, no policy, watch which way it physically
-#     swings) seemed to disprove that, showing canonical sign=+1 gives
-#     the physically-expected "away from front" direction on the REAL
-#     robot. Ranges were recomputed with sign=+1 (2026-07-26) --
-#     WRONGLY, see below.
-#   - That "fix" assumed dog.mjcf.xml's own documented convention
-#     ("positive thigh = away from front, uniform for all 4 legs") was
-#     actually true, without ever directly checking it. It isn't, for
-#     legs a/c: confirmed on real hardware (leg_a's thigh moved 20deg
-#     TOWARDS the front and jammed into the shoulder running a policy
-#     trained under the sign=+1 range) AND independently in sim itself
-#     (user drove leg_a/leg_c's raw ctrl positive in `mujoco.viewer` and
-#     watched the thigh visually swing UP into the shoulder mesh, not
-#     away from it -- MuJoCo doesn't stop this, since the detailed
-#     visual meshes have no collision geometry, contype=0/conaffinity=0,
-#     only the simple capsules do -- so it visibly "passes through" the
-#     shoulder in sim rather than jamming, but the DIRECTION shown is
-#     real information).
-#   - Settled DEFINITIVELY (2026-07-26) via direct forward-kinematics,
-#     no assumptions: swept each thigh's qpos with everything else at
-#     home and read the resulting FOOT WORLD Z (unambiguous -- lower z
-#     = closer to the ground = genuinely extending toward standing,
-#     regardless of any front/back terminology confusion). Confirmed:
-#     for leg_a/leg_c, NEGATIVE qpos lowers the foot (correct extend
-#     direction); for leg_b/leg_d, POSITIVE does. This is a genuine,
-#     real, mirrored CAD-axis asymmetry between the two sides (their
-#     auto-detected joint axes are NOT uniform, contrary to the header's
-#     documented claim) -- not a bug to fix in the axis itself, just a
-#     real fact this range and THIGH_SYMMETRY_SIGN (dog_env.py) both
-#     need to account for. REVERTED ranges back to the sign=-1-derived
-#     values (the FIRST derivation was right all along), and reverted
-#     motor_mapping.yaml/motor_mapping_thigh_test.yaml's motors 1, 5
-#     back to sign=-1 to match.
-#   - FINAL CHAPTER (2026-07-26, later, user-approved): rather than keep
-#     carrying the raw-viewer-vs-real-life direction mismatch in everyone's head,
-#     the user decided to flip sim's own native axis convention to
-#     match the REAL robot motor-for-motor (so `python3 -m
-#     mujoco.viewer --mjcf=dog.mjcf.xml` shows real-life directions
-#     directly). See AXIS_FLIP below: the URDF's auto-detected axis is
-#     negated for exactly the 6 joints whose raw sim direction
-#     disagreed with the real motor's (measured per-joint by FK
-#     d(foot_y)/d(theta), user's bench table and the FK check agreed on
-#     all 8 motors). Flipping an axis negates that joint's qpos
-#     meaning, so the 4 flipped THIGH ranges below were negated-and-
-#     swapped ((lo,hi) -> (-hi,-lo)) from the values above at the same
-#     time -- same real measured hard-stops, re-expressed in the new
-#     convention. After this, motor_mapping.yaml's sign is +1 for all
-#     8 motors (sim == real per motor, that's the whole point).
-#
-# THIGH values below are that real measured extreme (relative to the
-# tucked home), sign-corrected, with a 5% margin pulled in from each side
-# (user's explicit choice, so a trained policy never has to command the
-# literal mechanical hard-stop) -- expressed in the POST-AXIS_FLIP
-# convention (see the "final chapter" note above).
-#
-# CALF values below are REAL-HARDWARE-DERIVED as of 2026-07-27 (were a
-# wide +-360deg placeholder before this -- see git history for that saga,
-# not repeated here).
-#
-# This dict sets the RAW MJCF joint's <joint range> -- the thigh-relative
-# hinge, which since the belt-decoupling fix (dog_gym/envs/dog_env.py)
-# equals real_calf_absolute_angle + real_thigh_absolute_angle (both
-# home-relative; calf_belt_sign came out uniformly +1 for all 4 legs
-# after AXIS_FLIP, confirmed by direct verification). The real physical
-# limit here is the calf link hitting the thigh link -- fixed in this
-# RELATIVE coordinate (constant width, ~222-227deg across all 4 legs),
-# SLIDING in absolute terms as the thigh moves. Measured by holding the
-# thigh at 2-3 real positions per leg and reading the calf's two stops at
-# each; confirmed the "calf_absolute + thigh_absolute" invariant is
-# constant at each stop (independent of which thigh position it was
-# measured from) to within ~1-2deg, well inside hand-adjustment noise --
-# derivation covered all 4 legs.
-#
-# One stop is HOME ITSELF for every leg (by deliberate design choice, so
-# the calf's physical max is easy to orient by -- user's explicit
-# instruction 2026-07-27): the "calf_abs+thigh_abs" invariant at that
-# stop matches the invariant AT HOME almost exactly (within ~0.3-2deg,
-# again just measurement noise) for all 4 legs. That side of the range is
-# therefore EXACTLY 0 below, no margin -- 0 is qpos=0 by construction,
-# trivially satisfied at reset regardless of the small measurement noise
-# on the true mechanical stop. Right/left legs
-# mirror (matches the AXIS_FLIP mirroring elsewhere): leg_a/leg_c (right)
-# have home at the LOWER end, range extends positive; leg_b/leg_d (left)
-# have home at the UPPER end, range extends negative. The one OPEN
-# (non-home) side of each range gets the usual 5% margin pulled in from
-# the measured stop, same convention as the thigh ranges above -- e.g.
-# leg_a: measured stop ~217deg (innermost across 2 independent
-# measurement sessions) -> 0.95*217.0 = 206.1.
-#
-# Self-collision-VERIFIED-safe at these exact extremes (300/300 samples
-# each, alongside the thigh ranges above -- script not committed, rerun
-# the same methodology if this needs changing).
+# Per-joint (lo, hi) range overrides, IN DEGREES
 JOINT_RANGE_OVERRIDES_DEG = {
     'leg_a_thigh': (-11.6, 230.6),
     'leg_a_calf':  (0, 206.1),
@@ -209,15 +37,7 @@ JOINT_RANGE_OVERRIDES_DEG = {
     'leg_d_thigh': (-234.0, 6.8),
 }
 
-# Joints whose <joint axis> gets NEGATED relative to the URDF's
-# auto-detected value, so that sim's own raw qpos direction matches the
-# REAL robot's motor direction 1:1 (user decision 2026-07-26 -- see the
-# "final chapter" note above for the full story and how the set was
-# determined). Exactly the 6
-# joints whose raw sim direction disagreed with the real motor;
-# leg_b_calf/leg_c_calf (motors 3, 6) already matched and are NOT
-# flipped. Axis negation only reverses the rotation direction -- body
-# frames, positions, and meshes are unaffected.
+# Joints whose <joint axis> gets NEGATED relative to the URDF's auto-detected value, so that sim's own raw qpos direction matches the real robot's motor direction 1:1.
 AXIS_FLIP = {
     'leg_a_thigh',  # motor 1
     'leg_a_calf',   # motor 2
@@ -227,9 +47,7 @@ AXIS_FLIP = {
     'leg_d_thigh',  # motor 8
 }
 
-# Two of the URDF's Onshape-native split mesh names both represent one
-# motor half each -- robot.xml's export already merged them into a single
-# "motor" mesh, so both map to that one asset.
+# Two of the URDF's Onshape-native split mesh names both represent one motor half each
 RENAME = {'Part_A_1__Body1': 'motor', 'Part_B_1__Body1': 'motor'}
 
 
@@ -258,33 +76,22 @@ def parse_args():
                          'hardware\'s position-mode control (actuator package only exposes '
                          "position/velocity services). 'torque' emits <motor> actuators "
                          'instead, for a sim-only comparison of training behavior under direct '
-                         'torque control (2026-08-03, user request) -- NOT deployable to real '
-                         "hardware as-is, since actuator has no torque-command service yet. "
-                         "'torque_belt' (2026-08-05, user request): same as 'torque' for the "
-                         "4 thigh motors, but each "
-                         'calf motor actuates a <fixed> tendon expressing its ABSOLUTE '
-                         '(belt-decoupled) angle -- raw_calf_qpos - calf_belt_sign*thigh_qpos -- '
-                         'instead of its raw joint directly, so torque is applied in the same '
-                         'frame the real belt-driven motor experiences natively, with no '
-                         'competing-force/saturation problem (MuJoCo\'s constraint solver handles '
-                         'it exactly, unlike a control-layer velocity-servo approximation tried '
-                         'first and found to saturate/oscillate). See generate_belt_tendon_xml().')
+                         'torque control -- NOT deployable to real hardware as-is, since '
+                         "actuator has no torque-command service yet. 'torque_belt': same as "
+                         "'torque' for the 4 thigh motors, but each calf motor actuates a "
+                         '<fixed> tendon expressing its ABSOLUTE (belt-decoupled) angle -- '
+                         'raw_calf_qpos - calf_belt_sign*thigh_qpos -- instead of its raw joint '
+                         'directly, so torque is applied in the same frame the real belt-driven '
+                         "motor experiences natively, with no competing-force/saturation "
+                         "problem (MuJoCo's constraint solver handles it exactly). See "
+                         'generate_belt_tendon_xml().')
     p.add_argument('--torque-limit', type=float, default=20.0,
                     help='--actuator-type torque only: symmetric +-ctrlrange (N*m, output shaft) '
-                         'per motor. RAISED 5.0 -> 20.0 (2026-08-04): 5.0 was an unverified '
-                         'placeholder that turned out to be PHYSICALLY UNABLE to lift the robot '
-                         'at all -- direct test (constant torque, correct STANDING_QPOS_DEG sign '
-                         'per motor, no policy involved) plateaued at height=0.166m/~26-33deg leg '
-                         'extension after 5s regardless of anything a policy could do, vs. '
-                         'STAND_HEIGHT_M=0.313m/~90-115deg needed -- a 21M-step PPO run against '
-                         'that ceiling converged to a degenerate, wrong-signed-on-thighs local '
-                         'optimum instead of standing, which looked like a sign bug but wasn\'t '
-                         '(same constant-torque test with the CORRECT sign, just more of it, '
-                         'reaches height=0.3126m at 20 N*m -- confirms both the sign convention '
-                         'and this new default are right). Matches Shane\'s Fast-Quadruped- '
-                         '<motor ctrlrange="-20 20"> for the same source geometry -- still not '
-                         'from a real GO-M8010-6 datasheet, but now empirically confirmed '
-                         'sufficient rather than an unverified guess, same as --kp/--kv.')
+                         'per motor. Empirically confirmed sufficient to reach standing height '
+                         '(a lower placeholder was physically unable to lift the robot at all); '
+                         'matches Shane\'s Fast-Quadruped <motor ctrlrange="-20 20"> for the same '
+                         'source geometry -- still not from a real GO-M8010-6 datasheet, same '
+                         'caveat as --kp/--kv.')
     p.add_argument('--print-masses', action='store_true',
                     help='print every body mass in --robot-xml-dir/robot.xml and exit')
     return p.parse_args()
@@ -323,11 +130,8 @@ def print_robot_xml_masses(robot_xml_dir):
 
 
 def load_urdf(urdf_path):
-    """Returns (joints_by_child, children_of, visuals) -- see module
-    docstring. joints_by_child/children_of together let you walk the tree
-    in either direction; visuals maps link name -> list of
-    {mesh, xyz, rpy} (that link's own <visual><origin> entries, in the
-    link's own local frame)."""
+    """Returns (joints_by_child, children_of, visuals)."""
+
     tree = ET.parse(urdf_path)
     root = tree.getroot()
 
@@ -364,34 +168,8 @@ def load_urdf(urdf_path):
 
 
 def detect_legs(joints_by_child, children_of):
-    """Auto-detect the 4 hip/knee joint pairs and the torso's static
-    (fixed-joint-only) link group, by graph traversal -- no hand
-    enumeration. Relies on this design's Onshape part-naming convention
-    for the hip only: hip joints go part_a_1__body1* -> thigh_connecor_full*.
-    The knee joint is found *structurally*, not by name: it's the one
-    continuous joint, rooted in the hip's own thigh link group, whose own
-    fixed/prismatic-reachable subtree contains a ball_for_feet* link.
-    This used to also be name-matched (any continuous joint whose child
-    starts with timing_belt_pulley_lower*), but a CAD re-export that adds
-    a cylindrical mate (decomposed by onshape-to-robot into a prismatic +
-    continuous joint pair) can introduce a *second*, unrelated continuous
-    joint in the same region representing a loop-closure constraint --
-    URDF can't express closed kinematic loops directly, so
-    onshape-to-robot fakes it with an extra joint + a massless,
-    mesh-less placeholder link (name containing "loop_closure", mass
-    ~1e-9, nothing downstream of it). Matching by "reaches an actual
-    foot" instead of by child name correctly ignores that placeholder
-    regardless of what it's named -- see converter_context.md.
+    """Auto-detect the 4 hip/knee joint pairs and the torso's static (fixed-joint-only) link group, by graph traversal."""
 
-    The knee joint's *parent* link name is intentionally not constrained
-    (beyond "somewhere in the hip's thigh group"): which part
-    (thigh_connecor_full vs thigh_connector_hollow vs a new
-    cylindrical-mate intermediate link) ends up as the directly-fused
-    parent varies per leg/per export depending on how Onshape's
-    mate-fusion groups that leg's rigid parts. If a future CAD re-export
-    renames the hip's own parts, update the .startswith() prefixes below
-    to match -- everything downstream (grouping, kinematics, inertia)
-    stays automatic."""
     hip_joints = [j for j in joints_by_child.values()
                   if j['type'] == 'continuous' and j['parent'].startswith('part_a_1__body1')
                   and j['child'].startswith('thigh_connecor_full')]
@@ -401,9 +179,8 @@ def detect_legs(joints_by_child, children_of):
             'CAD part naming may have changed, see detect_legs() docstring')
 
     def bfs_fixed(start_link, stop_links):
-        """Links reachable from start_link via fixed/prismatic joints
-        only, not crossing into any joint whose child is in stop_links,
-        and never crossing a 'continuous' (revolute) joint."""
+        """Links reachable from start_link via fixed/prismatic joints only, not crossing into any joint whose child is in stop_l..."""
+
         out = [start_link]
         frontier = [start_link]
         while frontier:
@@ -446,15 +223,14 @@ def detect_legs(joints_by_child, children_of):
 
 
 def joint_range_deg(joint_name, base_deg):
-    """(lo, hi) IN DEGREES for this joint: JOINT_RANGE_OVERRIDES_DEG's
-    explicit values if present, else symmetric +-base_deg."""
+    """(lo, hi) IN DEGREES for this joint: JOINT_RANGE_OVERRIDES_DEG's explicit values if present, else symmetric +-base_deg."""
+
     return JOINT_RANGE_OVERRIDES_DEG.get(joint_name, (-base_deg, base_deg))
 
 
 def extract_materials(robot_xml_path):
-    """mesh_name -> rgba string, read directly from robot.xml's own
-    <material name="X_material" rgba="..."/> declarations (assumes the
-    1:1 "meshname_material" naming onshape-to-robot always uses)."""
+    """mesh_name -> rgba string, read directly from robot.xml's own <material name="X_material" rgba="..."/> declarations (a..."""
+
     root = ET.parse(robot_xml_path).getroot()
     out = {}
     for mat in root.findall('.//material'):
@@ -526,11 +302,7 @@ def main():
             mesh_world_rot = lrot @ rpy_to_matrix(*v['rpy'])
             local_pos = ref_rot.T @ (mesh_world_pos - ref_pos)
             local_rot = ref_rot.T @ mesh_world_rot
-            # robot.xml (and its assets/*.stl, which meshdir actually
-            # points at) always lowercases mesh/material names regardless
-            # of the URDF export's original filename casing (e.g. this
-            # export's "IMU.stl" vs robot.xml's "imu"/"imu_material") --
-            # normalize here so mesh/material references always resolve.
+            # robot.xml (and its assets/*.stl, which meshdir actually points at) always lowercases mesh/material names regardless of the URDF export's original filename casing (e.g.
             mesh_name = RENAME.get(v['mesh'], v['mesh']).lower()
             out.append((mesh_name, local_pos, mat2quat(local_rot)))
         return out
@@ -563,10 +335,8 @@ def main():
         return mesh_cache[mesh_name]
 
     def combined_aabb(geoms):
-        """geoms already relative to one body frame. Returns (center,
-        size) of the combined AABB in that frame, using real vertex data
-        (not just mesh origins) -- so this is a real, if still
-        box-shaped, bound on that body's actual geometry."""
+        """geoms already relative to one body frame."""
+
         all_pts = []
         for mesh_name, pos, quat in geoms:
             verts = mesh_bounds_local(mesh_name)
@@ -623,13 +393,7 @@ def main():
     # ============ Legs ============
     leg_xml = {}
     lowest_z = []
-    # --actuator-type torque_belt only -- populated per leg below, used
-    # by generate_belt_tendon_xml() after this loop. Computed the exact
-    # same way dog_env.py's DogEnv.__init__ derives calf_belt_sign at
-    # runtime (knee axis expressed in the thigh's frame via the calf
-    # body's own quat, dotted against the hip axis) -- using mujoco's
-    # own mju_rotVecQuat rather than a hand-rolled equivalent so this
-    # can never silently drift out of sync with the runtime computation.
+    # --actuator-type torque_belt only
     calf_belt_sign_by_leg = {}
     for leg in legs:
         hip_pos, hip_rot = leg['hip_pos'], leg['hip_rot']
@@ -648,21 +412,11 @@ def main():
         thigh_diag = box_diaginertia(args.mass_thigh, thigh_size)
         calf_diag = box_diaginertia(args.mass_calf, calf_size)
 
-        # AXIS_FLIP (see its comment near JOINT_RANGE_OVERRIDES_DEG):
-        # negate the URDF's auto-detected axis for the joints whose raw
-        # sim direction would otherwise disagree with the real motor's.
+        # AXIS_FLIP (see its comment near JOINT_RANGE_OVERRIDES_DEG): negate the URDF's auto-detected axis for the joints whose raw sim direction would otherwise disagree with the real motor's.
         hip_axis = leg['hip']['axis'] * (-1 if f"{leg['name']}_thigh" in AXIS_FLIP else 1)
         knee_axis = leg['knee']['axis'] * (-1 if f"{leg['name']}_calf" in AXIS_FLIP else 1)
 
-        # calf_belt_sign (--actuator-type torque_belt only) -- see
-        # dog_env.py's __init__ for the identical computation at runtime
-        # and its own long comment for the full derivation/history (the
-        # "flip the sign" saga). knee_axis_in_thigh_frame: the knee's
-        # rotation axis (already computed above, in the calf's own local
-        # frame) expressed in the THIGH's frame via the calf body's own
-        # quat (calf_rel_quat, computed above -- both derived from the
-        # same underlying leg geometry, so this stays correct as CAD
-        # changes without needing manual re-derivation).
+        # calf_belt_sign (--actuator-type torque_belt only)
         knee_axis_in_thigh_frame = np.zeros(3)
         mujoco.mju_rotVecQuat(knee_axis_in_thigh_frame, knee_axis, calf_rel_quat)
         same_direction = np.dot(knee_axis_in_thigh_frame, hip_axis) > 0
@@ -679,9 +433,7 @@ def main():
         lowest_z.append(foot_pos[2])
 
         n = leg['name']
-        # <joint range> is in DEGREES: <compiler angle="degree"> below makes
-        # MuJoCo auto-convert this specific field to radians at compile
-        # time. This does NOT apply to <position ctrlrange> (see below).
+        # <joint range> is in DEGREES: <compiler angle="degree"> below makes MuJoCo auto-convert this specific field to radians at compile time.
         thigh_lo, thigh_hi = joint_range_deg(f'{n}_thigh', args.joint_range)
         calf_lo, calf_hi = joint_range_deg(f'{n}_calf', args.joint_range)
         leg_xml[n] = f'''      <body name="{n}_thigh" pos="{fmt(thigh_rel_pos)}" quat="{fmt(thigh_rel_quat)}">
@@ -704,31 +456,7 @@ def main():
 
     mesh_asset_lines = '\n'.join(f'    <mesh name="{m}" file="{m}.stl"/>' for m in mesh_names)
     material_asset_lines = '\n'.join(f'    <material name="{m}_material" rgba="{c}"/>' for m, c in materials.items())
-    # <position ctrlrange> is NOT auto-converted by <compiler angle="degree">
-    # (verified empirically -- MuJoCo only converts <joint range>/<joint
-    # ref>, not actuator ctrlrange), so it must be hand-converted to
-    # radians here even though <joint range> above is left in plain
-    # degrees. Getting this wrong silently breaks control clamping instead
-    # of erroring, so this is worth getting right.
-    # kp/kv raised from the original 15/1 placeholder to 60/4 (2026-07-25):
-    # with 15/1, a leg fully extended against gravity (e.g. the
-    # dog_gym.manual_motor_control upside-down diagnostic) settled ~40%
-    # short of its own commanded target (thigh commanded -30deg, settled
-    # at -18deg) -- a real steady-state PD droop under load, not specific
-    # to any one joint. This directly undermined the belt/pulley calf
-    # decoupling compensation too: since that compensation reacts to the
-    # THIGH's actual (drooped) position, a drooping calf on top of a
-    # drooping thigh compounded into a visibly large residual that looked
-    # like a compensation bug but wasn't one (confirmed: the calf's raw
-    # hinge was still counter-rotating in the correct direction the whole
-    # time, just not by enough). Still placeholder values, not derived
-    # from the real motor firmware's kp/kd -- see --kp/--kv.
-    # --actuator-type torque (2026-08-03): <motor> actuators command raw
-    # joint torque directly (ctrlrange is +-N*m, not an angle) -- no
-    # kp/kv, no angle-based ctrlrange conversion, since there's no PD
-    # target being tracked at all. See --actuator-type's help for why
-    # this exists (sim-only training-behavior comparison, not a
-    # deployable control mode yet).
+    # <position ctrlrange> is NOT auto-converted by <compiler angle="degree"> (MuJoCo only converts <joint range>/<joint ref>, not actuator ctrlrange), so it must be hand-converted to radians here even though <joint range> above is left in plain degrees.
     tendon_block = ''
     if args.actuator_type == 'torque':
         actuator_lines = '\n'.join(
@@ -736,29 +464,7 @@ def main():
             for j, n in ACTUATOR_ORDER
         )
     elif args.actuator_type == 'torque_belt':
-        # <fixed> tendon per leg: L = raw_calf_qpos - calf_belt_sign*thigh_qpos
-        # = calf's ABSOLUTE (belt-decoupled) angle -- see calf_belt_sign_by_leg's
-        # comment above and --actuator-type's help. coef for the thigh joint
-        # is -calf_belt_sign (matches dog_env.py's ABSOLUTE = RAW -
-        # calf_belt_sign*thigh convention exactly). The calf <motor> targets
-        # this tendon instead of its raw joint -- MuJoCo applies whatever
-        # ctrl this actuator gets as a generalized force along the tendon,
-        # distributed back to the underlying joints via the tendon's
-        # (constant, since it's linear/fixed) Jacobian -- exact by
-        # construction, no PD/servo approximation, no saturation-under-load
-        # failure mode the way a control-layer velocity-servo has.
-        #
-        # OPEN ASSUMPTION, not empirically verified: this necessarily also
-        # applies a reaction force to the thigh joint (coefficient
-        # -calf_belt_sign) -- physically correct IF the real calf motor's
-        # own reaction torque acts through the thigh, but the belt
-        # documentation only ever established the ANGLE relationship
-        # (rotating the thigh alone doesn't change the calf's real
-        # orientation), not where the real motor's housing is mounted /
-        # reacts against. If the real motor reacts against the torso
-        # directly (plausible for a hip-clustered quasi-direct-drive
-        # layout) rather than the thigh, this reaction-force term would be
-        # a simplification, not something confirmed against hardware.
+        # <fixed> tendon per leg: L = raw_calf_qpos - calf_belt_sign*thigh_qpos = calf's ABSOLUTE (belt-decoupled) angle
         tendon_block = '\n  <tendon>\n' + '\n'.join(
             f'    <fixed name="{leg}_calf_absolute">\n'
             f'      <joint joint="{leg}_calf" coef="1"/>\n'
@@ -793,16 +499,13 @@ def main():
     dog_ros2_ws/.venv, which has mujoco + trimesh).
 
     IMPORTANT, see converter_context.md (dog_description/) for the full
-    story: onshape-to-robot's MuJoCo exporter computes WRONG mesh
-    ORIENTATIONS (confirmed by direct comparison against the URDF
-    exporter's orientation for the same mesh -- positions agreed, rotation
-    matrices did not). So every body/geom pos+quat here comes from
-    forward-kinematics composition of the URDF export instead of
-    robot.xml's own geom_quat -- only mesh files, colors, and per-body
-    masses are taken from robot.xml. This was validated on a single leg
-    first (user-confirmed correct via interactive mujoco.viewer) before
-    being extended to all 4 legs, auto-detected by graph traversal of the
-    URDF's joint tree (not hand-enumerated).
+    story: onshape-to-robot's MuJoCo exporter computes wrong mesh
+    orientations (the URDF exporter's orientations are correct). So every
+    body/geom pos+quat here comes from forward-kinematics composition of
+    the URDF export instead of robot.xml's own geom_quat -- only mesh
+    files, colors, and per-body masses are taken from robot.xml. Legs are
+    auto-detected by graph traversal of the URDF's joint tree (not
+    hand-enumerated).
 
     Frame: this file's body/geom values are in the CAD's own native frame
     (+y=front, +x=right), NOT yet remapped to ROS REP-103 (+x=forward,

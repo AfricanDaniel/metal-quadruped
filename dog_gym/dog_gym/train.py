@@ -1,33 +1,6 @@
 #!/usr/bin/env python3
-"""Train or test a PPO/SAC/A2C policy on a Dog-Stand-v0/Dog-Walk-v0
-environment (see dog_gym/envs/dog_env.py's module docstring for what
-each task means and why they're separate).
+"""Train or test a PPO/SAC/A2C policy on a Dog-Stand-v0/Dog-Walk-v0 environment (see dog_gym/envs/dog_env.py's module do..."""
 
-Restructured from a teammate's full_model_script_multi_processs.py
-(shane_ws/Fast-Quadruped-), but on modern mujoco + current Gymnasium
-instead of mujoco_py, and without SB3.
-
-Usage:
-    python3 -m dog_gym.train --train --env-id Dog-Stand-v0 --algo PPO --fname stand_model
-    python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO --fname walk_model
-    python3 -m dog_gym.train --test models/PPO_1000000_stand_model --env-id Dog-Stand-v0
-
-Fine-tuning from an existing checkpoint (e.g. a good stand policy as the
-starting point for walk training -- valid because Dog-Stand-v0/
-Dog-Walk-v0 share the exact same DogEnv observation/action space, only
-task=stand/walk's reward+reset differ, see dog_env.py's module
-docstring):
-    python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO \\
-        --init-from models/PPO_32000000_DR_stand_policy_v1.zip --fname DR_walk_policy_v1
---init-from loads the saved policy/value network weights (a real head
-start over random init) AND optimizer state via PPO.load(), rebinding to
-the new env -- --n-steps/--batch-size/--n-epochs/device still apply,
-overriding whatever was saved. The timestep counter and checkpoint
-filenames restart at this run's own 0 regardless of how many steps the
-source checkpoint had already seen (reset_num_timesteps=True on the
-first .learn() call only) -- so DR_walk_policy_v1's own PPO_1000000_...
-name means "1M steps of WALK fine-tuning", not "33M cumulative".
-"""
 
 import argparse
 import os
@@ -50,48 +23,8 @@ ALGOS = {'PPO': PPO, 'SAC': SAC, 'A2C': A2C}
 
 
 class DecayScheduleCallback(BaseCallback):
-    """Linearly decays ent_coef and learning_rate from their start value
-    to a floor over `decay_steps` CUMULATIVE timesteps
-    (self.model.num_timesteps, correctly maintained across repeated
-    .learn() calls via reset_num_timesteps=False), then holds at the
-    floor.
+    """Linearly decays ent_coef and learning_rate from their start value to a floor over `decay_steps` CUMULATIVE timesteps ..."""
 
-    NOT using SB3's own built-in learning_rate schedule support (passing
-    a callable at PPO construction) -- that machinery computes progress
-    relative to a single .learn() call's own total_timesteps budget,
-    which doesn't fit this script's indefinite `while True` training
-    loop (see train()): each new .learn() call would otherwise reset or
-    distort progress_remaining rather than continuing a single smooth
-    decay across the whole run. This callback sidesteps that by reading
-    model.num_timesteps directly (a real cumulative counter) and forcing
-    the applied values every step, independent of SB3's own progress
-    tracking.
-
-    Added 2026-07-30 to investigate a real, repeated finding: every
-    stand-task reward variant tried (flat action_rate_penalty, gated
-    -1.0, gated -0.4) looked good
-    early in training and then degraded substantially with enough
-    further training -- the SAME divergence pattern regardless of the
-    reward shape, pointing at something more fundamental than reward
-    tuning. Leading suspect: ent_coef=0.01 never decayed (constant
-    exploration pressure for the entire run, no mechanism to let the
-    policy settle) combined with a constant learning_rate the whole way
-    through -- nothing stops continued gradient noise from drifting an
-    already-good policy away from it. Both defaults (ent_coef_end ==
-    ent_coef_start, lr_end == learning_rate) leave decay INERT unless
-    explicitly configured differently via the CLI, so this is fully
-    opt-in and doesn't change any existing run's behavior by default.
-
-    For ent_coef: mutating self.model.ent_coef directly is safe and
-    takes effect on the next PPO.train() call, which reads
-    self.ent_coef fresh every time (not cached into a schedule object
-    the way learning_rate is).
-    For learning_rate: overrides self.model.lr_schedule with a lambda
-    that always returns the current decayed value regardless of its
-    progress_remaining input -- SB3's own _update_learning_rate() (called
-    internally once per rollout update) applies whatever that function
-    returns to the optimizer, so this correctly forces the real applied
-    LR without needing to fight SB3's own progress-tracking internals."""
 
     def __init__(self, ent_coef_start, ent_coef_end, lr_start, lr_end, decay_steps,
                  adjust_lr=True, verbose=0):
@@ -101,11 +34,7 @@ class DecayScheduleCallback(BaseCallback):
         self.lr_start = lr_start
         self.lr_end = lr_end
         self.decay_steps = decay_steps
-        # --lr-schedule adaptive (2026-08-06): AdaptiveKLLearningRateCallback
-        # owns model.lr_schedule instead in that mode -- both callbacks
-        # writing to it every step would just fight each other, last-
-        # write-wins each _on_step() in an undefined order. ent_coef decay
-        # is independent and still applies either way.
+        # With --lr-schedule adaptive, AdaptiveKLLearningRateCallback owns model.lr_schedule instead
         self.adjust_lr = adjust_lr
 
     def _on_step(self):
@@ -118,33 +47,8 @@ class DecayScheduleCallback(BaseCallback):
 
 
 class AdaptiveKLLearningRateCallback(BaseCallback):
-    """Mirrors rsl_rl's PPO "adaptive" learning-rate schedule (the same
-    mechanism .../go2-sim2real-locomotion-rl/examples/locomotion/final/
-    go2_train_walk.py uses -- desired_kl=0.01, learning_rate=0.001,
-    schedule="adaptive"; rsl_rl is the standard PPO implementation from
-    ETH Zurich's legged-robot RL work, e.g. ANYmal/Isaac Lab). After
-    each rollout's train() call, reads the ACTUAL KL divergence that
-    update produced (SB3 already computes and logs this as
-    'train/approx_kl') and adjusts the learning rate:
-      - shrinks it (/1.5) if the update moved the policy MORE than 2x
-        desired_kl -- too aggressive, risks destabilizing an
-        already-decent policy (this project has direct prior evidence
-        of exactly that: a fixed 3e-4 --init-from fine-tune made an
-        already-good stand policy WORSE over 19M further steps, see
-        that flag's own comment).
-      - grows it (*1.5) if the update moved the policy LESS than 0.5x
-        desired_kl -- barely changing anything, e.g. stuck reinforcing
-        whatever local optimum it already found (the "tumbling" walk
-        pattern) with no pressure to actually escape it.
-      - otherwise leaves it alone.
-    Clamped to rsl_rl's own [1e-5, 1e-2] bounds.
+    """Mirrors rsl_rl's PPO "adaptive" learning-rate schedule (the standard PPO implementation from ETH Zurich's legged-robo..."""
 
-    Uses _on_rollout_start() (fires exactly once per rollout, right
-    after the PREVIOUS train() call finished and before the NEXT one
-    starts) rather than _on_step() (fires once per env step -- thousands
-    of times per rollout, all reading the SAME stale approx_kl from the
-    last train() call, which would misapply the same adjustment that
-    many times before a fresh KL reading ever exists)."""
 
     def __init__(self, desired_kl=0.01, initial_lr=1e-3, min_lr=1e-5, max_lr=1e-2, verbose=0):
         super().__init__(verbose)
@@ -172,28 +76,8 @@ class AdaptiveKLLearningRateCallback(BaseCallback):
 
 
 class GainRangeCurriculumCallback(BaseCallback):
-    """Widens the (low, high) range DogEnv.reset() samples position_kp/
-    position_kd from every episode, linearly, from a gentle starting
-    range to a wider (real-hardware-matching) ending range, over
-    `decay_steps` cumulative timesteps -- see DogEnv.__init__'s
-    position_kp_range/position_kd_range comment for the full motivation
-    (domain randomization over servo stiffness for sim-to-real
-    robustness, PLUS a curriculum so early, near-random rollouts only
-    ever see the gentle end of the range instead of risking a violent
-    crash on a stiff-gain episode before the policy has any competence).
+    """Widens the (low, high) range DogEnv.reset() samples position_kp/ position_kd from every episode, linearly, from a gen..."""
 
-    Pushes the updated bounds into every parallel sub-environment via
-    VecEnv.env_method('set_position_gain_range', ...) -- works for both
-    DummyVecEnv (same process) and SubprocVecEnv (dispatches to each
-    worker). Only takes effect on each env's NEXT reset(), not the
-    episode already in progress -- see set_position_gain_range()'s own
-    docstring for why that's deliberate.
-
-    Throttled to update_interval_steps (default 2000) rather than every
-    single _on_step() call -- env_method() round-trips to every
-    subprocess worker, and the range only needs to move smoothly over
-    MILLIONS of steps, so updating every step would be pure overhead for
-    no meaningful precision gain."""
 
     def __init__(self, kp_range_start, kp_range_end, kd_range_start, kd_range_end,
                  decay_steps, update_interval_steps=2000, verbose=0):
@@ -220,22 +104,8 @@ class GainRangeCurriculumCallback(BaseCallback):
 
 
 class HomeStartCurriculumCallback(BaseCallback):
-    """Widens the probability DogEnv.reset() uses to start a WALK episode
-    from 'home' (tucked) instead of 'standing', linearly, from
-    prob_start to prob_end, over decay_steps cumulative timesteps -- only
-    relevant when walk_start_pose='random' (2026-08-09, added while
-    working toward a single WALK policy that stands up from home AND
-    walks). Same rationale/pattern as
-    GainRangeCurriculumCallback: mostly 'standing' (the proven-working
-    regime) early, increasing 'home' frequency once the policy already
-    has a basic walking gait to fall back on, rather than handing it the
-    harder combined stand-up+walk problem from step 0.
+    """Widens the probability DogEnv.reset() uses to start a WALK episode from 'home' (tucked) instead of 'standing', linear..."""
 
-    Pushes the updated probability into every parallel sub-environment
-    via VecEnv.env_method('set_home_start_prob', ...) -- same
-    DummyVecEnv/SubprocVecEnv-compatible mechanism as
-    GainRangeCurriculumCallback, same update_interval_steps throttling
-    reasoning."""
 
     def __init__(self, prob_start, prob_end, decay_steps, update_interval_steps=2000, verbose=0):
         super().__init__(verbose)
@@ -256,27 +126,8 @@ class HomeStartCurriculumCallback(BaseCallback):
 
 
 class SlewCurriculumCallback(BaseCallback):
-    """Tightens DogEnv's per-step slew clamp (see MAX_SLEW_DEG_PER_S/
-    SLEW_CURRICULUM_TARGET_DEG_PER_S's own comments in dog_env.py) from
-    the loose MAX_SLEW_DEG_PER_S (1000, needed for PPO to discover a gait
-    at all) down to SLEW_CURRICULUM_TARGET_DEG_PER_S (250, matching
-    dog_deploy/policy_node.py's real deployment clamp), linearly, over
-    decay_steps cumulative timesteps -- but UNLIKE GainRangeCurriculumCallback/
-    HomeStartCurriculumCallback (which both start widening/relaxing from
-    step 0), this one deliberately stays PINNED at the loose start value
-    until start_step is reached, only beginning to tighten after that
-    (2026-08-16 -- tightening before a gait has been
-    discovered risks reproducing the exact 2026-08-07 failure that
-    MAX_SLEW_DEG_PER_S's own history documents: PPO's early exploration
-    noise needs that full headroom, or no gait is ever found).
+    """Tightens DogEnv's per-step slew clamp (see MAX_SLEW_DEG_PER_S/ SLEW_CURRICULUM_TARGET_DEG_PER_S's own comments in dog..."""
 
-    Pushes the updated value into every parallel sub-environment via
-    VecEnv.env_method('set_max_slew_deg_per_s', ...) -- same
-    DummyVecEnv/SubprocVecEnv-compatible mechanism as
-    GainRangeCurriculumCallback/HomeStartCurriculumCallback, same
-    update_interval_steps throttling reasoning. Effective immediately
-    (not deferred to the next episode) -- see set_max_slew_deg_per_s()'s
-    own comment for why that's safe here."""
 
     def __init__(self, start_step, decay_steps, start_value=None, end_value=None,
                  update_interval_steps=2000, verbose=0):
@@ -304,27 +155,8 @@ class SlewCurriculumCallback(BaseCallback):
 
 
 class ForwardSpeedCurriculumCallback(BaseCallback):
-    """Raises DogEnv's WALK forward-speed reward target (see WALK_FORWARD_
-    PROGRESS_TARGET_M_S/set_walk_forward_progress_target_m_s()'s own
-    comments in dog_env.py) from the achievable WALK_FORWARD_PROGRESS_
-    TARGET_M_S (0.15, what existing checkpoints are already converged
-    toward) UP to a higher end_value, linearly, over decay_steps
-    cumulative timesteps -- mirrors SlewCurriculumCallback above exactly,
-    including staying PINNED at the start value until start_step is
-    reached (2026-08-18, added while pushing toward faster walking --
-    an INSTANT target change would drop forward_progress, which gates
-    upright_reward/trot_symmetry_reward/climb_gate/hold_gate/the front+
-    back clearance terms, from ~1.0 to ~0.55 immediately for an already-
-    converged policy, risking a stability collapse before it ever learns
-    to go faster -- so this needs the same "let the policy settle at its
-    current fine-tune point first" pinning SlewCurriculumCallback already
-    uses, not a curriculum that starts moving from step 0).
+    """Raises DogEnv's WALK forward-speed reward target (see WALK_FORWARD_ PROGRESS_TARGET_M_S/set_walk_forward_progress_tar..."""
 
-    Pushes the updated value into every parallel sub-environment via
-    VecEnv.env_method('set_walk_forward_progress_target_m_s', ...), same
-    DummyVecEnv/SubprocVecEnv-compatible mechanism as the other
-    curriculum callbacks, same update_interval_steps throttling
-    reasoning."""
 
     def __init__(self, start_step, decay_steps, start_value=None, end_value=None,
                  update_interval_steps=2000, verbose=0):
@@ -360,54 +192,26 @@ def make_env(env_id, domain_randomization, walk_start_pose, walk_height_fraction
                   walk_height_fraction=walk_height_fraction,
                   control_mode=control_mode,
                   gait_style=gait_style)
-    # --model-path (2026-08-04): lets --test load a checkpoint against the
-    # EXACT MJCF/ctrlrange it was actually trained on, overriding
-    # control_mode's own default resolution -- needed once a shared file
-    # like dog_torque.mjcf.xml gets regenerated with different values
-    # (e.g. --torque-limit fixed 5.0 -> 20.0) out from under an older
-    # checkpoint's saved action_space, which otherwise fails to load at
-    # all (SB3's check_for_correct_spaces).
+    # --model-path: lets --test load a checkpoint against the EXACT MJCF/ ctrlrange it was actually trained on, overriding control_mode's own default resolution
     if model_path is not None:
         kwargs['model_path'] = model_path
-    # --position-kp/--position-kd (2026-08-05): see DogEnv.__init__'s
-    # position_kp/position_kd comment -- runtime override of the MJCF's
-    # baked-in <position> actuator gains, for comparing training under
-    # softer gains against the real-hardware-matching default (60/4).
-    # control_mode='position' only; harmless to pass otherwise since
-    # DogEnv itself gates on control_mode too.
+    # --position-kp/--position-kd: see DogEnv.__init__'s position_kp/ position_kd comment
     if position_kp is not None:
         kwargs['position_kp'] = position_kp
     if position_kd is not None:
         kwargs['position_kd'] = position_kd
-    # --position-kp-range-start/--position-kp-range-end (2026-08-06): the
-    # env is constructed with the STARTING range -- GainRangeCurriculumCallback
-    # widens it over training via set_position_gain_range(), this is just
-    # the initial value so the range is well-defined before the callback's
-    # first update. See DogEnv.__init__'s position_kp_range comment.
+    # --position-kp-range-start/--position-kp-range-end: the env is constructed with the STARTING range
     if position_kp_range is not None:
         kwargs['position_kp_range'] = position_kp_range
     if position_kd_range is not None:
         kwargs['position_kd_range'] = position_kd_range
-    # --home-start-prob-start (2026-08-09): env is constructed with the
-    # STARTING probability -- HomeStartCurriculumCallback widens it over
-    # training via set_home_start_prob(), this is just the initial value
-    # so it's well-defined before the callback's first update. Only
-    # meaningful when walk_start_pose='random'; harmless to pass
-    # otherwise (DogEnv stores it but reset() never reads it for
-    # 'standing'/'home').
+    # --home-start-prob-start: env is constructed with the STARTING probability
     if home_start_prob_start is not None:
         kwargs['home_start_prob'] = home_start_prob_start
-    # --max-slew-deg-per-s (2026-08-16, user request): runtime override of
-    # dog_env.py's MAX_SLEW_DEG_PER_S starting ceiling -- see DogEnv.__init__'s
-    # max_slew_deg_per_s comment. Independent of --slew-curriculum-start-step/
-    # -decay-steps, which control whether/how this starting value later
-    # tightens, not what it starts at.
+    # --max-slew-deg-per-s: runtime override of dog_env.py's MAX_SLEW_DEG_PER_S starting ceiling
     if max_slew_deg_per_s is not None:
         kwargs['max_slew_deg_per_s'] = max_slew_deg_per_s
-    # --joint-stiffness (2026-08-18, "T_FAKE" staged-training idea -- see
-    # DogEnv.__init__'s joint_stiffness comment): runtime override of
-    # generate_dog_mjcf.py's baked-in per-leg-joint stiffness="0". None
-    # (default) leaves it at the physically-correct 0, unchanged.
+    # --joint-stiffness: runtime override of generate_dog_mjcf.py's baked-in per-leg-joint stiffness="0"
     if joint_stiffness is not None:
         kwargs['joint_stiffness'] = joint_stiffness
     return lambda: gym.make(env_id, **kwargs)
@@ -428,17 +232,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
           forward_speed_curriculum_target=None, gait_style='trot', joint_stiffness=None,
           use_sde=False, sde_sample_freq=-1,
           wandb_project='dog-quadruped', wandb_entity=None):
-    # Always on (2026-08-15, direct user request -- "wandb", always-on not
-    # opt-in): locals() grabbed HERE, before any other local variable
-    # exists, so it's exactly this call's own training config -- one
-    # dict, automatically kept in sync with this signature, no separate
-    # by-hand list to fall out of date as params get added/removed.
-    # sync_tensorboard=True piggybacks on the tensorboard_log=log_dir
-    # already passed to PPO()/ALGOS[algo]() below rather than duplicating
-    # metric logging -- every scalar already going to TensorBoard (and
-    # therefore already readable by the dashboard's own graphs.py) gets
-    # mirrored to W&B for free. name=fname matches tb_log_name=fname
-    # below, so a run is trivially cross-referenceable between the two.
+    # W&B logging is always on.
     wandb_config = {k: v for k, v in locals().items() if k not in ('wandb_project', 'wandb_entity')}
     os.makedirs(log_dir, exist_ok=True)  # wandb.init(dir=...) needs this to already exist
     wandb.init(project=wandb_project, entity=wandb_entity, name=fname,
@@ -478,23 +272,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
         net_arch=dict(pi=[512, 256, 128], vf=[512, 256, 128]),
         activation_fn=nn.Tanh,
     )
-    # control_mode='torque' only (2026-08-04): SB3's PPO default
-    # log_std_init=0.0 means the initial per-motor exploration std is
-    # 1.0, in RAW action-space units. Position mode's action range is
-    # already a few radians wide, so std=1 explores a real chunk of it.
-    # Torque mode's range is the actuator's full +-ctrlrange (e.g. +-20
-    # N*m) -- with std=1, exploration noise barely reaches +-3, well
-    # short of the ~15-20 N*m a stand policy actually needs (measured
-    # directly: a stand_policy_torque_v3 checkpoint at 1M steps still
-    # had std~1.08 despite the effort_penalty/action_rate_penalty scale
-    # fix, and mean |action| stayed 0.1-0.6 out of +-20 -- the policy
-    # was never SAMPLING large torques during rollout collection in the
-    # first place, so there was no gradient signal that they help,
-    # independent of whether they'd be rewarded once tried). Scaling the
-    # initial std to a meaningful fraction (1/3) of the actuator's own
-    # range fixes this at the source rather than waiting for ent_coef to
-    # slowly grow it. Reads the env's OWN action_space (not a hardcoded
-    # 20) so this stays correct if --torque-limit ever changes.
+    # control_mode='torque' only: SB3's PPO default log_std_init=0.0 means the initial per-motor exploration std is 1.0, in RAW action-space units.
     if control_mode == 'torque':
         torque_range = float(env.action_space.high[0])
         policy_kwargs['log_std_init'] = float(np.log(torque_range / 3.0))
@@ -503,24 +281,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
                       # GPU transfer overhead isn't worth it there)
 
     if init_from:
-        # Fine-tuning: PPO.load() restores the saved policy/value network
-        # weights AND optimizer state, then rebinds to `env` (a NEW env,
-        # e.g. Dog-Walk-v0 while the checkpoint was trained on
-        # Dog-Stand-v0 -- valid exactly because both tasks share the same
-        # DogEnv observation/action space, see this module's docstring).
-        # The n_steps/batch_size/n_epochs/learning_rate/device kwargs here
-        # OVERRIDE whatever was saved in the checkpoint, matching this
-        # run's own CLI flags rather than silently inheriting the source
-        # run's. --learning-rate matters MORE here than for a fresh run:
-        # fine-tuning from an already-good policy generally wants a LOWER
-        # rate than training from scratch (2026-07-28 -- a
-        # penaltyFix fine-tune at the same 3e-4 default used for fresh
-        # training got WORSE, not better, over 19M further steps --
-        # raw-action swing at a settled stand pose went from 74.7deg
-        # mean at 1M steps to 148.5deg at 20M, roughly back to the
-        # original pre-fix policy's level -- large gradient steps on an
-        # already-near-optimal network are more likely to destabilize
-        # existing behavior than refine it smoothly).
+        # Fine-tuning: PPO.load() restores the saved policy/value network weights AND optimizer state, then rebinds to `env` (a NEW env, e.g.
         print(f'Fine-tuning from {init_from} on {env_id}')
         if algo != 'PPO':
             raise ValueError('--init-from is only wired up for PPO so far')
@@ -529,12 +290,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
             n_steps=n_steps, batch_size=batch_size, n_epochs=n_epochs,
             learning_rate=learning_rate, ent_coef=ent_coef, tensorboard_log=log_dir)
     elif algo == 'PPO':
-        # n_steps*num_envs is the rollout buffer size collected before each
-        # round of updates -- SB3 just warns (doesn't error) if batch_size
-        # doesn't evenly divide it, verified directly; not re-validated
-        # here, so a bad combination will silently proceed with a
-        # truncated final minibatch each epoch. Watch stdout for that
-        # warning after changing any of these three.
+        # n_steps*num_envs is the rollout buffer size collected before each round of updates
         model = PPO(
             policy='MlpPolicy',
             env=env,
@@ -545,30 +301,11 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=ent_coef,  # was hardcoded 0.01 (itself raised from 0.0 -- no exploration
-                                 # pressure beyond the policy's own action noise, which let training
-                                 # settle into a "sit still and level" local optimum) -- now a CLI
-                                 # flag, see --ent-coef/--ent-coef-end/--decay-steps and
-                                 # DecayScheduleCallback for optional decay over training.
+            ent_coef=ent_coef,  # entropy bonus -- see --ent-coef/--ent-coef-end/--decay-steps
+                                 # and DecayScheduleCallback for optional decay over training.
             vf_coef=0.5,
             max_grad_norm=0.5,
-            # use_sde (2026-08-17, added after diagnosing a mechanism
-            # nicknamed the "Secret Auto-Retract Bungee Cord"): gSDE
-            # replaces PPO's default per-tick
-            # INDEPENDENT Gaussian action noise with noise sampled once
-            # per sde_sample_freq steps and held smoothly correlated in
-            # between (State-Dependent Exploration, Raffin et al. 2021).
-            # Directly targets a mechanism confirmed this session: at a
-            # tight slew clamp, a single tick's actual physical
-            # consequence is nearly identical regardless of how
-            # aggressive the commanded residual is (verified via a clean
-            # env deepcopy comparison -- reward and actuator ctrl came
-            # back byte-identical for a tiny action vs a drastic one), so
-            # independent per-tick noise can never accidentally produce
-            # the SUSTAINED multi-tick commitment a real leg swing needs
-            # -- gSDE's temporally-correlated noise can. Opt-in (default
-            # False, old behavior unchanged) -- see --use-sde/
-            # --sde-sample-freq.
+            # gSDE replaces PPO's default per-tick independent Gaussian action noise with noise sampled once per sde_sample_freq steps and held smoothly correlated in between (State- Dependent Exploration, Raffin et al.
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
             tensorboard_log=log_dir,
@@ -581,17 +318,7 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     else:
         raise ValueError(f'Unknown algorithm: {algo}')
 
-    # Constructed once, reused across every .learn() call below (not
-    # per-iteration) so its decay stays continuous over the whole
-    # cumulative run instead of restarting each iteration -- see
-    # DecayScheduleCallback's docstring. Inert (no-op) by default: both
-    # end values default to their start values in main(), so a run that
-    # doesn't explicitly configure decay behaves exactly as before.
-    # --lr-schedule adaptive (2026-08-06): AdaptiveKLLearningRateCallback
-    # takes over model.lr_schedule instead of DecayScheduleCallback's own
-    # linear decay -- adjust_lr=False keeps DecayScheduleCallback around
-    # ONLY for ent_coef decay in that mode, so the two don't fight over
-    # the same attribute. Default ('linear') behaves exactly as before.
+    # Constructed once, reused across every .learn() call below (not per-iteration) so its decay stays continuous over the whole cumulative run instead of restarting each iteration
     schedule_callback = DecayScheduleCallback(
         ent_coef_start=ent_coef, ent_coef_end=ent_coef_end,
         lr_start=learning_rate, lr_end=learning_rate_end,
@@ -600,40 +327,25 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     if lr_schedule == 'adaptive':
         callbacks.append(AdaptiveKLLearningRateCallback(
             desired_kl=desired_kl, initial_lr=learning_rate))
-    # Opt-in: only constructed if all 4 range endpoints were given (see
-    # main()'s validation) -- a run that doesn't pass any of the
-    # --position-kp-range-* flags behaves exactly as before, no curriculum.
+    # Opt-in: only constructed if all 4 range endpoints were given (see main()'s validation)
     if position_kp_range_start is not None:
         callbacks.append(GainRangeCurriculumCallback(
             kp_range_start=position_kp_range_start, kp_range_end=position_kp_range_end,
             kd_range_start=position_kd_range_start, kd_range_end=position_kd_range_end,
             decay_steps=gain_curriculum_steps if gain_curriculum_steps is not None else decay_steps))
-    # Opt-in: only constructed if walk_start_pose='random' (see main()'s
-    # validation -- the -prob-start/-end flags are meaningless otherwise
-    # and rejected earlier if passed without it). A run using 'standing'
-    # or 'home' directly behaves exactly as before, no curriculum.
+    # Opt-in: only constructed if walk_start_pose='random' (see main()'s validation
     if walk_start_pose == 'random':
         callbacks.append(HomeStartCurriculumCallback(
             prob_start=home_start_prob_start, prob_end=home_start_prob_end,
             decay_steps=home_start_curriculum_steps if home_start_curriculum_steps is not None
             else decay_steps))
-    # Opt-in: only constructed if --slew-curriculum-start-step was given --
-    # a run that doesn't pass it behaves exactly as before (DogEnv trains
-    # at the fixed, loose MAX_SLEW_DEG_PER_S the whole time, no
-    # tightening). See SlewCurriculumCallback's own docstring for why this
-    # is pinned at the loose value until start_step, unlike the two
-    # curricula above which both begin moving from step 0.
+    # Opt-in: only constructed if --slew-curriculum-start-step was given
     if slew_curriculum_start_step is not None:
         callbacks.append(SlewCurriculumCallback(
             start_step=slew_curriculum_start_step,
             decay_steps=slew_curriculum_decay_steps if slew_curriculum_decay_steps is not None
             else decay_steps))
-    # Opt-in: only constructed if --forward-speed-curriculum-start-step was
-    # given -- a run that doesn't pass it behaves exactly as before (DogEnv
-    # trains at the fixed WALK_FORWARD_PROGRESS_TARGET_M_S the whole time,
-    # no raising). Same "pinned until start_step, not moving from step 0"
-    # shape as SlewCurriculumCallback -- see ForwardSpeedCurriculumCallback's
-    # own docstring for why.
+    # Opt-in: only constructed if --forward-speed-curriculum-start-step was given
     if forward_speed_curriculum_start_step is not None:
         callbacks.append(ForwardSpeedCurriculumCallback(
             start_step=forward_speed_curriculum_start_step,
@@ -646,24 +358,9 @@ def train(env_id, algo, fname, env_type, num_envs, total_timesteps_per_iter,
     while True:
         iteration += 1
         print(f'Starting iteration {iteration}')
-        # First .learn() call after a fresh --init-from load starts this
-        # run's own timestep counter (and therefore checkpoint filenames
-        # below) at 0, regardless of how many steps the source checkpoint
-        # had already accumulated -- see this module's docstring.
+        # First .learn() call after a fresh --init-from load starts this run's own timestep counter (and therefore checkpoint filenames below) at 0, regardless of how many steps the source checkpoint had already accumulated
         reset_num_timesteps = bool(init_from) and iteration == 1
-        # tb_log_name=fname (2026-08-15, dashboard "Trainings" tab work):
-        # without an explicit name, SB3 falls back to its own auto-
-        # incrementing {algo}_{n} folder naming under log_dir, scoped per
-        # PROCESS not per fname -- confirmed directly that this let
-        # completely unrelated runs (different --fname, different days)
-        # collide on the same folder (log_dir/PPO_3/ contained event files
-        # from 7 different PIDs/timestamps), making "find the graphs for
-        # fname X" unreliable. Naming it after fname instead means every
-        # iteration of THIS run lands under log_dir/{fname}_{n}/ -- still
-        # one folder per .learn() call (SB3 still appends its own _n
-        # suffix even with a custom name), but now unambiguously
-        # prefixed, so a glob for f'{fname}_*' finds exactly this run's
-        # own folders and nothing else.
+        # tb_log_name=fname: without an explicit name, SB3 falls back to its own auto-incrementing {algo}_{n} folder naming under log_dir, scoped per PROCESS not per fname, so unrelated runs can collide on the same folder.
         model.learn(total_timesteps=total_timesteps_per_iter,
                     reset_num_timesteps=reset_num_timesteps,
                     callback=callback,
@@ -689,10 +386,7 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
         kwargs['position_kd'] = position_kd
     if joint_stiffness is not None:
         kwargs['joint_stiffness'] = joint_stiffness
-    # walk_start_pose='random' only -- test has no curriculum (unlike
-    # train()'s HomeStartCurriculumCallback), so this is just the single
-    # fixed probability used for the whole test session. Reuses
-    # --home-start-prob-start's value; harmless to pass otherwise.
+    # walk_start_pose='random' only
     if home_start_prob is not None:
         kwargs['home_start_prob'] = home_start_prob
     if max_slew_deg_per_s is not None:
@@ -703,9 +397,7 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
         raise ValueError(f'Unknown algorithm: {algo}')
     model = ALGOS[algo].load(path_to_model, env=env)
 
-    # Sim steps execute far faster than real time -- without pacing, a
-    # short (falls-quickly) episode blows by in a fraction of a second and
-    # the viewer window closes before there's anything to watch.
+    # Sim steps execute far faster than real time
     dt = env.unwrapped.model.opt.timestep
 
     csv_file = csv_writer = None
@@ -713,19 +405,7 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
         import csv
         csv_file = open(log_csv, 'w', newline='')
         csv_writer = csv.writer(csv_file)
-        # x_m/y_m: world-frame torso position. dog.mjcf.xml is still in
-        # the CAD's own native frame (+y=front, +x=right), NOT ROS
-        # REP-103 -- so y_m is forward progress and x_m is sideways
-        # drift, not the other way around. See dog_env.py's
-        # _compute_reward_walk comment for why this matters.
-        # feet_grounded: any calf-capsule/floor contact, knee end included.
-        # feet_tip/feet_non_tip: same contacts, split by whether they're
-        # near the actual foot site (standing on the foot) or not
-        # (standing on the knee/shin) -- see dog_env.py's
-        # _foot_tip_contact_count(). leg_a/b/c/d_contact: per-leg
-        # breakdown of the same thing ('air'/'tip'/'nontip') -- for
-        # spotting asymmetric issues (e.g. "front legs dragging, back
-        # legs fine") the aggregate counts alone can't show.
+        # x_m/y_m: world-frame torso position.
         csv_writer.writerow(['episode', 'step', 'x_m', 'y_m', 'height_m', 'upright',
                               'feet_grounded', 'feet_tip', 'feet_non_tip',
                               'leg_a_contact', 'leg_b_contact', 'leg_c_contact', 'leg_d_contact',
@@ -758,13 +438,7 @@ def test(env_id, algo, path_to_model, episodes, domain_randomization=False, log_
 
     env.close()
 
-    # mujoco.viewer.launch_passive's pause-key_callback thread doesn't join
-    # cleanly on close() -- the interpreter otherwise hangs here forever
-    # instead of returning control to the terminal. Safe to force-exit:
-    # this is the terminal step of the CLI's --test path, nothing else is
-    # pending. os._exit() skips the normal stdout/stderr flush, so do that
-    # explicitly first or piped/redirected output (e.g. `| tee log.txt`)
-    # silently loses the "Episode N: total_reward=" lines above.
+    # mujoco.viewer.launch_passive's pause-key_callback thread doesn't join cleanly on close()
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(0)
@@ -784,42 +458,34 @@ def main():
     parser.add_argument('--domain-randomization', action='store_true')
     parser.add_argument('--walk-start-pose', default='standing', choices=['standing', 'home', 'random'],
                          help='Dog-Walk-v0 only: episode starting pose. \'standing\' (default) '
-                              'is the original behavior -- starts already standing, see this '
-                              'module\'s docstring for why (composing a stand policy + a walk '
-                              'policy was the original plan). \'home\' starts from the sitting/'
-                              'home pose instead (same start state STAND uses) -- one policy '
-                              'has to climb to standing height AND walk forward, inspired by '
-                              'friend_code\'s approach of training a single policy end-to-end '
-                              'rather than assuming a separate stand policy always runs first. '
-                              '\'random\' (2026-08-09) mixes both within ONE training run -- '
-                              'each episode independently coin-flips \'home\' vs \'standing\' '
-                              '(weighted by --home-start-prob-start/-end, see those flags), so a '
-                              'single policy learns to stand up from home AND walk, while '
-                              '\'standing\'/\'home\' remain available unchanged for a dedicated '
-                              'single-start-condition policy. No effect on Dog-Stand-v0.')
+                              'starts already standing (for composing a separate stand policy + '
+                              'a walk policy). \'home\' starts from the sitting/home pose instead '
+                              '(same start state STAND uses) -- one policy has to climb to '
+                              'standing height AND walk forward. \'random\' mixes both within ONE '
+                              'training run -- each episode independently coin-flips \'home\' vs '
+                              '\'standing\' (weighted by --home-start-prob-start/-end, see those '
+                              'flags), so a single policy learns to stand up from home AND walk. '
+                              'No effect on Dog-Stand-v0.')
     parser.add_argument('--walk-height-fraction', type=float, default=0.90,
                          help='Dog-Walk-v0 only: target torso height during walking, as a '
-                              'fraction of STAND_HEIGHT_M (0.313m). Was a hardcoded constant '
-                              '(WALK_HEIGHT_FRACTION in dog_env.py), now a CLI flag. A crouched '
-                              'target (< 1.0) keeps the CoM lower and legs bent -- standard '
-                              'practice for quadruped locomotion RL. No effect on Dog-Stand-v0.')
+                              'fraction of STAND_HEIGHT_M (0.313m). A crouched target (< 1.0) '
+                              'keeps the CoM lower and legs bent -- standard practice for '
+                              'quadruped locomotion RL. No effect on Dog-Stand-v0.')
     parser.add_argument('--control-mode', default='position',
                          choices=['position', 'torque', 'torque_belt'],
-                         help="'position' (default, unchanged): <position> PD actuators, action "
-                              '= target joint angle -- the only mode that matches real hardware '
-                              "(actuator package exposes position/velocity services, no torque "
-                              "command yet). 'torque' (2026-08-03, sim-only comparison run): "
-                              '<motor> actuators (dog_torque.mjcf.xml), action = raw joint '
-                              "torque directly -- NOT deployable to real hardware as-is. 'torque_belt' "
-                              '(2026-08-05, sim-only): same as torque, but calf motors additionally '
-                              'get an automatic belt-compensation servo (dog_torque_belt.mjcf.xml, '
-                              '<fixed> tendons) so the policy\'s calf output represents only genuine '
-                              'flexion effort, not the "carried along by the thigh" motion the real '
-                              'belt cancels for free. '
-                              'Same --fname/checkpoints as any other run; keep torque-mode runs under '
-                              'a clearly separate --fname so they never get mixed up with a '
-                              'position-mode lineage (the action spaces are incompatible, same '
-                              'as WALK_ACTION_RESIDUAL_RANGE_RAD\'s old-checkpoint break).')
+                         help="'position' (default): <position> PD actuators, action = target "
+                              "joint angle -- the only mode that matches real hardware (actuator "
+                              "package exposes position/velocity services, no torque command "
+                              "yet). 'torque' (sim-only comparison): <motor> actuators "
+                              '(dog_torque.mjcf.xml), action = raw joint torque directly -- NOT '
+                              "deployable to real hardware as-is. 'torque_belt' (sim-only): same "
+                              'as torque, but calf motors additionally get an automatic belt-'
+                              'compensation servo (dog_torque_belt.mjcf.xml, <fixed> tendons) so '
+                              'the policy\'s calf output represents only genuine flexion effort, '
+                              'not the "carried along by the thigh" motion the real belt cancels '
+                              'for free. Keep torque-mode runs under a clearly separate --fname '
+                              'so they never get mixed up with a position-mode lineage -- the '
+                              'action spaces are incompatible.')
     parser.add_argument('--model-path', default=None,
                          help='Override which MJCF file DogEnv loads, instead of control_mode\'s '
                               'own default (dog.mjcf.xml for position, dog_torque.mjcf.xml for '
@@ -830,38 +496,33 @@ def main():
                               'trained, that older checkpoint needs this pointed at a copy of the '
                               'file with its original values, or it fails to load.')
     parser.add_argument('--position-kp', type=float, default=None,
-                         help='control_mode=position only (2026-08-05): runtime override of the '
-                              "MJCF's baked-in <position> actuator kp (default 60, matches real "
-                              'hardware). Position-mode WALK has never learned successfully from '
-                              'scratch even at 27-35M steps -- the hypothesis is that kp=60 turns '
-                              'exploration noise into violent, near-instantaneous snapping instead '
-                              'of graceful degradation, unlike torque mode. Must be passed together '
-                              'with --position-kd (both or neither) -- see DogEnv.__init__\'s '
-                              'position_kp/position_kd comment. Does not touch the MJCF file itself, '
-                              'so real-hardware-matching runs that omit this flag are unaffected.')
+                         help='control_mode=position only: runtime override of the MJCF\'s '
+                              "baked-in <position> actuator kp (default 60, matches real "
+                              'hardware). A softer kp lets exploration noise degrade gracefully '
+                              'instead of snapping violently, which may help WALK learn from '
+                              'scratch. Must be passed together with --position-kd (both or '
+                              'neither) -- see DogEnv.__init__\'s position_kp/position_kd comment. '
+                              'Does not touch the MJCF file itself, so real-hardware-matching runs '
+                              'that omit this flag are unaffected.')
     parser.add_argument('--position-kd', type=float, default=None,
                          help='control_mode=position only: runtime override of the MJCF\'s baked-in '
                               '<position> actuator kv/damping (default 4). See --position-kp.')
     parser.add_argument('--position-kp-range-start', type=float, nargs=2, default=None,
                          metavar=('LOW', 'HIGH'),
-                         help='control_mode=position only, --train only (2026-08-06): domain-'
-                              'randomizes position_kp per EPISODE from this (low, high) range at '
-                              'the start of training, linearly widening to --position-kp-range-end '
-                              'over --gain-curriculum-steps. Mutually exclusive with --position-kp/'
-                              '--position-kd (fixed). All four of --position-kp-range-start/-end and '
-                              '--position-kd-range-start/-end must be given together. Motivated by '
-                              'real-hardware deployment of a kp=20-trained policy showing insufficient '
-                              'torque to lift the back legs at kp=20, but training AT the real kp=60/'
-                              'kd=8 from scratch producing a policy that lost ~27%% of standing height '
-                              'in 0.14s early in a rollout (PPO_6000000_walk_position_scratch_v8) -- '
-                              'PPO\'s exploration noise is roughly fixed-size in action-space units, '
-                              'but the physical force it produces scales with the gain, so a near-'
-                              'random early policy is far more likely to crash at a stiff gain than a '
-                              'soft one. Starting the randomization range narrow and gentle (e.g. '
-                              '10 30) and widening it toward the real value (e.g. 40 80) over training '
-                              'gives both robustness (randomization) and a safe on-ramp (curriculum). '
-                              'Example: --position-kp-range-start 10 30 --position-kp-range-end 40 80 '
-                              '--position-kd-range-start 1 3 --position-kd-range-end 4 10.')
+                         help='control_mode=position only, --train only: domain-randomizes '
+                              'position_kp per EPISODE from this (low, high) range at the start '
+                              'of training, linearly widening to --position-kp-range-end over '
+                              '--gain-curriculum-steps. Mutually exclusive with --position-kp/'
+                              '--position-kd (fixed). All four of --position-kp-range-start/-end '
+                              'and --position-kd-range-start/-end must be given together. PPO\'s '
+                              'exploration noise is roughly fixed-size in action-space units, but '
+                              'the physical force it produces scales with the gain, so a near-'
+                              'random early policy is far more likely to crash at a stiff gain '
+                              'than a soft one -- starting the randomization range narrow and '
+                              'gentle and widening it toward the real gain over training gives '
+                              'both robustness (randomization) and a safe on-ramp (curriculum). '
+                              'Example: --position-kp-range-start 10 30 --position-kp-range-end '
+                              '40 80 --position-kd-range-start 1 3 --position-kd-range-end 4 10.')
     parser.add_argument('--position-kp-range-end', type=float, nargs=2, default=None,
                          metavar=('LOW', 'HIGH'), help='See --position-kp-range-start.')
     parser.add_argument('--position-kd-range-start', type=float, nargs=2, default=None,
@@ -1066,9 +727,7 @@ def main():
                          help='--test only: write per-step height/upright/feet-grounded/reward to this CSV')
     args = parser.parse_args()
 
-    # Unset -end flags default to their start value -- no decay unless
-    # explicitly configured differently (see --ent-coef-end/
-    # --learning-rate-end's help).
+    # Unset -end flags default to their start value
     ent_coef_end = args.ent_coef_end if args.ent_coef_end is not None else args.ent_coef
     learning_rate_end = args.learning_rate_end if args.learning_rate_end is not None else args.learning_rate
 

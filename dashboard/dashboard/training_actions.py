@@ -1,18 +1,5 @@
-"""Launches dog_gym.train --train as a detached local subprocess, and
-tracks it well enough to survive a dashboard restart -- mirrors ssh.py/
-procs.py's "PID + log file, status always re-verified live, never
-trusted from stale memory" philosophy, just for a LOCAL process instead
-of a remote one (Jetson/sheep's long-running processes are already
-independently alive from the dashboard's own process since they're
-remote; a local subprocess needs its own persistence story since the
-dashboard process itself might restart).
+"""Launches dog_gym.train."""
 
-Marker file convention: one <fname>.run.json per running (or just-
-finished-and-not-yet-pruned) local training, sitting flat in LOG_DIR
-(NOT inside a <fname>_N/ TensorBoard run folder -- those are SB3's own,
-this dashboard doesn't own their contents). Contains enough to report
-status and to `kill` it later: {pid, fname, cmd, started_at}.
-"""
 import json
 import os
 import signal
@@ -26,10 +13,7 @@ from dashboard.config import (
 
 # --- command construction -----------------------------------------------
 
-# (form field name, CLI flag, python type) for the "advanced" fields --
-# each gated by a same-named '<field>_enabled' checkbox in the form.
-# Simple, uniform enough (checkbox present -> pass --flag <value>) that a
-# table beats writing out 10 near-identical if-blocks by hand.
+# (form field name, CLI flag, python type) for the "advanced" fields
 _ADVANCED_FIELDS = [
     ('n_steps', '--n-steps', int),
     ('batch_size', '--batch-size', int),
@@ -42,43 +26,25 @@ _ADVANCED_FIELDS = [
     ('timesteps_per_iter', '--timesteps-per-iter', int),
     ('init_from', '--init-from', str),
     ('env_type', '--env-type', str),
-    # Slew-rate curriculum (2026-08-16, dog_gym/dog_gym/train.py's
-    # SlewCurriculumCallback -- see MAX_SLEW_DEG_PER_S/
-    # SLEW_CURRICULUM_TARGET_DEG_PER_S in dog_env.py): opt-in, same as
-    # every other advanced field here -- omitting start-step leaves
-    # train.py's own default (no curriculum, fixed at 1000 the whole run).
+    # Slew-rate curriculum (train.py's SlewCurriculumCallback
     ('slew_curriculum_start_step', '--slew-curriculum-start-step', int),
     ('slew_curriculum_decay_steps', '--slew-curriculum-decay-steps', int),
-    # Starting slew ceiling itself (2026-08-16, user request -- "have
-    # MAX_SLEW_DEG_PER_S be a parameter I can change with a flag"),
-    # independent of the two curriculum fields above (those control
-    # whether/how it tightens, not what it starts at).
+    # Starting slew ceiling itself, independent of the two curriculum fields above (those control whether/how it tightens, not what it starts at).
     ('max_slew_deg_per_s', '--max-slew-deg-per-s', float),
-    # Forward-speed curriculum (2026-08-18, dog_gym/dog_gym/train.py's
-    # ForwardSpeedCurriculumCallback -- see WALK_FORWARD_PROGRESS_TARGET_
-    # M_S in dog_env.py): opt-in, same shape as the slew curriculum above
-    # -- omitting start-step leaves train.py's own default (no curriculum,
-    # fixed at 0.15 the whole run).
+    # Forward-speed curriculum (train.py's ForwardSpeedCurriculumCallback
     ('forward_speed_curriculum_start_step', '--forward-speed-curriculum-start-step', int),
     ('forward_speed_curriculum_decay_steps', '--forward-speed-curriculum-decay-steps', int),
     ('forward_speed_curriculum_target', '--forward-speed-curriculum-target', float),
-    # --use-sde only (2026-08-17, gSDE exploration -- see dog_gym/train.py's
-    # own --sde-sample-freq help): harmless to pass even if --use-sde isn't
-    # checked, train.py's argparse accepts it unconditionally.
+    # --use-sde only (gSDE exploration
     ('sde_sample_freq', '--sde-sample-freq', int),
-    # --joint-stiffness (2026-08-18, "T_FAKE" staged-training idea -- see
-    # dog_gym/train.py's own --joint-stiffness help): opt-in override of
-    # generate_dog_mjcf.py's baked-in per-leg-joint stiffness="0".
-    # Omitting this checkbox leaves it at the physically-correct 0.
+    # --joint-stiffness: opt-in override of generate_dog_mjcf.py's baked-in per-leg-joint stiffness="0" (see train.py's own --joint-stiffness help).
     ('joint_stiffness', '--joint-stiffness', float),
 ]
 
 
 def build_train_args(form):
-    """form: a Flask request.form-like mapping (the launch-training POST
-    body). Returns a list of CLI arg strings for `dog_gym.train --train`,
-    matching train.py's actual argparse surface -- see the plan's
-    "Ground truth" section for the full flag list this was built from."""
+    """form: a Flask request.form-like mapping (the launch-training POST body)."""
+
     env_id = form.get('env_id', 'Dog-Walk-v0')
     is_walk = env_id == 'Dog-Walk-v0'
 
@@ -95,10 +61,7 @@ def build_train_args(form):
     if form.get('domain_randomization'):
         args.append('--domain-randomization')
 
-    # gSDE (2026-08-17, added after an investigation into exploration
-    # noise recommended it): plain boolean, same pattern as
-    # domain_randomization above. --sde-sample-freq (Advanced) is harmless
-    # to also pass even when this is unchecked.
+    # gSDE: plain boolean, same pattern as domain_randomization above.
     if form.get('use_sde'):
         args.append('--use-sde')
 
@@ -106,10 +69,8 @@ def build_train_args(form):
         args += ['--walk-start-pose', form.get('start_pose', 'home')]
         if form.get('walk_height_fraction_enabled'):
             args += ['--walk-height-fraction', form.get('walk_height_fraction', '0.9')]
-        # gait_style (2026-08-18, "genuine running" feature -- see dog_env.py's
-        # WALK_BOUND_SYMMETRY_WEIGHT comment): front-and-center like start_pose
-        # above, not buried in _ADVANCED_FIELDS -- same precedent the user set
-        # for forward_speed_curriculum_target ("easier to find").
+        # gait_style: front-and-center like start_pose above, not buried
+        # in _ADVANCED_FIELDS, for easier discoverability.
         args += ['--gait-style', form.get('gait_style', 'trot')]
 
     # Gain mode: mutually exclusive at the train.py argparse level, so
@@ -153,7 +114,7 @@ def _stdout_log_path(fname):
 
 
 def launch_local_training(form):
-    """Returns (ok, message). Spawns detached, writes the PID marker."""
+    """Returns (ok, message)."""
     fname = form.get('fname', '').strip()
     if not fname:
         return False, 'fname is required.'
@@ -183,18 +144,8 @@ def launch_local_training(form):
 
 
 def _pid_alive(pid):
-    """os.kill(pid, 0) alone isn't enough: launch_local_training() never
-    calls wait()/poll() on its Popen (deliberately -- it needs to
-    outlive this request and possibly the whole dashboard process), so
-    when the child exits it becomes a zombie, and a zombie still answers
-    kill(pid, 0) as "exists" until reaped. In a one-shot script the
-    zombie gets reaped for free when that script's process exits, which
-    is why this looked fine under ad-hoc testing -- but the real
-    dashboard is one long-lived process, so without an explicit reap a
-    finished/killed training would report as "running" forever. Reap
-    first (only succeeds if pid is actually our own child, e.g. within
-    the same dashboard process lifetime -- ChildProcessError otherwise,
-    which is fine, kill(pid, 0) still correctly answers that case)."""
+    """os.kill(pid, 0) alone isn't enough: launch_local_training() never calls wait()/poll() on its Popen (deliberately."""
+
     if not pid:
         return False
     try:
@@ -211,12 +162,8 @@ def _pid_alive(pid):
 
 
 def list_running_local_trainings():
-    """[{fname, pid, started_at, cmd}] -- scans LOG_DIR for *.run.json
-    markers, verifies each PID is genuinely still alive (never trusts the
-    marker's mere existence), and PRUNES (deletes) markers for processes
-    that are no longer running -- so a training that finished or crashed
-    naturally drops off this list on the next page load, no manual
-    cleanup needed."""
+    """[{fname, pid, started_at, cmd}]."""
+
     running = []
     if not os.path.isdir(LOG_DIR):
         return running
@@ -259,9 +206,8 @@ def is_training_running(fname):
 
 
 def stop_training(fname):
-    """Best-effort TERM then KILL, mirroring ssh.kill()'s own pattern.
-    Returns True once the process is confirmed gone (or was already
-    gone)."""
+    """Best-effort TERM then KILL, mirroring ssh.kill()'s own pattern. Returns True once the process is confirmed gone (or w..."""
+
     path = _marker_path(fname)
     if not os.path.exists(path):
         return True
@@ -306,13 +252,7 @@ def tail_stdout_log(fname, max_bytes=20000):
         return f.read().decode(errors='replace')
 
 
-# --- sheep (remote) training launch/stop ---------------------------------
-# No local PID-persistence story needed here (unlike the local functions
-# above) -- a remote training is already independently alive from the
-# dashboard's own process, so remote_fs.list_remote_running_trainings()
-# (a live pgrep, not a stored marker) is the sole source of truth. Reuses
-# build_train_args() -- the argument LIST is host-independent, only how
-# it gets launched differs.
+# --- sheep (remote) training launch/stop --------------------------------- No local PID-persistence story needed here (unlike the local functions above)
 
 _SHEEP_PREFIX = (f'cd {SHEEP_WS_ROOT} && source /opt/ros/*/setup.bash && '
                  f'source install/setup.bash && ')
@@ -320,16 +260,8 @@ _SHEEP_LOG_DIR = f'{SHEEP_WS_ROOT}/.dashboard_logs'
 
 
 def _cuda_device_prefix(form):
-    """'' or 'CUDA_VISIBLE_DEVICES=<n> ' (2026-08-16, user request --
-    "one gpu might have less people using it, can you check if this is
-    true" -- confirmed true, sheep has 2 physical GPUs, load varies a
-    lot between them). This is a shell ENV VAR prefix on the command,
-    NOT a train.py --flag -- CUDA_VISIBLE_DEVICES has to be set before
-    the python process (and therefore torch/CUDA) even starts, train.py
-    itself has no hook to set it from inside, so it can't go through
-    build_train_args()/argparse the way every other field here does.
-    form['cuda_device'] is '', '0', or '1' ('' / missing = no
-    restriction, whatever the process's default visibility is)."""
+    """'' or 'CUDA_VISIBLE_DEVICES=<n> '."""
+
     device = form.get('cuda_device', '').strip()
     return f'CUDA_VISIBLE_DEVICES={device} ' if device != '' else ''
 

@@ -1,19 +1,5 @@
-"""Runs actuator's basic_control node directly on THIS machine (not the
-Jetson) -- for bench-debugging motors plugged straight into this laptop
-(2026-08-18, user request: "Motors section on Local Tools ... it runs
-the actuator node so i can debug motors when they are plugged in to my
-laptop"). Mirrors training_actions.py's own "PID + log marker file,
-status always re-verified live" pattern for LOCAL long-running processes
--- procs.py's in-memory-only state (fine for Jetson/Sheep, since those
-processes are independently alive from the dashboard's own process
-either way) isn't enough for a local child: a dashboard restart would
-forget its PID (see training_actions.py's own module docstring for the
-full reasoning already established for local training runs).
+"""Runs actuator's basic_control node directly on THIS machine (not the Jetson)."""
 
-Deliberately just basic_control, not the full hardware_bringup.launch.py
-actuator+dog_imu pair the Jetson uses -- IMU isn't relevant for bench
-motor debugging and may not even be plugged in on a laptop.
-"""
 import json
 import os
 import signal
@@ -28,10 +14,8 @@ _LOG_PATH = os.path.join(LOCAL_ACTUATOR_LOG_DIR, 'local_actuator.stdout.log')
 
 
 def _pid_alive(pid):
-    """Same zombie-reaping caveat as training_actions.py's own
-    _pid_alive -- see that function's docstring for the full reasoning
-    (a Popen'd child this process never wait()s on becomes a zombie that
-    still answers kill(pid, 0) as 'exists' until reaped)."""
+    """Same zombie-reaping caveat as training_actions.py's own _pid_alive"""
+
     if not pid:
         return False
     try:
@@ -58,9 +42,8 @@ def _read_marker():
 
 
 def local_actuator_status():
-    """{'running': bool, 'log_tail': str} -- ALWAYS re-verified live via
-    the marker's own PID, never trusted from memory alone (matches every
-    other status check in this dashboard)."""
+    """{'running': bool, 'log_tail': str}."""
+
     marker = _read_marker()
     if marker is None or not _pid_alive(marker.get('pid')):
         if marker is not None:
@@ -80,8 +63,8 @@ def local_actuator_status():
 
 
 def start_local_actuator():
-    """(ok, message). Refuses to launch a second instance on top of one
-    already running, checked live (see local_actuator_status)."""
+    """(ok, message)."""
+
     if local_actuator_status()['running']:
         return True, 'basic_control is already running locally -- not starting a second one.'
     os.makedirs(LOCAL_ACTUATOR_LOG_DIR, exist_ok=True)
@@ -101,12 +84,8 @@ def start_local_actuator():
 
 
 def stop_local_actuator():
-    """Best-effort TERM then KILL, matching training_actions.
-    stop_training()'s own pattern. Doesn't zero motor torque first
-    (unlike Jetson's stop_hardware_bringup, via ros_actions.
-    disable_motors()) -- there's no local equivalent yet, and a bench
-    setup being actively debugged (usually a single motor on a stand,
-    not a loaded leg) is lower-stakes than the full assembled robot."""
+    """Best-effort TERM then KILL, matching training_actions. stop_training()'s own pattern."""
+
     marker = _read_marker()
     if marker is None:
         return True

@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
-"""Export a trained Stable-Baselines3 PPO policy to TorchScript.
+"""Export a trained Stable-Baselines3 PPO policy to TorchScript. dog_deploy runs on the Jetson and only needs `torch` at..."""
 
-dog_deploy runs on the Jetson and only needs `torch` at inference time --
-not `stable_baselines3`/`gymnasium`/`mujoco` -- so training-side artifacts
-(.zip SB3 checkpoints) get converted to a plain TorchScript module here.
-
-Usage:
-    ros2 run dog_gym export_policy models/PPO_7000000_stand_policy_v4.zip \
-        models/stand_policy_v4.pt --env-id Dog-Stand-v0
-
-    # torque-mode checkpoint (dog_deploy/policy_node.py's control_mode='torque'):
-    ros2 run dog_gym export_policy models/PPO_5000000_stand_policy_torque_v8.zip \
-        policies/stand_policy_torque_v8.pt --env-id Dog-Stand-v0 --control-mode torque
-"""
 
 import argparse
 
@@ -23,33 +11,16 @@ from stable_baselines3 import PPO
 
 
 class DeterministicPolicy(torch.nn.Module):
-    """Wraps an SB3 ActorCriticPolicy as a plain (obs) -> action module.
+    """Wraps an SB3 ActorCriticPolicy as a plain (obs) -> action module. Must be a real nn.Module (not e.g."""
 
-    Must be a real nn.Module (not e.g. a lambda closing over `policy`) so
-    torch.jit.trace treats the wrapped policy's parameters as part of the
-    traced graph instead of trying to inline them as constants, which
-    raises "Cannot insert a Tensor that requires grad as a constant".
-    """
 
     def __init__(self, policy, action_low, action_high, default_action=None):
         super().__init__()
         self.policy = policy
-        # SB3's own predict() (stable_baselines3/common/policies.py,
-        # BasePolicy.predict()) clips ActorCriticPolicy.forward()'s raw
-        # action -- an unbounded Gaussian mean, not something PPO's own
-        # network ever squashes -- to the action space AFTER calling
-        # forward(). forward() (what DeterministicPolicy.forward() below
-        # calls into) never does this itself. Registered as buffers (not
-        # plain Python floats) so they're saved as part of the traced
-        # module's state, not baked in as untyped constants.
+        # SB3's own predict() (stable_baselines3/common/policies.py, BasePolicy.predict()) clips ActorCriticPolicy.forward()'s raw action
         self.register_buffer('action_low', torch.as_tensor(action_low, dtype=torch.float32))
         self.register_buffer('action_high', torch.as_tensor(action_high, dtype=torch.float32))
-        # WALK trains a RESIDUAL action around dog_env.py's own
-        # _walk_default_action_rad (see WALK_ACTION_RESIDUAL_RANGE_RAD),
-        # not an absolute joint target -- policy_node.py has no idea
-        # about that baseline, so it has to be baked into the exported
-        # module itself, added back in after the network's own clamp.
-        # None for STAND (whose action already IS the absolute target).
+        # WALK trains a RESIDUAL action around dog_env.py's own _walk_default_action_rad (see WALK_ACTION_RESIDUAL_RANGE_RAD), not an absolute joint target
         if default_action is not None:
             self.register_buffer('default_action', torch.as_tensor(default_action, dtype=torch.float32))
         else:
@@ -68,11 +39,7 @@ def export(model_path, output_path, env_id='Dog-Stand-v0', control_mode='positio
     if model_xml_path is not None:
         kwargs['model_path'] = model_xml_path
     env = gym.make(env_id, **kwargs)
-    # Force CPU regardless of what device the checkpoint was trained/saved
-    # on (e.g. v4 was trained with device='cuda' on the VM) -- the exported
-    # TorchScript module is meant to run on the Jetson's CPU anyway, and
-    # torch.jit.trace below needs the model and its example input on the
-    # same device, which is simplest to guarantee by just forcing CPU here.
+    # Force CPU regardless of what device the checkpoint was trained/saved on (e.g.
     model = PPO.load(model_path, env=env, device='cpu')
 
     obs_dim = env.observation_space.shape[0]

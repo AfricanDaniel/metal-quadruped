@@ -1,31 +1,11 @@
-"""Wraps four local dev/diagnostic tools this project's own workflow
-already runs by hand from a terminal -- save_pose.py,
-dog_gym.manual_motor_control, dog_gym.verify_belt_decoupling, and the
-dog_view.launch.py RViz launch file (2026-08-16, user request: "add
-another section on the local tab ... some of them are almost the same
-just with different settings"). half_dog_view.launch.py was dropped
-(2026-08-16) -- it depends on onshape_folders/urdf_half_dog_1/half_dog/
-urdf/half_dog.urdf, which doesn't exist in this checkout.
+"""Wraps four local dev/diagnostic tools this project's own workflow already runs by hand from a terminal."""
 
-Each is spawned as a DETACHED subprocess -- same fire-and-forget pattern
-as policy_actions.launch_view_training: these all open their own GUI
-window (MuJoCo viewer or RViz) and keep running independently of the
-dashboard process once launched, so there's nothing to track/stop here.
-
-Every optional field follows this project's established "checkbox gates
-inclusion" convention (see training_actions.py's _ADVANCED_FIELDS): if
-the checkbox wasn't checked, the flag is omitted entirely and the
-underlying script's own argparse default applies -- the dashboard never
-bakes in a second, possibly-drifting copy of that default.
-"""
 import os
 import subprocess
 
 from dashboard.config import SOURCE_PREFIX, SRC_ROOT, VENV_PYTHON, WS_ROOT
 
-# save_pose.py lives under src/, not the workspace root -- SRC_ROOT
-# (WS_ROOT/src), NOT WS_ROOT itself, matching how config.py's own
-# POLICIES_POSITION_DIR/POLICIES_TORQUE_DIR are built.
+# save_pose.py lives under src/, not the workspace root
 SAVE_POSE_SCRIPT = os.path.join(SRC_ROOT, 'dog_description', 'mjcf', 'save_pose.py')
 MJCF_DIR = os.path.join(SRC_ROOT, 'dog_description', 'mjcf')
 # Matches generate_dog_mjcf.py's actual output files (dog_description/
@@ -40,9 +20,8 @@ MJCF_CHOICES = [
 
 
 def _launch(cmd_parts):
-    """Fire-and-forget detached local subprocess -- mirrors
-    policy_actions.launch_view_training's exact mechanism (SOURCE_PREFIX,
-    bash -c, cwd=WS_ROOT, fully detached via start_new_session)."""
+    """Fire-and-forget detached local subprocess."""
+
     cmd = SOURCE_PREFIX + ' '.join(cmd_parts)
     try:
         subprocess.Popen(
@@ -58,12 +37,8 @@ def _launch(cmd_parts):
 
 
 def launch_save_pose(form):
-    """save_pose.py --mjcf/--out both default to paths relative to the
-    SCRIPT's own directory (Path(__file__).resolve().parent), not cwd --
-    safe to launch from anywhere. --mjcf here is a dropdown of the known
-    generated MJCF variants (MJCF_CHOICES) rather than a free-text path,
-    since picking the wrong one silently is easy to do by hand and hard
-    to notice from the viewer alone."""
+    """save_pose.py."""
+
     cmd_parts = [VENV_PYTHON, SAVE_POSE_SCRIPT]
     if form.get('mjcf_enabled') and form.get('mjcf'):
         cmd_parts += ['--mjcf', os.path.join(MJCF_DIR, form['mjcf'])]
@@ -84,11 +59,8 @@ def launch_manual_motor_control(form):
 
 
 def launch_verify_belt_decoupling(form):
-    """--upside-down is argparse.BooleanOptionalAction (default True),
-    not a plain store_true -- unlike every other checkbox on this page,
-    leaving it checked/unchecked must EXPLICITLY pass --upside-down or
-    --no-upside-down (there's no bare 'omit the flag' state that still
-    lets the checkbox reflect what's actually going to run)."""
+    """."""
+
     cmd_parts = [VENV_PYTHON, '-m', 'dog_gym.verify_belt_decoupling']
     if form.get('leg_enabled') and form.get('leg'):
         cmd_parts += ['--leg', form['leg']]
@@ -113,6 +85,6 @@ def launch_verify_belt_decoupling(form):
 
 
 def launch_dog_view():
-    """No configurable launch arguments -- DeclareLaunchArgument-free,
-    confirmed directly against dog_view.launch.py."""
+    """No configurable launch arguments."""
+
     return _launch(['ros2', 'launch', 'dog_description', 'dog_view.launch.py'])

@@ -30,8 +30,9 @@ namespace {
 const std::string kPresetPoseFile  = std::string(ACTUATOR_PACKAGE_DIR) + "/config/preset_pose.yaml";
 const std::string kLogCsvDir       = std::string(ACTUATOR_PACKAGE_DIR) + "/data/csv_logs";
 
-// get_or_create_motor()'s home-registration probe retry knobs (2026-08-19,
-// see that function's own comment for the full "motor 8 messes up" story).
+// get_or_create_motor()'s home-registration probe retry knobs -- retries
+// on RS485 dropout so a missed reply doesn't get latched in as a motor's
+// home position.
 constexpr int kHomeProbeMaxAttempts   = 3;
 constexpr int kHomeProbeRetryDelayMs  = 20;
 
@@ -126,30 +127,18 @@ public:
         // per-call via the request's speed_deg_s field.
         this->declare_parameter("pose_speed_deg_s", 30.0);
 
-        // TORQUE mode (2026-08-04, added alongside set_motor_torque for a
-        // sim-trained torque-control RL policy -- see set_motor_torque.srv
-        // and handle_set_motor_torque()). Raw torque has NO firmware-side
-        // position clamp protecting it the way position mode's <joint
-        // range> equivalent does in sim -- max_torque_nm is a hard,
-        // server-side safety ceiling enforced regardless of what any
-        // client requests.
+        // TORQUE mode: raw torque control for a sim-trained RL policy --
+        // see set_motor_torque.srv and handle_set_motor_torque(). Raw
+        // torque has NO firmware-side position clamp protecting it the
+        // way position mode's <joint range> equivalent does in sim --
+        // max_torque_nm is a hard, server-side safety ceiling enforced
+        // regardless of what any client requests.
         //
-        // PER-MOTOR array (2026-08-04, was a single shared double):
-        // real-hardware data (PPO_5000000_stand_policy_torque_v8_2.csv,
-        // run at a uniform 1.0 N*m) showed the 4 THIGH motors (1,4,5,8)
-        // pinned at the ceiling 99.7% of the run -- genuinely not enough
-        // torque to push off -- while the 4 CALF motors (2,3,6,7) swung
-        // through 150-200+ degrees at the SAME shared limit (a foot
-        // losing grip, nothing checking the leg's motion) -- confirms
-        // thighs and calves need independently-tunable ceilings, not one
-        // shared number that's simultaneously too weak for one pair and
-        // too strong for the other. Indexed by motor_id-1 (motor order:
-        // 1/4/5/8=thigh, 2/3/6/7=calf, see motor_mapping.yaml). Default
-        // keeps every motor at the previous uniform 1.0 N*m fallback --
-        // raise the thigh entries deliberately once calf slipping is
-        // otherwise addressed (see dog_gym's --domain-randomization for
-        // ground-friction robustness, a separate fix for the slip itself
-        // that this array doesn't replace).
+        // PER-MOTOR array, indexed by motor_id-1 (motor order: 1/4/5/8
+        // =thigh, 2/3/6/7=calf, see motor_mapping.yaml) -- thighs and
+        // calves carry very different loads and need independently
+        // tunable ceilings, not one shared number. Default keeps every
+        // motor at a conservative uniform 1.0 N*m.
         this->declare_parameter("max_torque_nm", std::vector<double>(8, 1.0));
         // Watchdog: a TORQUE-mode motor gets its cmd.tau force-zeroed by
         // control_loop() if it hasn't received a fresh set_motor_torque
@@ -159,48 +148,27 @@ public:
         // an unbounded, un-refreshed torque command from a hung/crashed
         // policy_node would otherwise keep being blindly resent forever.
         this->declare_parameter("torque_timeout_s", 0.5);
-        // Velocity damping for TORQUE mode (2026-08-04, user request --
-        // motivated by a real breakaway event: PPO_5000000_stand_policy_
-        // torque_v8_5.csv showed torque ramping smoothly 0.2->4.0 N*m
-        // while a thigh sat essentially motionless (static friction /
-        // stiction holding it) until ~2.6-2.8 N*m, at which point it
-        // broke free -- kinetic friction is lower than static, so the
-        // NET torque driving acceleration jumped discontinuously right
-        // as commanded torque kept climbing, and with kp=kd=0 (pure
-        // feedforward, nothing resisting velocity) nothing braked it
-        // until it slammed into its mechanical end stop (real_velocity_
-        // deg_s: 21 -> 85 -> 300 -> 1682 across 4 ticks).
-        //
-        // kp stays 0 -- this does NOT turn torque mode into position
-        // mode, there is still no target angle being tracked, the
-        // policy still chooses the force. Only kd goes nonzero: tau_
-        // actual = tau_requested - kd*qvel, a physical brake proportional
-        // to velocity, applied by the FIRMWARE every tick regardless of
-        // what the policy does -- unlike a reward-shaped fix (see
-        // dog_gym's joint_velocity_penalty), this acts even in exactly
-        // the breakaway scenario above that sim never modeled (MuJoCo's
-        // <motor> actuators have no static/kinetic friction distinction),
-        // so it doesn't depend on the policy having specifically learned
-        // to handle a breakaway it never experienced in training.
+        // Velocity damping for TORQUE mode: with kp=kd=0 (pure
+        // feedforward) nothing resists velocity, so once static friction
+        // breaks free the motor can accelerate hard into its mechanical
+        // end stop before anything reacts. kp stays 0 (torque mode still
+        // tracks no target angle, the policy still chooses the force);
+        // only kd goes nonzero: tau_actual = tau_requested - kd*qvel, a
+        // physical brake proportional to velocity, applied by the
+        // FIRMWARE every tick regardless of what the policy does.
         //
         // OUTPUT-shaft units (N*m per rad/s of OUTPUT angular velocity),
         // matching position_kp/position_kd's convention (divided by
         // gear_ratio^2 below to get the rotor-side value the SDK
         // actually wants) -- NOT velocity mode's kd_gain convention
-        // (applied raw/unconverted, matching a vendor example) -- chosen
+        // (applied raw/unconverted, matching a vendor example). Chosen
         // deliberately so dog_gym's sim-side TORQUE_KD_GAIN (dog_env.py)
         // means the exact same physical quantity as this parameter; the
         // two MUST be kept equal or sim training and real deployment
         // disagree about how much free braking exists.
         //
-        // 0.2 N*m/(rad/s) is an UNTUNED placeholder: at a dangerous
-        // ~17.5 rad/s (1000+ deg/s, matching the breakaway above) it
-        // generates ~3.5 N*m of counter-torque -- comparable to the
-        // torques actually seen -- while at a modest ~0.35 rad/s
-        // (~20 deg/s, ordinary controlled motion) it only generates
-        // ~0.07 N*m, small enough not to meaningfully fight genuine
-        // slow movement. Needs real empirical tuning, same as position_
-        // kp/kd's own placeholder status.
+        // 0.2 N*m/(rad/s) is an UNTUNED placeholder, same status as
+        // position_kp/kd -- needs real empirical tuning.
         this->declare_parameter("torque_kd_gain", 0.2);
 
         port_        = this->get_parameter("port").as_string();
@@ -228,20 +196,16 @@ public:
 
         serial_ = std::make_unique<SerialPort>(port_.c_str());
 
-        // Dedicated I/O thread, not a ROS timer (2026-08-16, diagnosed as
-        // single-threaded executor contention) -- the timer-driven version
-        // ran control_loop() ON the same single-threaded executor that also
-        // dispatches every service call, so a service request arriving
-        // mid-cycle had to wait for 8 sequential blocking real serial
-        // round-trips to finish first -- measured as ~30ms of pure queuing
-        // delay on top of <1ms of genuine handler-internal work. Targets the
-        // same ~100Hz/10ms cadence as before, capped rather than a fixed
-        // sleep (see io_thread_main()) so it never sleeps once real serial
-        // I/O already exceeds 10ms, same reasoning as policy_node.py's own
-        // chaining fix. state_mutex_ protects every access to motors_/
-        // MotorState/the log_* members shared between this thread and the
-        // executor thread's service handlers -- see control_loop()'s own
-        // comment for why the mutex is released before each motor's actual
+        // Dedicated I/O thread, not a ROS timer -- keeps control_loop() off
+        // the same single-threaded executor that dispatches every service
+        // call, so a service request doesn't have to queue behind several
+        // sequential blocking serial round-trips. Targets a ~100Hz/10ms
+        // cadence, capped rather than a fixed sleep (see io_thread_main())
+        // so it never sleeps once real serial I/O already exceeds 10ms.
+        // state_mutex_ protects every access to motors_/MotorState/the
+        // log_* members shared between this thread and the executor
+        // thread's service handlers -- see control_loop()'s own comment
+        // for why the mutex is released before each motor's actual
         // serial_->sendRecv() call.
         io_thread_ = std::thread(&MotorTestNode::io_thread_main, this);
 
@@ -339,21 +303,13 @@ private:
         // Without this, state.data.q would still be its default-constructed
         // 0 the first time something latches onto "current position".
         //
-        // RETRIED up to kHomeProbeMaxAttempts times (2026-08-19, real-hardware
-        // bug report: "every now and then motor 8 messes up and goes to the
-        // wrong position" -- root-caused to this exact probe, previously a
-        // single unchecked sendRecv() call). sendRecv() returns bool (see
-        // SerialPort.h) and the SDK itself prints "<id> does not reply" to
-        // stdout directly (confirmed via `strings` on libUnitreeMotorSDK,
-        // not routed through RCLCPP logging) on an RS485 dropout -- observed
-        // happening intermittently to ARBITRARY motor IDs on this bus, not
-        // specific to motor 8. state.data is zero-initialized (MotorState's
-        // own default member initializer), so when the old one-shot probe
-        // landed on exactly this motor's dropped reply, state.data.q was
-        // silently left at 0 and logged/used as its real home -- every
-        // subsequent home+offset absolute-position command for that motor
-        // was then computed from a wrong (zero) home reference, moving it to
-        // the wrong physical spot. Retrying here fixes it at the source,
+        // RETRIED up to kHomeProbeMaxAttempts times: an RS485 dropout can
+        // make this probe fail intermittently on any motor ID on the bus.
+        // state.data is zero-initialized (MotorState's own default member
+        // initializer), so a failed probe with no retry would silently
+        // leave state.data.q at 0 and get it used as that motor's home --
+        // every subsequent home+offset command for that motor would then
+        // move it to the wrong physical spot. Retrying here fixes it
         // before this reading is ever latched in as a home reference.
         bool probe_ok = false;
         for (int attempt = 1; attempt <= kHomeProbeMaxAttempts && !probe_ok; ++attempt) {
@@ -411,13 +367,11 @@ private:
     // instantly via `ros2 param set` without needing a node restart (which
     // would drop all motor state) if something looks wrong mid-run.
     //
-    // Per-motor (2026-08-04, was a single shared double -- see this
-    // param's declare_parameter comment). FALLS BACK to a conservative
-    // 1.0 N*m -- not the raw request, not unlimited -- for any motor_id
-    // without an explicit entry (array shorter than 8, or motor_id out
-    // of [1,8]), and logs an error every time that happens: a
-    // misconfigured safety parameter should fail LOUD and SAFE, never
-    // silently leave a motor unclamped.
+    // FALLS BACK to a conservative 1.0 N*m -- not the raw request, not
+    // unlimited -- for any motor_id without an explicit entry (array
+    // shorter than 8, or motor_id out of [1,8]), and logs an error every
+    // time that happens: a misconfigured safety parameter should fail
+    // LOUD and SAFE, never silently leave a motor unclamped.
     float max_torque_nm(int32_t motor_id) {
         static constexpr float kFallbackNm = 1.0f;
         auto limits = this->get_parameter("max_torque_nm").as_double_array();
@@ -830,16 +784,12 @@ private:
                 }
 
                 local_cmd  = motor.cmd;
-                // MotorData's default constructor (unitreeMotor.h) is an
-                // EMPTY user-provided body -- {} value-init still calls it,
-                // so a freshly-declared MotorData leaves every field,
-                // including motorType, as INDETERMINATE GARBAGE, not zero.
-                // The original single-object code never hit this because
-                // motor.data was the SAME persistent struct across every
-                // call, with motorType set once in get_or_create_motor()
-                // and never touched again. Must copy it here too, or
-                // sendRecv()'s sendMsg/recvMsg motorType cross-check fails
-                // on garbage data essentially every call.
+                // MotorData's default constructor (unitreeMotor.h) has an
+                // empty user-provided body, so a freshly-declared MotorData
+                // leaves every field, including motorType, as
+                // INDETERMINATE GARBAGE, not zero. Must copy it from
+                // motor.data here, or sendRecv()'s sendMsg/recvMsg
+                // motorType cross-check fails on garbage data.
                 local_data = motor.data;
             }
 
@@ -901,11 +851,9 @@ private:
     }
 
     // io_thread_'s entry point: runs control_loop() back-to-back, capped
-    // (not fixed-delay) at the same ~10ms/100Hz period the old timer used --
-    // same "cap, don't blindly sleep" reasoning as policy_node.py's own
-    // chaining fix, so once real registered-motor serial I/O already
-    // exceeds 10ms (as measured: ~16ms for 8 motors), this simply doesn't
-    // sleep at all rather than adding an artificial extra delay on top.
+    // (not fixed-delay) at ~10ms/100Hz -- once real registered-motor
+    // serial I/O already exceeds 10ms, this simply doesn't sleep at all
+    // rather than adding an artificial extra delay on top.
     void io_thread_main() {
         while (io_thread_running_.load(std::memory_order_relaxed)) {
             auto tick_start = std::chrono::steady_clock::now();

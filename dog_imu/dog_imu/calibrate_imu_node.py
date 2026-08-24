@@ -1,53 +1,6 @@
 #!/usr/bin/env python3
-"""Guided IMU mounting-orientation calibration.
+"""Guided IMU mounting-orientation calibration. Why this exists: the LSM6DSO32's raw X/Y/Z axes are whatever direction t..."""
 
-Why this exists: the LSM6DSO32's raw X/Y/Z axes are whatever direction
-the physical board happens to be glued/screwed down in -- there's no way
-to know which raw axis is "forward", "left", or "up" on the robot without
-actually watching how the readings respond to a real, physical tilt. This
-node walks through that physical test, records the raw /imu/data_raw
-readings to a CSV, and turns them into a saved calibration (config/
-imu_calibration.yaml) that imu_node.py then applies automatically to
-publish a second, already-oriented topic (/imu/data) -- forward/left/up,
-matching ROS REP-103 -- regardless of how the board is actually mounted.
-
-Re-run this any time the IMU gets unplugged, remounted, or otherwise
-might have moved -- it's a ~30 second guided procedure, not a one-time
-setup step.
-
-How the calibration is derived (see the long comment in _compute_calibration
-for the physical reasoning): for each of the 4 tilts, the raw axis with
-the largest deviation from the level baseline is identified as the
-pitch-sensitive (forward) or roll-sensitive (left) axis; the remaining
-axis is "up". Sign is chosen so that tilting the nose down reads negative
-on the calibrated forward axis and tilting left reads negative on the
-calibrated left axis (the standard accelerometer convention -- e.g. a
-forward-pointing axis reads negative once the nose dips toward the
-ground, exactly mirroring how the up axis reads positive at rest and
-would read negative if the sensor were held upside down). Verified
-against a real captured session before writing this: the nose-down/
-nose-up pair excited one raw axis strongly while the other stayed near
-baseline, the left/right pair excited a different raw axis, and the gyro
-rotation-rate signs at the start of each tilt were self-consistent with
-this same reasoning applied to angular velocity.
-
-Usage:
-    ros2 run dog_imu calibrate_imu
-    ros2 run dog_imu calibrate_imu --ros-args -p hold_duration_s:=5.0
-
-Output:
-    - A timestamped CSV of every raw sample collected, under
-      dog_imu/data/imu_calibration/ (or --ros-args -p csv_dir:=PATH).
-    - config/imu_calibration.yaml (or --ros-args -p calibration_path:=PATH),
-      loaded by imu_node.py on its next start.
-
-To make a calibration persist across future `colcon build`s (a plain,
-non-symlink install only copies config/imu_calibration.yaml from the
-*source* tree at build time, so a calibration written to the installed
-copy would otherwise get overwritten by the checked-in placeholder on the
-next rebuild): copy the generated file over
-src/dog_imu/config/imu_calibration.yaml once you're happy with it.
-"""
 import csv
 import time
 from pathlib import Path
@@ -157,14 +110,8 @@ class CalibrateImuNode(Node):
         return pts.mean(axis=0)
 
     def _compute_calibration(self, samples):
-        """Derives (source_axis, sign) for calibrated forward/left/up from
-        the recorded tilts. See this module's docstring for the physical
-        reasoning -- short version: whichever raw axis moves most during
-        nose-down/nose-up is "forward" (pitch-sensitive), whichever moves
-        most during tilt-left/tilt-right is "left" (roll-sensitive), and
-        the sign on each is chosen so tilting that direction reads
-        negative -- the same convention that makes "up" read +9.8 at rest
-        and negative if the sensor were upside down."""
+        """Derives (source_axis, sign) for calibrated forward/left/up from the recorded tilts."""
+
         baseline = self._phase_mean_accel(samples, 'baseline')
         dev = {p: self._phase_mean_accel(samples, p) - baseline
                for p in ('nose_down', 'nose_up', 'tilt_left', 'tilt_right')}

@@ -1,9 +1,5 @@
-"""Flask app: browse local/Jetson/sheep checkpoints, launch the MuJoCo
-viewer or export a policy, deploy/control the real robot. This module
-is deliberately thin -- it wires local_fs/remote_fs/ssh/procs/
-policy_actions/ros_actions together into routes, not a place for new
-logic.
-"""
+"""Flask app: browse local/Jetson/sheep checkpoints, launch the MuJoCo viewer or export a policy, deploy/control the rea..."""
+
 import datetime
 import json
 import os
@@ -31,9 +27,7 @@ def fmt_dt(mtime):
     return datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
 
 
-# JSON polling endpoints (called every ~1.5s by page JS) -- deliberately
-# NOT remembered as "the last page visited", or the tab bar would try to
-# jump back to a bare JSON response instead of the actual page.
+# JSON polling endpoints (called every ~1.5s by page JS)
 _POLL_ENDPOINTS = {
     'jetson_build_status', 'jetson_status_poll', 'sheep_download_status',
     'local_trainings_build_status', 'sheep_trainings_build_status',
@@ -42,19 +36,13 @@ _POLL_ENDPOINTS = {
 
 _CONNECT_GATE_ENDPOINTS = {'jetson_root', 'sheep_root'}
 
-# Fallback values shown in the "Actuator params" card (2026-08-18, user
-# request) before anything's ever been set/remembered -- kp=60/kd=8
-# match this project's own documented real firmware gain (see actuator/
-# README.md), speed=60 a reasonable starting ramp speed, so the form
-# starts from a sensible real baseline instead of blank.
+# Fallback values shown in the "Actuator params" card before anything's ever been set/remembered
 _ACTUATOR_PARAM_DEFAULTS = {'position_kp': '60', 'position_kd': '8', 'pose_speed_deg_s': '60'}
 
 
 def _last_actuator_params():
-    """Remembered actuator params (procs.set_last_tool_form('actuator_
-    params', ...), shared across the Basics AND Deploy pages -- setting
-    it on either page updates both), falling back to _ACTUATOR_PARAM_
-    DEFAULTS for any value that's missing or was left blank."""
+    """Remembered actuator params, shared across the Basics AND Deploy pages."""
+
     remembered = procs.get_last_tool_form('actuator_params')
     return {name: remembered.get(name) or default
             for name, default in _ACTUATOR_PARAM_DEFAULTS.items()}
@@ -62,36 +50,8 @@ def _last_actuator_params():
 
 @app.before_request
 def _remember_tab_position():
-    """Lets the tab bar itself (base.html, via nav_url below) jump back
-    to wherever you left off in a tab -- e.g. a specific fname's
-    checkpoint list -- instead of always resetting to that tab's root
-    page when you switch tabs and come back.
+    """Lets the tab bar itself (base.html, via nav_url below) jump back to wherever you left off in a tab."""
 
-    jetson_root/sheep_root ('/jetson', '/sheep') are deliberately NOT
-    recorded even though they're real GETs: they're a transient connect
-    gate, not a destination -- either they show the "click to connect"
-    screen, or (if already connected) immediately redirect on to
-    jetson_home/sheep_home. Recording them anyway created a real bug:
-    procs.py's connected-flag is in-memory only and resets to False on
-    every dashboard restart, so if a restart happens while last_path
-    still points somewhere deep, the NEXT visit to that deep page hits
-    _require_jetson()'s redirect back to '/jetson' -- and since that
-    redirect target is itself a real followed GET, THIS hook then
-    overwrote last_path down to '/jetson', permanently losing the deep
-    path (confirmed directly: one restart was enough to make every
-    later tab-switch land back on jetson_home from then on, which is
-    exactly the reported "brings me to landing page sometimes").
-
-    'jetson_policies' is tracked SEPARATELY from 'jetson': the Jetson
-    tab has its own Policies/Basics sub-tabs (sub_tabs.html), and the
-    Policies sub-tab link needs to remember the last POLICIES page you
-    were on specifically -- if it just reused the general 'jetson' last
-    path, visiting Basics (itself a real /jetson/* GET) would overwrite
-    it, and clicking back to Policies would always land on jetson_home
-    instead of wherever you actually left off browsing policies (this
-    was a real, reported bug: 'every time I click Jetson Policies it
-    forgets where I was' -- sub_jetson_policies_url was hardcoded to
-    jetson_home, not tracked at all, until this fix)."""
     if request.method != 'GET' or request.endpoint in _POLL_ENDPOINTS:
         return
     if request.endpoint in _CONNECT_GATE_ENDPOINTS:
@@ -100,10 +60,7 @@ def _remember_tab_position():
     endpoint = request.endpoint or ''
     if path.startswith('/local'):
         procs.set_last_path('local', path)
-        # Sub-tab-specific tracking (2026-08-18, same "forgets where I
-        # was" bug class as jetson_policies below, just for Local's own
-        # 4 sub-tabs) -- classified by endpoint-name prefix, matching
-        # this project's own consistent local_<subtab>* naming.
+        # Sub-tab-specific tracking, same "forgets where I was" fix as jetson_policies below, for Local's own 4 sub-tabs
         if endpoint.startswith('local_trainings'):
             procs.set_last_path('local_trainings', path)
         elif endpoint.startswith('local_policy') or endpoint == 'local_policies':
@@ -136,16 +93,8 @@ def _inject_nav_urls():
 
 @app.context_processor
 def _inject_sub_tab_urls():
-    """sub_tabs.html (Models/Trainings) is included from folders/files/
-    checkpoints/trainings templates on both Local and Sheep -- rather than
-    have every one of those routes pass these two urls by hand, derive them
-    once here from which tab we're currently under.
+    """sub_tabs.html (Models/Trainings) is included from folders/files/ checkpoints/trainings templates on both Local and Sheep"""
 
-    Uses procs.get_last_path() (2026-08-18, user report -- "clicked
-    Policies then back to Models, landed on the Models landing page
-    instead of where I left") instead of a plain url_for() to the tab's
-    root -- same fix shape as jetson_policies below, just extended to
-    Local's 4 sub-tabs and Sheep's 2, which had never gotten it."""
     if request.path.startswith('/local'):
         return {
             'sub_models_url': procs.get_last_path('local_models'),
@@ -168,49 +117,22 @@ def _inject_sub_tab_urls():
 
 
 def _group_kwargs(group_name):
-    """Jetson/local-policy routes take a policy group as TWO separate
-    URL segments (<policies_dir>/<task>), not one slash-containing
-    <path:...> segment -- a single path-converter segment turned out to
-    be genuinely ambiguous against the sibling routes with more url
-    segments (e.g. .../<fname>): confirmed directly that Werkzeug
-    matched '/jetson/policies_position/walk' to jetson_group_checkpoints
-    (group_name='policies_position', fname='walk') instead of the
-    intended jetson_group_files(group_name='policies_position/walk').
-    Internally group_name is still kept as the combined 'dir/task'
-    string (every local_fs/remote_fs policy function already expects
-    that shape) -- this just re-splits it back into url_for kwargs at
-    the few call sites that link between these routes."""
+    """Jetson/local-policy routes take a policy group as TWO separate URL segments (<policies_dir>/<task>), not one slash-co..."""
+
     policies_dir, task = group_name.split('/', 1)
     return {'policies_dir': policies_dir, 'task': task}
 
 
 def _suggest_redirect(label, url):
-    """Queues a one-shot 'go to X?' popup for the NEXT page render --
-    same one-time-then-gone semantics as flash(), just carrying a
-    structured {label, url} instead of plain text, so the page can offer
-    to jump straight to wherever an action's result actually landed
-    (e.g. 'Go to policy' -> the exported .pt's own detail page) instead
-    of leaving the user to navigate there by hand."""
+    """Queues a one-shot 'go to X?' popup for the NEXT page render."""
+
     session['redirect_suggestion'] = {'label': label, 'url': url}
 
 
 @app.context_processor
 def _inject_sheep_persistent_nav():
-    """sheep_models_landing_url/sheep_trainings_landing_url (2026-08-19,
-    user request -- "I should always be able to access the training
-    landing page and the model landing page [on Sheep], make them
-    persistent on the left side"): unlike sub_models_url/sub_trainings_url
-    above (which follow procs.get_last_path()'s own "remember where I
-    left off within this sub-tab" memory -- the RIGHT behavior for the
-    top sub-tab bar), these two are always the literal landing pages
-    (sheep_home/sheep_trainings), by design never affected by that
-    memory -- the whole point is a fixed, always-the-same anchor you can
-    return to regardless of how deep you've navigated. Rendered by
-    base.html as a persistent left-side nav on every Sheep page,
-    including graphs.html, which -- unlike checkpoints.html/trainings.html
-    -- doesn't even include sub_tabs.html today, so this was the one
-    Sheep page with NO way back to either landing page at all short of
-    its own single back_url."""
+    """sheep_models_landing_url/sheep_trainings_landing_url: unlike sub_models_url/sub_trainings_url above (which follow pro..."""
+
     if not request.path.startswith('/sheep'):
         return {}
     return {
@@ -225,12 +147,8 @@ def _inject_redirect_suggestion():
 
 
 def _suggest_action(label, url):
-    """Queues a one-shot inline button rendered right in the flash
-    banner on the NEXT page render -- same one-time-then-gone semantics
-    as flash()/​_suggest_redirect, but this one submits a POST directly
-    (e.g. 'Stop policy') rather than navigating anywhere, for a flash
-    message that describes a problem the user can immediately act on
-    without leaving the page."""
+    """Queues a one-shot inline button rendered right in the flash banner on the NEXT page render."""
+
     session['action_suggestion'] = {'label': label, 'url': url}
 
 
@@ -239,9 +157,7 @@ def _inject_action_suggestion():
     return {'action_suggestion': session.pop('action_suggestion', None)}
 
 
-# ======================================================================
-# Local
-# ======================================================================
+# ====================================================================== Local ======================================================================
 
 @app.route('/')
 def index():
@@ -290,21 +206,7 @@ def local_checkpoints(folder, fname):
          'last_joint_stiffness': procs.get_last_tool_form(f"view_training:{c['basename']}").get('joint_stiffness', '')}
         for c in local_fs.list_checkpoints(folder, fname)
     ]
-    # back_url (2026-08-18, user report -- "on trot_stand_ms500_v2 tab, in
-    # models, pressed back and it brings me to jetson"): this page has TWO
-    # real entry points -- the normal Models folder-browsing flow, and the
-    # Graphs page's own "Checkpoints" tab (training_tabs.html). A single
-    # hardcoded back_url can only ever be right for one of them. An
-    # earlier attempt used the BROWSER's real history.back() to sidestep
-    # that, but browser history replays the user's ENTIRE actual click
-    # path (which can include unrelated tabs visited earlier in the
-    # session), not just this page's logical parent -- confirmed broken
-    # by the report above. Fixed instead with an explicit ?from=graphs
-    # marker: only set when arriving via the Graphs tab's own link (see
-    # local_trainings_graphs()'s tabs_checkpoints_url below), so this is
-    # 100% deterministic from the request itself, never dependent on
-    # unrelated navigation history. Absence of the marker (the normal
-    # Models-flow case) preserves the exact original back_url.
+    # back_url: this page has TWO real entry points
     back_url = (url_for('local_trainings_graphs', fname=fname) if request.args.get('from') == 'graphs'
                 else url_for('local_files', folder=folder))
     return render_template(
@@ -348,15 +250,8 @@ def local_delete_checkpoint(folder, fname, basename):
 
 
 def _do_view_training(host, folder, fname, basename, redirect_url):
-    """Shared by local_view_training()/sheep_view_training()/
-    liked_view_training() (2026-08-19, factored out when the Liked page
-    needed the exact same "launch the viewer for one checkpoint" logic a
-    THIRD time) -- host-aware: 'sheep' downloads the checkpoint first if
-    not already local (mirroring sheep_view_training's original one-click
-    shape, via _sheep_download() below), 'local' just uses the zip
-    directly. See local_view_training()'s own docstring for the full
-    history behind start_pose/max_slew_deg_per_s/joint_stiffness coming
-    from the submitted form and being remembered PER-CHECKPOINT."""
+    """Shared by local_view_training()/sheep_view_training()/ liked_view_training()."""
+
     if host == 'sheep':
         local_path = local_fs.checkpoint_zip_path(folder, basename)
         if not os.path.exists(local_path):
@@ -388,32 +283,8 @@ def _do_view_training(host, folder, fname, basename, redirect_url):
 
 @app.route('/local/<folder>/<fname>/<basename>/view', methods=['POST'])
 def local_view_training(folder, fname, basename):
-    """One-click viewer launch straight from the checkpoints list (2026-08-16,
-    user request -- mirrors sheep_view_training's own one-click shape, minus
-    the download step since a local checkpoint is already local), so seeing
-    a checkpoint run doesn't require clicking into local_detail's own form
-    first. episodes=5/control_mode='position' still fixed -- for anything
-    else (a different env/episodes/control_mode), local_detail's own form
-    is still there, reachable via the checkpoint's name link. start_pose
-    (2026-08-17, user request -- checkpoints.html's per-row selector next
-    to this button) now comes from the submitted form instead of being
-    hardcoded to 'home' -- defaults to 'home' if the field is somehow
-    missing, matching the OLD unconditional behavior exactly. max_slew_
-    deg_per_s (2026-08-17, user request, same round -- see launch_view_
-    training()'s own docstring for why this matters) similarly comes from
-    the form; empty/missing means policy_actions.VIEW_DEFAULT_MAX_SLEW_
-    DEG_PER_S (250, matching dog_env.py's real SLEW_CURRICULUM_TARGET_
-    DEG_PER_S -- CHANGED 2026-08-18, user request: previously empty meant
-    "omit the flag," which fell through to dog_env.py's own loose 1000
-    training-exploration default and made checkpoints look more violent
-    than they really are). Both saved PER-CHECKPOINT, keyed by
-    basename (2026-08-17, user request -- a single shared 'last used'
-    value was applying whatever was picked for one checkpoint to every
-    OTHER checkpoint's row too, which defeats the actual point: comparing
-    different checkpoints under settings remembered per-checkpoint, e.g.
-    "what slew did I find worked for THIS one"). Uses procs.set_last_
-    tool_form()'s same underlying mechanism as the Deploy/Tools forms,
-    just with a per-basename key instead of one shared key."""
+    """One-click viewer launch straight from the checkpoints list, so seeing a checkpoint run doesn't require clicking into ..."""
+
     return _do_view_training('local', folder, fname, basename,
                               url_for('local_checkpoints', folder=folder, fname=fname))
 
@@ -504,11 +375,7 @@ def local_trainings_stop(fname):
 def local_trainings_graphs(fname):
     scalars = graphs.read_scalars(fname)
     folder = local_fs.find_folder_for_fname(fname)
-    # back_url: mirrors local_checkpoints()'s own ?from=graphs marker --
-    # this page is ALSO reachable two ways (the Trainings ongoing-list
-    # AND checkpoints.html's own "Graphs" tab), see that comment for the
-    # full reasoning. ?from=checkpoints here means "came via the
-    # Checkpoints tab", so back returns there instead of Trainings.
+    # back_url: mirrors local_checkpoints()'s own ?from=graphs marker
     back_url = (url_for('local_checkpoints', folder=folder, fname=fname)
                 if request.args.get('from') == 'checkpoints' and folder
                 else url_for('local_trainings'))
@@ -624,12 +491,8 @@ def local_policy_upload(policies_dir, task, fname, basename):
 @app.route('/local/policies/<policies_dir>/<task>/<fname>/<basename>/delete', methods=['POST'])
 def local_policy_delete(policies_dir, task, fname, basename):
     group_name = f'{policies_dir}/{task}'
-    # Delete associated CSVs FIRST, before the .pt is gone -- list_policy_csvs
-    # matches by the checkpoint's own basename, so it still needs the
-    # policy file's basename to look up by (the csv files themselves are
-    # independent of the .pt existing, but this ordering costs nothing
-    # and avoids ever leaving CSVs orphaned if something interrupts
-    # between the two deletes).
+    # Delete associated CSVs before the .pt, so an interruption between
+    # the two deletes never leaves an orphaned CSV behind.
     csv_names = [c['name'] for c in local_fs.list_policy_csvs(group_name, basename)]
     csvs_ok = all(local_fs.delete_local_file(local_fs.policy_csv_path(group_name, name)) for name in csv_names)
     ok = local_fs.delete_local_file(local_fs.policy_pt_path(group_name, basename)) and csvs_ok
@@ -732,9 +595,7 @@ def local_tools_dog_view():
     return redirect(url_for('local_tools'))
 
 
-# ======================================================================
-# Jetson
-# ======================================================================
+# ====================================================================== Jetson ======================================================================
 
 @app.route('/jetson')
 def jetson_root():
@@ -989,37 +850,16 @@ def jetson_hw_toggle():
 
 
 def _expand_tilde_for_ros_arg(path):
-    """A '-p key:=value' ROS arg is just another bash word in the exec'd
-    command line, but bash only tilde-expands a '~' at the very START of
-    a word -- '~' sitting after 'key:=' is never touched. Confirmed
-    directly: `bash -c 'echo -p policy_path:=~/foo'` prints the tilde
-    UNEXPANDED, and the real deploy failure this was tracked down from
-    showed exactly that -- policy_node.py's torch.jit.load() (plain
-    Python file I/O, which never does shell-style tilde expansion
-    either) failing with "The provided filename
-    ~/dog_ros2_ws/.../foo.pt does not exist". $HOME expands correctly in
-    any position since it's an ordinary variable reference, not
-    tilde-expansion, so swap to that instead."""
+    """A '-p key:=value' ROS arg is just another bash word in the exec'd command line, but bash only tilde-expands a '~' at ..."""
+
     if path.startswith('~/'):
         return '$HOME/' + path[2:]
     return path
 
 
 def _ros_float(value, default):
-    """Formats a float-typed ROS parameter override so it's ALWAYS
-    unambiguously a float on the wire, e.g. 100 -> '100.0', not '100'.
-    ROS2 infers a '-p key:=value' override's type from the string itself
-    -- '100' parses as an INTEGER, and a node that declared this
-    parameter with a float default (e.g. control_rate_hz's 20.0)
-    rejects an integer override outright with InvalidParameterType
-    Exception, crashing at construction before anything runs. Confirmed
-    directly: control_rate_hz's own field defaulted to plain '100' in
-    the deploy form, and every deploy with that box checked crashed
-    instantly this way -- 'Deployment started' but nothing ever actually
-    ran. float(...) here guarantees a '.0'-or-better suffix regardless
-    of what's typed into the box, not just fixing today's one default
-    value (which would leave the same trap for the next field typed
-    without a decimal point)."""
+    """Formats a float-typed ROS parameter override so it's ALWAYS unambiguously a float on the wire, e.g."""
+
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -1058,12 +898,7 @@ def jetson_deploy_toggle(policies_dir, task, fname, basename):
         if request.form.get('home_reference_mode') == 'edited':
             back_fraction = _ros_float(request.form.get('home_switch_back_leg_fraction'), 1.0)
             ros_args.append(f'-p home_switch_back_leg_fraction:={back_fraction}')
-            # front_fraction (2026-08-18, user request -- see home_
-            # correction.py's FRONT_LEG_HOME_CORRECTION_DEG): defaults to
-            # 0.0 (inert) unless the form field is explicitly non-blank --
-            # unlike the back-leg field, which is the reason this whole
-            # "edited" mode exists and defaults to 1.0 whenever this
-            # branch runs at all.
+            # front_fraction (see home_correction.py's FRONT_LEG_HOME_ CORRECTION_DEG) defaults to 0.0 (inert) unless the form field is explicitly non-blank
             front_fraction_raw = request.form.get('home_switch_front_leg_fraction', '').strip()
             if front_fraction_raw:
                 ros_args.append(f'-p home_switch_front_leg_fraction:={_ros_float(front_fraction_raw, 0.0)}')
@@ -1072,14 +907,7 @@ def jetson_deploy_toggle(policies_dir, task, fname, basename):
         ok, message = procs.start_deploy(policy_pt, ros_args)
         flash(message, 'success' if ok else 'error')
         if not ok:
-            # start_deploy() found something ALREADY running that this
-            # page's own status check (a moment earlier, now stale)
-            # didn't know about -- rather than make the user refresh to
-            # see the Deploy button flip to Stop, offer a stop action
-            # right in the flash banner. Posts to this SAME toggle route:
-            # by the time it's clicked, deploy_status() does a fresh
-            # live check, sees running=True, and correctly stops it
-            # instead of trying to start again -- no extra route needed.
+            # start_deploy() found something already running that this page's stale status check didn't know about
             _suggest_action('Stop policy', url_for('jetson_deploy_toggle', policies_dir=policies_dir,
                                                      task=task, fname=fname, basename=basename))
     return redirect(url_for('jetson_detail', policies_dir=policies_dir, task=task, fname=fname, basename=basename))
@@ -1103,13 +931,7 @@ def jetson_go_to_pose():
     pose_name = request.form.get('pose_name', 'home')
     speed_deg_s = request.form.get('pose_speed_deg_s', '').strip()
     log_csv = bool(request.form.get('log_csv'))
-    # Remembered (2026-08-18, user request -- "should remember where i
-    # last left off") so the field pre-fills with this same value next
-    # time instead of always resetting -- same procs.set_last_tool_form()
-    # mechanism used throughout this dashboard. log_csv (2026-08-20)
-    # added to the same remembered dict -- deliberately NOT remembering
-    # log_csv_path, always auto-generated (see ros_actions.go_to_pose()'s
-    # comment) so repeated calls never collide/overwrite each other.
+    # Remembered so the field pre-fills with this same value next time instead of always resetting
     procs.set_last_tool_form('go_to_pose', {'speed_deg_s': speed_deg_s, 'log_csv': log_csv})
     result = ros_actions.go_to_pose(pose_name, speed_deg_s=speed_deg_s or None, log_csv=log_csv)
     flash(result.stdout.strip() or result.stderr.strip() or f'go_to_pose {pose_name} called.',
@@ -1119,14 +941,8 @@ def jetson_go_to_pose():
 
 @app.route('/jetson/basics/set_actuator_params', methods=['POST'])
 def jetson_set_actuator_params():
-    """Live `ros2 param set /actuator ...` for whichever of position_kp/
-    position_kd/pose_speed_deg_s were actually filled in (2026-08-17,
-    user request -- "expose... as params... test with different values
-    without going to the code"). Saved via set_last_tool_form() so (a)
-    the form pre-fills with these same values next visit and (b) start_
-    hardware_bringup() applies them as launch-time overrides too, so a
-    value set here survives a hardware bringup restart -- not just a
-    one-off live tweak that reverts silently."""
+    """Live `ros2 param set /actuator ...` for whichever of position_kp/ position_kd/pose_speed_deg_s were actually filled in."""
+
     params = {
         name: request.form.get(name, '').strip()
         for name in ('position_kp', 'position_kd', 'pose_speed_deg_s')
@@ -1179,9 +995,7 @@ def jetson_reset_motors():
     return _redirect_next('jetson_home')
 
 
-# ======================================================================
-# Sheep
-# ======================================================================
+# ====================================================================== Sheep ======================================================================
 
 @app.route('/sheep')
 def sheep_root():
@@ -1262,9 +1076,7 @@ def sheep_checkpoints(folder, fname):
         for c in remote_fs.list_remote_checkpoints_with_local(SHEEP_HOST, folder, fname)
     ]
     # back_url: same ?from=graphs marker as local_checkpoints() -- see
-    # that route's own comment for the full reasoning (2026-08-18 user
-    # report: "on trot_stand_ms500_v2 tab, in models, pressed back and
-    # it brings me to jetson", reported on this exact Sheep page).
+    # that route's own comment for the full reasoning.
     back_url = (url_for('sheep_trainings_graphs', fname=fname) if request.args.get('from') == 'graphs'
                 else url_for('sheep_files', folder=folder))
     return render_template(
@@ -1410,14 +1222,7 @@ def sheep_trainings_graphs(fname):
     )
 
 
-# ======================================================================
-# Liked
-# ======================================================================
-# Cross-cutting: a liked checkpoint can be 'local' or 'sheep' (see
-# likes.py's own module docstring for why host is part of a like's
-# identity, not just a display label) -- this section isn't scoped under
-# either tab, it's its own top-level nav entry (see base.html/
-# _inject_nav_urls's nav_liked_url).
+# ====================================================================== Liked ====================================================================== Cross-cutting: a liked checkpoint can be 'local' or 'sheep' (see likes.py's own module docstring for why host is part of a like's identity, not just a display label)
 
 @app.route('/liked')
 def liked_page():
@@ -1428,12 +1233,7 @@ def liked_page():
         items.append({
             **item,
             'env_id': local_fs.resolve_env_id(folder),
-            # Whether this checkpoint's .zip is ALREADY on disk locally --
-            # always true for host='local'; for host='sheep' this is
-            # exactly what _do_view_training() checks to decide whether
-            # viewing needs a download first, surfaced here so the Liked
-            # page can show the same "needs-download" hint checkpoints.html
-            # already uses for Sheep checkpoints.
+            # Whether this checkpoint's .zip is ALREADY on disk locally
             'downloaded_locally': os.path.exists(local_fs.checkpoint_zip_path(folder, basename)),
             'view_url': url_for('liked_view_training', host=host, folder=folder, fname=fname, basename=basename),
             'unlike_url': url_for('liked_unlike', host=host, folder=folder, fname=fname, basename=basename),

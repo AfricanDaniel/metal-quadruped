@@ -1,32 +1,5 @@
-"""Visualize the full 4-leg dog in RViz with slider-controlled joints.
+"""Visualize the full 4-leg dog in RViz with slider-controlled joints. Loads onshape_folders/urdf_dog/full_dog/urdf/full..."""
 
-Loads onshape_folders/urdf_dog/full_dog/urdf/full_dog.urdf (the same URDF
-generate_dog_mjcf.py builds dog.mjcf.xml from -- see that script's module
-docstring) and, at launch time only (the exported files on disk are never
-touched):
-  - rewrites its mesh package:// paths so RViz can resolve them from the
-    installed dog_description share directory (the raw export's paths
-    assume a standalone "full_dog" package that doesn't exist here).
-  - renames the 8 hip/knee joints from their raw Onshape names to
-    leg_<a-d>_<thigh,calf> (matching dog_description/config/
-    motor_mapping.yaml / dog.mjcf.xml's own joint names), so the
-    joint_state_publisher_gui sliders are readable.
-  - applies the SAME axis flips and joint ranges dog.mjcf.xml gets from
-    generate_dog_mjcf.py, read live out of that script's own AXIS_FLIP /
-    JOINT_RANGE_OVERRIDES_DEG definitions (parsed via ast, not imported
-    -- the generator's module-level imports need mujoco/trimesh, which
-    the ROS python running this launch file doesn't have). The raw URDF
-    still carries the pre-AXIS_FLIP axes and unlimited `continuous`
-    joints, so without this the sliders would spin 6 of 8 joints
-    OPPOSITE to real life and run far past the real mechanical limits.
-    Each leg joint becomes `revolute` with the sim's exact degree range
-    converted to radians -- slider directions and endpoints then match
-    both dog.mjcf.xml and the real robot 1:1.
-
-This URDF has no prismatic/loop-closure joints to fix up (unlike
-half_dog_view.launch.py's single-leg export) -- it's the ORIGINAL 4-leg
-export, from before the (not-yet-rolled-out) cylindrical-mate CAD fix.
-"""
 
 import ast
 import math
@@ -38,13 +11,7 @@ from launch import LaunchDescription
 from launch.actions import OpaqueFunction
 from launch_ros.actions import Node
 
-# Raw Onshape joint name -> friendly name, matching motor_mapping.yaml's
-# leg_<letter>_<thigh,calf> convention. Derived from each joint's own
-# name prefix (frl=front_right_leg=leg_a, fll=front_left_leg=leg_b,
-# brl=back_right_leg=leg_c, bll=back_left_leg=leg_d -- confirmed against
-# motor_mapping.yaml's leg_a=front_right/leg_b=front_left/
-# leg_c=back_right/leg_d=back_left) and joint kind (*_motor_N_and_thigh =
-# hip/thigh joint, *_thigh_and_lower_pulley = knee/calf joint).
+# Raw Onshape joint name -> friendly name, matching motor_mapping.yaml's leg_<letter>_<thigh,calf> convention.
 JOINT_RENAME = {
     '_frl__revolute_motor_1_and_thigh': 'leg_a_thigh',
     '_frl__revolute_thigh_and_lower_pulley': 'leg_a_calf',
@@ -58,9 +25,8 @@ JOINT_RENAME = {
 
 
 def load_generator_constants(share: Path):
-    """Reads AXIS_FLIP and JOINT_RANGE_OVERRIDES_DEG out of the installed
-    generate_dog_mjcf.py via ast (single source of truth -- importing the
-    module would drag in mujoco/numpy/trimesh, unavailable here)."""
+    """Reads AXIS_FLIP and JOINT_RANGE_OVERRIDES_DEG out of the installed generate_dog_mjcf.py via ast (single source of truth"""
+
     src = (share / 'mjcf' / 'generate_dog_mjcf.py').read_text()
     wanted = {'AXIS_FLIP': None, 'JOINT_RANGE_OVERRIDES_DEG': None}
     for node in ast.parse(src).body:

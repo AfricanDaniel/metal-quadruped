@@ -1,35 +1,6 @@
 #!/usr/bin/env python3
-"""Sweeps ONE motor's absolute target smoothly back and forth between two
-angles you choose (--x-deg/--z-deg) while a SECOND motor is held fixed at
-its own startup value the whole time -- torso pinned in mid-air
-(upside-down by default), matching this project's real-hardware "hang the
-robot and swing a leg" test.
+"""Sweeps ONE motor's absolute target smoothly back and forth between two angles you choose (."""
 
-Purpose-built for isolating exactly how far a single motor gets (and why)
-while its paired motor just holds still -- deliberately SIMPLER than
-verify_belt_decoupling.py, which re-asserts the held motor's ABSOLUTE
-world orientation every step (a harder, different demand, identified
-during a 2026-08-16 investigation into torque-vs-gravity equilibrium
-behavior).
-Here the held motor's target is just whatever it happened to be at
-reset, never touched again -- same as manual_motor_control.py when you
-only ever select one motor.
-
-Logs every tick's target/actual/torque for BOTH motors to a CSV (--out)
-so the data can be loaded and inspected afterward, not just watched live.
-
-Usage:
-    # Default: leg_a thigh (motor 1) sweeps its full declared range,
-    # leg_a calf (motor 2) holds still, robot upside-down.
-    python3 -m dog_gym.motor_sweep_log
-
-    # Easy to change the sweep endpoints:
-    python3 -m dog_gym.motor_sweep_log --x-deg 0 --z-deg 140
-
-    # Different motor pair, more cycles, no viewer (fast/headless):
-    python3 -m dog_gym.motor_sweep_log --moving-motor 4 --held-motor 3 \\
-        --x-deg -140 --z-deg 0 --n-periods 3 --headless
-"""
 import argparse
 import csv
 import time
@@ -47,10 +18,7 @@ from dog_gym.envs.dog_env import MAX_SLEW_DEG_PER_S, load_motor_joint_names
 HERE = Path(__file__).resolve().parent
 
 _COS45, _SIN45 = np.cos(np.pi / 4), np.sin(np.pi / 4)
-# Same pin quaternions as manual_motor_control.py -- see that script's own
-# comment for the reasoning (upside-down/sideways clear the leg of the
-# floor and each other; sideways additionally zeroes gravity TORQUE about
-# every leg joint's own axis for this specific robot).
+# Same pin quaternions as manual_motor_control.py
 PIN_QUATS = {
     'upside-down': np.array([0.0, 1.0, 0.0, 0.0]),
     'sideways': np.array([_COS45, 0.0, _SIN45, 0.0]),
@@ -119,14 +87,7 @@ def main():
 
     x_rad, z_rad = np.radians(args.x_deg), np.radians(args.z_deg)
 
-    # Auto-lengthen period so the sweep's peak commanded speed stays under
-    # MAX_SLEW_DEG_PER_S (with a 10% margin) -- otherwise the ACTUAL motion
-    # would lag/flatten the moving target itself, on top of (and
-    # confusable with) whatever torque-limited lag we're trying to
-    # measure. Reads the real, current constant directly (not a
-    # hand-copied/stale number -- see verify_belt_decoupling.py's own
-    # "100deg/s" comment, which drifted stale after control_rate_hz's
-    # default changed and is exactly the mistake being avoided here).
+    # Auto-lengthen period so the sweep's peak commanded speed stays under MAX_SLEW_DEG_PER_S (with a 10% margin)
     amp_deg = abs(args.z_deg - args.x_deg) / 2
     min_period = amp_deg * 2 * np.pi / (0.9 * MAX_SLEW_DEG_PER_S)
     period_s = args.period_s

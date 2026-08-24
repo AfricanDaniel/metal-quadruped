@@ -1,57 +1,6 @@
 #!/usr/bin/env python3
-"""Real-hardware isolation test: distinguishes a real leg_d_thigh hardware/
-CoM issue from a WALK-policy-specific learned asymmetry ("does
-leg_d_thigh actually have a hardware fault?" -- STAND deployment
-showed no issue, WALK deployments showed leg_d_thigh as a dominant,
-one-directional outlier both times).
+"""Real-hardware isolation test: distinguishes a real leg_d_thigh hardware/ CoM issue from a WALK-policy-specific learne..."""
 
-No RL policy involved at all -- this only uses actuator's existing
-go_to_pose/read_motor_positions services plus dog_imu, to isolate the
-STATIC/DYNAMIC-loading variable directly:
-
-  1. go_to_pose('standing'), settle.
-  2. For each leg in turn (front-right, front-left, back-right,
-     back-left): log a baseline window, go_to_pose('standing_lift_<leg>')
-     -- a preset_pose.yaml entry identical to 'standing' except that
-     leg's thigh target -- hold and log, go_to_pose('standing') to lower
-     it back, log a settled window.
-  3. Every phase logs all 8 motors (position/velocity/torque) + IMU
-     (accel/gyro) continuously, tagged with which phase/leg is active.
-
-USES go_to_pose EXCLUSIVELY, not adjust_motor_position (2026-08-09):
-an earlier version used adjust_motor_position for the per-leg lift --
-tested for real, and it never actually moved the commanded motor at all
-(position_deg stayed completely flat, std=0.00, across every phase of a
-full run, including its own "lifted" phase). Root cause not isolated.
-go_to_pose is proven working (used successfully for the STAND
-deployment), so switched to that entirely instead of debugging
-adjust_motor_position further -- see preset_pose.yaml's
-standing_lift_a/b/c/d entries.
-
-Read the result looking specifically at leg_d_thigh's (motor 8) torque
-during EACH OTHER leg's lift phase:
-  - If it spikes toward the -5N*m range specifically when leg_a or leg_c
-    (the RIGHT-side legs) lift, that's evidence for a real CoM offset/
-    weight-distribution issue -- independent of any policy.
-  - If it stays unremarkable through all 4 phases, the WALK-specific
-    loading is more likely a policy-learned asymmetry, not hardware.
-
-SAFETY: preset_pose.yaml's standing_lift_a/b/c/d entries are PLACEHOLDER
-+-20deg shifts, not verified-safe values for this specific robot's real
-range of motion. Before running the full sequence, verify manually --
-call `ros2 service call /go_to_pose actuator/srv/GoToPose
-"{pose_name: standing_lift_a}"` for just ONE of them first, watch it,
-confirm it actually lifts that foot clear of the ground rather than
-driving it further down or toward a joint limit -- thigh rotation
-direction for "lift" depends on this robot's specific standing geometry,
-not just the sign convention in motor_mapping.yaml. Ramp SPEED is
-governed by actuator's own `pose_speed_deg_s` parameter -- confirm it's
-set conservatively (`ros2 param get /actuator pose_speed_deg_s`) before
-running.
-
-Usage:
-    ros2 run dog_deploy leg_isolation_test --ros-args -p log_csv:=/path/to/output.csv
-"""
 import csv
 import os
 import time
@@ -68,11 +17,7 @@ NUM_MOTORS = 8
 DEFAULT_MOTOR_MAPPING_PATH = os.path.join(
     get_package_share_directory('dog_description'), 'config', 'motor_mapping.yaml')
 
-# motor_id (for logging labels only, the pose name is what actually
-# drives the move) -> (preset_pose.yaml lift pose name, leg label).
-# PLACEHOLDER lift amounts (+-20deg) live in preset_pose.yaml itself --
-# see that file's standing_lift_a/b/c/d comments and this module's
-# docstring for why they're unverified.
+# motor_id (for logging labels only, the pose name is what actually drives the move) -> (preset_pose.yaml lift pose name, leg label).
 LEG_LIFT_POSES = {
     1: ('standing_lift_a', 'leg_a_front_right'),
     4: ('standing_lift_b', 'leg_b_front_left'),

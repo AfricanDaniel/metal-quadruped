@@ -1,40 +1,22 @@
-"""Reads PPO/SB3 TensorBoard scalar logs directly (via tensorboard's own
-EventAccumulator, already installed -- no new dependency) instead of
-spawning a real `tensorboard` server -- see the plan's "Graphing
-approach" note for why. Relies on train.py's tb_log_name=fname fix
-(dog_gym/train.py) to reliably find "this fname's own run folders" via a
-glob -- pre-existing logs from before that fix used SB3's own generic
-auto-incrementing {algo}_{n} naming and can't be reliably attributed to
-one fname, so they simply won't show anything here (not a bug, a real
-limit of what's recoverable from the old naming scheme).
-"""
+"""Reads PPO/SB3 TensorBoard scalar logs directly via tensorboard's own EventAccumulator instead of spawning a real `ten..."""
+
 import glob
 import os
 
 from dashboard import ssh
 from dashboard.config import LOG_DIR, SHEEP_LOG_CACHE_DIR, SHEEP_LOG_DIR
 
-# rollout/ep_rew_mean first if present -- the "reward" graph the user
-# actually asked for; everything else SB3 happens to log comes along for
-# free from the same parse, shown after it.
+# rollout/ep_rew_mean first if present
 PRIMARY_TAG = 'rollout/ep_rew_mean'
 
 
 class TensorboardUnavailable(Exception):
-    """Raised instead of letting ImportError propagate -- see the lazy
-    import below."""
+    """Raised instead of letting ImportError propagate."""
+
 
 
 def _event_accumulator_cls():
-    # Imported LAZILY, not at module load time: this dashboard is meant
-    # to run fine under EITHER system python3 (has flask, confirmed
-    # working) OR the project's .venv (has flask AND tensorboard) --
-    # confirmed directly that system python3 does NOT have tensorboard.
-    # An eager top-level import would crash the WHOLE app at startup
-    # under system python3, breaking graph-less pages too, just because
-    # one optional feature needs an extra package. Deferring it here
-    # means only an actual attempt to read graphs needs tensorboard,
-    # with a clear error instead of the app failing to start at all.
+    # Imported lazily, not at module load time: this dashboard should run under either system python3 (has flask only) or the project's .venv (has flask AND tensorboard).
     try:
         from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
         return EventAccumulator
@@ -46,13 +28,8 @@ def _event_accumulator_cls():
 
 
 def _read_scalars_from_dir(log_dir, fname):
-    """{tag: [(step, value), ...]} merged across every log_dir/<fname>_*
-    run folder, sorted by step. Empty dict (not an error) if none exist
-    yet or the folders can't be parsed -- callers show 'no graphs yet'
-    rather than crashing, e.g. for a training that only just started and
-    hasn't flushed its first event file yet. Raises TensorboardUnavailable
-    (only once real work is needed, not at import time) if this Python
-    environment doesn't have tensorboard."""
+    """{tag: [(step, value), ...]} merged across every log_dir/<fname>_* run folder, sorted by step."""
+
     EventAccumulator = _event_accumulator_cls()
     run_dirs = sorted(glob.glob(os.path.join(log_dir, f'{fname}_*')))
     merged = {}
@@ -78,9 +55,8 @@ def read_scalars(fname):
 
 
 def ordered_tags(scalars):
-    """Tag names with PRIMARY_TAG first (if present), rest alphabetical
-    -- so the actual reward curve is always the first graph on the page,
-    not wherever it happened to fall alphabetically."""
+    """Tag names with PRIMARY_TAG first (if present), rest alphabetical."""
+
     tags = sorted(scalars.keys())
     if PRIMARY_TAG in tags:
         tags.remove(PRIMARY_TAG)
@@ -89,11 +65,8 @@ def ordered_tags(scalars):
 
 
 def sheep_sync_and_read_scalars(fname):
-    """Downloads sheep's log_dir/<fname>_* run folders into
-    SHEEP_LOG_CACHE_DIR (small files, cheap -- re-synced every time this
-    is called, not cached-forever, since a still-running remote training
-    keeps appending to them), then reads scalars from that local cache
-    the same way as a local run."""
+    """Downloads sheep's log_dir/<fname>_* run folders into SHEEP_LOG_CACHE_DIR (small files, cheap."""
+
     os.makedirs(SHEEP_LOG_CACHE_DIR, exist_ok=True)
     result = ssh.run(
         'sheep', f'ls -d {SHEEP_LOG_DIR}/{fname}_* 2>/dev/null', timeout_s=15)

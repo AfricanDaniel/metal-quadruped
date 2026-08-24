@@ -1,21 +1,6 @@
 #!/usr/bin/env python3
-"""ROS 2 driver node for the LSM6DSO32 IMU on the Jetson's I2C bus.
+"""ROS 2 driver node for the LSM6DSO32 IMU on the Jetson's I2C bus. Promoted from the actuator/src/imu_reader.py prototy..."""
 
-Promoted from the actuator/src/imu_reader.py prototype: same register-level
-driver logic, but publishes sensor_msgs/Imu on a topic (at a configurable
-rate) instead of printing to the console.
-
-Publishes two topics:
-  - imu/data_raw: the sensor's own raw X/Y/Z axes, always. Whatever
-    "forward"/"left"/"up" mean here depends entirely on how the physical
-    board happens to be mounted -- not meaningful on its own.
-  - imu/data: the SAME readings rotated into a forward/left/up (ROS
-    REP-103) body frame, via config/imu_calibration.yaml -- only
-    published once that file has been produced by
-    `ros2 run dog_imu calibrate_imu` (see that node's docstring for why
-    this can't just be hardcoded: it depends on physical mounting, which
-    changes if the IMU ever gets unplugged/remounted).
-"""
 
 from pathlib import Path
 
@@ -77,9 +62,8 @@ class ImuNode(Node):
         self.timer = self.create_timer(1.0 / publish_rate_hz, self.publish_imu)
 
     def _load_calibration(self, path):
-        """Returns the parsed axes dict, or None if no calibration has
-        been run yet -- imu/data (calibrated) is only published when this
-        is present. See calibrate_imu_node.py."""
+        """Returns the parsed axes dict, or None if no calibration has been run yet."""
+
         path = Path(path)
         if not path.exists():
             self.get_logger().warn(
@@ -133,10 +117,7 @@ class ImuNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self.frame_id
 
-        # No orientation estimate available from this sensor (no onboard
-        # fusion) -- identity quaternion + covariance[0] = -1 tells
-        # consumers to ignore the orientation field, per the sensor_msgs/Imu
-        # convention.
+        # No orientation estimate available from this sensor (no onboard fusion)
         msg.orientation.w = 1.0
         msg.orientation_covariance[0] = -1.0
 

@@ -1,95 +1,62 @@
 <mujoco model="dog">
   <!--
     8-DOF quadruped (thigh + calf per leg, no hip motors). Built from
-    robot_dog (real CAD meshes/masses/colors, MuJoCo
-    export) + full_dog (real joint kinematics, URDF
-    export) by generate_dog_mjcf.py (this directory) -- re-run that
-    script and regenerate this file if the CAD changes (needs
-    dog_ros2_ws/.venv, which has mujoco + trimesh).
+    robot_dog (real CAD meshes/masses/colors, MuJoCo export) + full_dog
+    (real joint kinematics, URDF export) by generate_dog_mjcf.py (this
+    directory) -- re-run that script to regenerate this file if the CAD
+    changes (needs dog_ros2_ws/.venv, which has mujoco + trimesh).
 
-    IMPORTANT, see converter_context.md (dog_description/) for the full
-    story: onshape-to-robot's MuJoCo exporter computes WRONG mesh
-    ORIENTATIONS (confirmed by direct comparison against the URDF
-    exporter's orientation for the same mesh -- positions agreed, rotation
-    matrices did not). So every body/geom pos+quat here comes from
-    forward-kinematics composition of the URDF export instead of
-    robot.xml's own geom_quat -- only mesh files, colors, and per-body
-    masses are taken from robot.xml. This was validated on a single leg
-    first (user-confirmed correct via interactive mujoco.viewer) before
-    being extended to all 4 legs, auto-detected by graph traversal of the
-    URDF's joint tree (not hand-enumerated).
+    Body/geom pos+quat come from forward-kinematics composition of the
+    URDF export rather than robot.xml's own geom_quat, because
+    onshape-to-robot's MuJoCo exporter computes wrong mesh orientations
+    (positions agreed with the URDF exporter, rotations did not; see
+    converter_context.md). Mesh files, colors, and per-body masses are
+    still taken from robot.xml.
 
-    Frame: this file's body/geom values are in the CAD's own native frame
-    (+y=front, +x=right), NOT yet remapped to ROS REP-103 (+x=forward,
-    +y=left). TODO before real use: apply that remap (a single
-    Rz(-90deg) on just the torso body's own pos/quat -- it does NOT need
-    to touch any of the internal parent-relative body/geom transforms,
-    those are frame-invariant to a whole-tree reorientation).
+    Frame: body/geom values are in the CAD's own native frame (+y=front,
+    +x=right), NOT yet remapped to ROS REP-103 (+x=forward, +y=left).
 
-    qpos=0 for every leg joint is the CAD assembly's own captured/exported
-    configuration, NOT necessarily the real hardware's "standing" pose --
-    verify visually before assuming otherwise.
+    qpos=0 for every leg joint is the CAD assembly's own captured pose,
+    NOT necessarily the real hardware's "standing" pose.
 
-    Masses (torso 4.72603kg, thigh 0.22746kg x4, calf
-    0.18357kg x4) are real, from robot.xml, passed in via
-    --mass-torso/--mass-thigh/--mass-calf (see --print-masses). Torso mass
-    includes the real battery and IMU now that both are modeled in the CAD
-    (mate-fixed into the torso's rigid group, so onshape-to-robot already
-    folds their mass into the single "torso" body -- no separate
-    placeholder needed). Diagonal inertia is a box approximation using
-    each body's REAL combined mesh bounding box (computed from actual STL
-    vertex data via trimesh, transformed into each body's frame), not the
-    CAD's real `fullinertia` tensor.
+    Masses (torso 4.72603kg, thigh 0.22746kg x4, calf 0.18357kg x4) are
+    real, from robot.xml (--mass-torso/--mass-thigh/--mass-calf). Torso
+    mass includes the battery and IMU, both modeled and mass-fixed into
+    the CAD's torso rigid group. Diagonal inertia is a box approximation
+    from each body's real mesh bounding box (via trimesh), not the CAD's
+    real fullinertia tensor.
 
-    Joint positions are auto-detected per leg from the URDF's own joint
-    tree (see detect_legs() in the generator script). Joint AXES start
-    from the URDF's auto-detected values but 6 of the 8 are then
-    deliberately NEGATED (see AXIS_FLIP in the generator, user decision
-    2026-07-26) so that every joint's raw qpos direction in this file
-    matches the REAL robot motor's direction 1:1 -- `python3 -m
-    mujoco.viewer` on this file shows real-life directions directly,
-    and motor_mapping.yaml's sign is +1 for all 8 motors. Directions
-    are still mirrored left-vs-right (matching the real mirror-mounted
-    motors): thigh "away from front" = increase for motors 1/5,
-    decrease for 4/8; calf "towards front" = increase for motors 2/6,
-    decrease for 3/7.
-    Leg corner naming (leg_a=front_right, leg_b=front_left,
-    leg_c=back_right, leg_d=back_left) matches
-    dog_description/config/motor_mapping.yaml, assigned from each leg's
-    real hip-pivot (x,y) sign in the CAD frame.
+    Joint positions are auto-detected per leg from the URDF's joint tree.
+    Joint axes start from the URDF's auto-detected values but 6 of the 8
+    are deliberately negated (AXIS_FLIP in the generator) so every
+    joint's raw qpos direction matches the REAL robot motor's direction
+    1:1 -- motor_mapping.yaml's sign is +1 for all 8 motors. Directions
+    are mirrored left-vs-right (matching the real mirror-mounted
+    motors): thigh "away from front" = increase for motors 1/5, decrease
+    for 4/8; calf "towards front" = increase for motors 2/6, decrease
+    for 3/7. Leg corner naming (leg_a=front_right, leg_b=front_left,
+    leg_c=back_right, leg_d=back_left) matches motor_mapping.yaml,
+    assigned from each leg's real hip-pivot (x,y) sign in the CAD frame.
 
-    Collision geometry stays simple capsules (not the visual meshes) for
-    RL training speed. Joint limits: +-150deg on both sides by default for
-    any joint not listed in JOINT_RANGE_OVERRIDES_DEG (generator script --
-    edit that dict directly to change limits). All 8 motors currently
-    have an override, and as of 2026-07-25 those are REAL hardware
-    mechanical hard-stops (bench-measured by hanging the robot and
-    driving each motor to both physical limits, sign-corrected into
-    sim's convention, 5% margin pulled in from each side) -- not
-    self-collision placeholders anymore. See JOINT_RANGE_OVERRIDES_DEG's
-    own comment for the measurement/sign-correction methodology. Still
-    confirmed self-collision-free at these exact values (300-sample
-    random-pose sweep of the other 7 joints).
+    Collision geometry uses simple capsules (not the visual meshes) for
+    RL training speed. Joint limits default to +-150deg; all 8 motors
+    have an override in JOINT_RANGE_OVERRIDES_DEG (generator script) set
+    to the real hardware's mechanical hard-stops (bench-measured,
+    sign-corrected, with a 5% margin), confirmed self-collision-free.
 
-    NOTE: <compiler angle="degree"> below means <joint range> values in
-    this file are DEGREES (MuJoCo auto-converts them at compile time).
-    <position ctrlrange> values are NOT auto-converted by that setting
-    (verified empirically, not just undocumented) -- they're written in
-    RADIANS below, hand-converted by the generator script from the same
-    degree-based JOINT_RANGE_OVERRIDES_DEG/--joint-range values. If
-    hand-editing this file directly rather than regenerating it, remember
-    <joint range> and <position ctrlrange> for the same joint are in
-    different units.
+    NOTE: <compiler angle="degree"> means <joint range> values here are
+    DEGREES, but <position ctrlrange> values are RADIANS (MuJoCo does
+    not auto-convert those) -- the generator hand-converts them from the
+    same degree-based ranges. Keep this in mind when hand-editing.
 
-    PD gains (kp=60 kv=4) are still placeholder, not derived from the
-    real motor's firmware kp/kd -- raised from an original 15/1 (2026-07-25)
-    after 15/1 was found to droop ~40% short of a commanded target for a
-    fully-extended, gravity-loaded leg (see --kp/--kv in the generator
-    script).
+    PD gains (kp=60 kv=4) are placeholder, not derived from the real
+    motor's firmware kp/kd (see --kp/--kv in the generator script).
   -->
   <compiler angle="degree" coordinate="local" inertiafromgeom="false" meshdir="../onshape_folders/robot_dog/assets"/>
   <default>
-    <!-- stiffness=0 (2026-08-16, real-vs-sim torque investigation -- see generate_dog_mjcf.py's own comment for the full story: the previous stiffness="10" was an unreviewed leftover creating a passive spring pulling every leg joint back toward qpos=0, invisible during normal walking/standing but dominating any large-excursion test). -->
+    <!-- stiffness=0: avoids a passive spring pulling every leg joint
+         back toward qpos=0, which is invisible during normal walking/
+         standing but would dominate torque during large excursions. -->
     <joint armature=".05" damping="1.5" limited="true" solimplimit="0 .8 .03" solreflimit=".02 1" stiffness="0"/>
     <geom conaffinity="0" condim="3" contype="1" friction=".4 .1 .1" rgba="0.8 0.6 .4 1" solimp="0.0 0.8 0.01" solref="0.02 1"/>
     <!-- rgba="0.5 0.5 0.5 1" here is MuJoCo's own compiled-in geom default,

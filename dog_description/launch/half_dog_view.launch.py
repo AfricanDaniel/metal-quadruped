@@ -1,10 +1,5 @@
-"""Visualize the CAD-placed front-right leg with two controllable joints.
+"""Visualize the CAD-placed front-right leg with two controllable joints. The Onshape URDF export preserves the CAD geom..."""
 
-The Onshape URDF export preserves the CAD geometry but drops the belt relation
-and exports the pressed-fit lower pulley/shaft as a prismatic joint.  This
-launch file creates a visualization-only URDF at launch time, leaving the
-exported CAD files unchanged.
-"""
 
 from pathlib import Path
 import xml.etree.ElementTree as ET

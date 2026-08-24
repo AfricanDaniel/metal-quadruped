@@ -1,48 +1,6 @@
 #!/usr/bin/env python3
-"""Behavior-cloning warm start for position-mode WALK training.
+"""Behavior-cloning warm start for position-mode WALK training. Position-mode WALK has struggled to learn a gait from sc..."""
 
-Position-mode WALK has never learned to walk from scratch, even at 27-35M
-steps (DR_walk/walk_decay lines). Torque-mode
-WALK, by contrast, already works (models/walk_home_torque/*_v8.zip). The
-working hypothesis (see train.py's --position-kp/--position-kd) is that
-free RL exploration under a stiff PD servo (kp=60) turns exploration noise
-into violent, near-instantaneous corrective force -- a much harsher
-reward landscape to discover a gait in than torque control's graceful,
-inertia-smoothed degradation.
-
-Rather than have position-mode discover a gait via free exploration AGAIN,
-this script bootstraps a position-mode PPO policy by imitating an
-already-working torque-mode policy's own resulting joint trajectories:
-
-  1. Roll out the torque teacher for many steps, recording each tick's
-     observation (control-mode-agnostic -- see DogEnv._get_obs(), which
-     doesn't branch on control_mode) and the joint angle it ACTUALLY
-     reached next.
-  2. Convert that resulting angle into position-mode's own action
-     convention (residual from _walk_default_action_rad, clipped to
-     +-WALK_ACTION_RESIDUAL_RANGE_RAD) -- this is exactly the action a
-     position controller would need to command to reproduce that same
-     motion, assuming reasonable PD tracking.
-  3. Supervised-regress a fresh PPO policy's mean action output against
-     those targets (standard behavior-cloning pretraining -- this bypasses
-     PPO's own rollout collection/GAE/clipping entirely; it's imitation,
-     not RL).
-  4. Save the result in the same format train.py's --init-from expects, so
-     RL fine-tuning can continue from here under real reward feedback
-     instead of from a random network.
-
-Usage:
-    python3 -m dog_gym.imitation_pretrain \\
-        --teacher-path models/walk_home_torque/PPO_9000000_walk_policy_torque_v8.zip \\
-        --output-path models/walk_position_imitation_init \\
-        --position-kp 20 --position-kd 2 --rollout-steps 200000 --epochs 30
-
-Then continue with real RL under the SAME position_kp/kd:
-    python3 -m dog_gym.train --train --env-id Dog-Walk-v0 --algo PPO \\
-        --control-mode position --position-kp 20 --position-kd 2 \\
-        --walk-start-pose home --init-from models/walk_position_imitation_init.zip \\
-        --fname walk_position_imitation_v1
-"""
 
 import argparse
 
@@ -58,8 +16,8 @@ from dog_gym.envs.dog_env import WALK_ACTION_RESIDUAL_RANGE_RAD
 
 def collect_teacher_data(teacher_path, env_id, walk_start_pose, domain_randomization,
                           rollout_steps, seed):
-    """Rolls out the torque teacher and returns (obs, target_action) arrays,
-    target_action already converted to position-mode's residual convention."""
+    """Rolls out the torque teacher and returns (obs, target_action) arrays, target_action already converted to position-mod..."""
+
     teacher_env = gym.make(env_id, control_mode='torque', task='walk',
                             walk_start_pose=walk_start_pose,
                             domain_randomization=domain_randomization).unwrapped
@@ -71,23 +29,11 @@ def collect_teacher_data(teacher_path, env_id, walk_start_pose, domain_randomiza
     collected = 0
     episode = 0
     while collected < rollout_steps:
-        # Stochastic (not deterministic) sampling -- more state diversity
-        # across the dataset than a single repeated deterministic
-        # trajectory would give, same reasoning as any on-policy rollout
-        # collection.
+        # Stochastic (not deterministic) sampling
         action, _ = teacher.predict(obs, deterministic=False)
         obs_before = obs
         obs, reward, terminated, truncated, info = teacher_env.step(action)
-        # Target = the ACTUAL resulting joint angle (what a position
-        # controller would need to command to reproduce this motion), NOT
-        # the teacher's own torque action -- torque and position actions
-        # live in incompatible spaces (N*m vs radians, see
-        # export_policy.py's --control-mode action-space-mismatch error).
-        # motor_qpos_adr already returns calf entries in the SAME
-        # thigh-relative convention _walk_default_action_rad uses (see
-        # __init__'s calf_belt_sign-derived construction of both), so
-        # subtracting the baseline directly is the correct residual, no
-        # extra per-leg conversion needed.
+        # Target = the ACTUAL resulting joint angle (what a position controller would need to command to reproduce this motion), NOT the teacher's own torque action
         resulting_qpos = teacher_env.data.qpos[teacher_env.motor_qpos_adr].copy()
         target = np.clip(resulting_qpos - teacher_env._walk_default_action_rad,
                           -WALK_ACTION_RESIDUAL_RANGE_RAD, WALK_ACTION_RESIDUAL_RANGE_RAD)
@@ -102,15 +48,8 @@ def collect_teacher_data(teacher_path, env_id, walk_start_pose, domain_randomiza
 
 
 def pretrain(model, obs, targets, epochs, batch_size):
-    """Supervised regression of model.policy's Gaussian mean action
-    against targets -- standard SB3 behavior-cloning pretrain pattern.
-    Uses policy.get_distribution() (public SB3 API) rather than
-    reimplementing ActorCriticPolicy.forward()'s internals, so this stays
-    correct across SB3's own feature-extractor/mlp_extractor wiring
-    instead of assuming a specific internal shape. Only the actor (mean
-    action) is fitted -- the critic (value function) is left at its
-    random init, standard for BC-then-RL-finetune pipelines, since it
-    adapts quickly once real reward feedback starts under --init-from."""
+    """Supervised regression of model.policy's Gaussian mean action against targets."""
+
     device = model.device
     obs_t = torch.as_tensor(obs, device=device)
     targets_t = torch.as_tensor(targets, device=device)
@@ -184,10 +123,7 @@ def main():
                             domain_randomization=args.domain_randomization,
                             position_kp=args.position_kp, position_kd=args.position_kd)
 
-    # Same net_arch/activation as train.py's PPO -- MUST match exactly so
-    # this checkpoint's saved policy loads correctly under --init-from
-    # (SB3 restores weights by architecture, not just observation/action
-    # space shape).
+    # Same net_arch/activation as train.py's PPO
     policy_kwargs = dict(
         net_arch=dict(pi=[512, 256, 128], vf=[512, 256, 128]),
         activation_fn=nn.Tanh,

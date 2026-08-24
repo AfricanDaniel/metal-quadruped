@@ -1,18 +1,5 @@
-"""colcon build (+ source install/setup.bash) for Local and Sheep, from
-the Trainings sub-tab -- so a code change (e.g. to dog_gym/train.py) can
-actually be picked up by the NEXT training launch without leaving the
-dashboard. Mirrors procs.py's Jetson build handling, split into two
-halves because the two sides need different mechanics:
+"""colcon build (+ source install/setup.bash) for Local and Sheep, from the Trainings sub-tab."""
 
-- Local runs ON this machine, as a plain subprocess -- like
-  training_actions.py's local launches, its PID is persisted to an
-  on-disk marker (not just kept in memory) so a still-running build
-  survives a dashboard restart instead of being silently forgotten.
-- Sheep runs over SSH, via ssh.run_background -- already independently
-  alive on the remote host regardless of this dashboard's own process,
-  so (exactly like procs.py's Jetson build) in-memory PID tracking is
-  enough; a dashboard restart just re-queries the remote PID fresh.
-"""
 import json
 import os
 import subprocess
@@ -29,12 +16,8 @@ _LOCAL_MARKER_PATH = os.path.join(WS_ROOT, '.dashboard_local_build.run.json')
 
 
 def _pid_alive(pid):
-    """See training_actions._pid_alive for why this reaps before
-    checking: an un-wait()'d Popen child becomes a zombie on exit, and a
-    zombie still answers kill(pid, 0) as "exists" -- in the real
-    dashboard (one long-lived process, unlike a one-shot test script
-    whose own exit reaps it for free) a finished build would otherwise
-    report as "running" forever."""
+    """See training_actions._pid_alive for why this reaps before checking: an un-wait()'d Popen child becomes a zombie on ex..."""
+
     if not pid:
         return False
     try:
@@ -79,9 +62,8 @@ def start_local_build():
 
 
 def local_build_status():
-    """{'running': bool, 'log_tail': str} -- PID re-verified live every
-    call, same "never trust memory alone" approach as everything else in
-    this dashboard that tracks a long-running process."""
+    """{'running': bool, 'log_tail': str}."""
+
     running = False
     if os.path.exists(_LOCAL_MARKER_PATH):
         try:

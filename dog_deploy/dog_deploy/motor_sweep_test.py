@@ -1,48 +1,6 @@
 #!/usr/bin/env python3
-"""Real-hardware counterpart to dog_gym's motor_sweep_log.py (sim): holds
-ONE motor fixed at its current position while smoothly sweeping a SECOND
-motor back and forth between two angles you choose, logging real
-position/velocity/torque telemetry for BOTH motors to a CSV every tick --
-so the result can be read/plotted afterward, not just watched live.
+"""Real-hardware counterpart to dog_gym's motor_sweep_log.py (sim): holds ONE motor fixed at its current position while ..."""
 
-Uses actuator's own set_motor_targets/read_motor_positions services --
-the same real motor-control path everything else in this project uses,
-not a separate mechanism. set_motor_targets jumps STRAIGHT to whatever
-position_deg it's given, with NO ramp of its own (unlike go_to_pose) --
-so unlike leg_isolation_test.py (which uses go_to_pose's own ramped
-speed), the safety here comes entirely from how small/slow THIS script's
-own per-tick steps are. See --max-step-deg-per-tick/--rate-hz.
-
-x_deg/z_deg and the held motor's target are in the SAME raw output-shaft-
-degree frame read_motor_positions/set_motor_targets already report/expect
--- NOT a set_home-relative offset (that's go_to_pose's own convention,
-see its own .srv comment). Run with the robot already positioned near
-x_deg if possible; if not, the very first move (current position -> x_deg)
-is ramped at the SAME --max-step-deg-per-tick safety clamp as every later
-step of the sweep, never an instant jump.
-
-SAFETY, read before running:
-  - Robot must already be safely mounted (hung/on a stand), motors free
-    to move without hitting anything or bearing weight.
-  - Confirm the printed current position/torque of BOTH motors looks
-    sane before pressing Enter to actually start moving.
-  - --max-step-deg-per-tick * --rate-hz is the real, hard speed ceiling
-    this script will ever command, independent of how far apart x_deg/
-    z_deg are or how short --period-s is -- if the sweep's own smooth-
-    target math would want to move faster than that in a single tick,
-    the ACTUAL commanded step is clamped down to this instead (never
-    sped back up to "catch up" later). Defaults are deliberately gentle
-    (20deg/s) since this is a newer, less-exercised tool than go_to_pose.
-
-Usage:
-    ros2 run dog_deploy motor_sweep_test --ros-args \\
-        -p moving_motor:=1 -p held_motor:=2 -p x_deg:=48.0 -p z_deg:=260.0
-
-    # Faster sweep, once the gentle defaults are confirmed safe:
-    ros2 run dog_deploy motor_sweep_test --ros-args \\
-        -p moving_motor:=1 -p held_motor:=2 -p x_deg:=48.0 -p z_deg:=260.0 \\
-        -p max_step_deg_per_tick:=2.0 -p rate_hz:=30.0
-"""
 import csv
 import math
 import os
@@ -148,16 +106,7 @@ class MotorSweepTest(Node):
             f'{held_target:.2f}deg (this is what it will be held at), '
             f'torque={readings[self.held_motor][2]:.2f}Nm')
 
-        # Auto-lengthen period_s so the sine sweep's own PEAK commanded
-        # speed (amplitude * 2pi / period) never exceeds the hard safety
-        # ceiling (max_step_deg_per_tick * rate_hz) -- without this, the
-        # per-tick clamp still keeps every single step safe, but the
-        # ACTUAL motor permanently lags behind a target that keeps
-        # outrunning it, and the sweep never actually reaches either end
-        # (exactly what happened: 212deg over 8s demands an 83deg/s peak
-        # against only a 20deg/s ceiling). Same fix dog_gym's
-        # verify_belt_decoupling.py/motor_sweep_log.py already apply for
-        # the identical reason -- see their own comments.
+        # Auto-lengthen period_s so the sine sweep's own PEAK commanded speed (amplitude * 2pi / period) never exceeds the hard safety ceiling (max_step_deg_per_tick * rate_hz)
         ceiling_deg_s = self.max_step_deg_per_tick * self.rate_hz
         amp_deg = abs(self.z_deg - self.x_deg) / 2
         min_period = amp_deg * 2 * math.pi / (0.9 * ceiling_deg_s)

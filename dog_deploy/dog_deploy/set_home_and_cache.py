@@ -1,36 +1,6 @@
 #!/usr/bin/env python3
-"""Replaces the raw `ros2 service call /set_home actuator/srv/SetHome "{}"`
-call with a single command that ALSO caches the resulting home reference to
-a local file -- so `policy_node.py` can load it explicitly (via
-`home_position_deg_cache_path`) instead of auto-capturing its own
-`home_position_deg` from whatever position the robot happens to be in when
-it starts.
+"""Replaces the raw `ros2 service call /set_home actuator/srv/SetHome "{}"` call with a single command that ALSO caches ..."""
 
-Why this exists (2026-08-10, "running STAND then WALK-from-
-standing back to back"): `policy_node.py`'s own auto-capture reads whatever
-the CURRENT motor positions are at THAT node's startup -- correct only if
-the robot happens to be physically tucked at that exact moment. Running two
-policy_node processes in sequence (e.g. a STAND policy, then a separate
-WALK-from-standing policy once the robot is already up) breaks this: the
-SECOND node's auto-capture would treat the STANDING pose as home, silently
-corrupting every subsequent observation/action for that policy. The fix is
-to capture home ONCE, at the moment it's actually true (right when /set_home
-is called, since that's the definition of "the robot is tucked right now"),
-and have every later policy_node run load that SAME cached reference
-explicitly instead of re-capturing.
-
-This node calls actuator's own `/set_home` service (SetHome.srv) and writes
-its response's home_deg (already exactly what real hardware just captured
-as home, in motor_id order -- no separate read_motor_positions call needed,
-avoiding any risk of the two calls disagreeing) to a small YAML cache file.
-
-Usage (replaces the raw service call in your workflow):
-    ros2 run dog_deploy set_home_and_cache
-    ros2 run dog_deploy set_home_and_cache --ros-args -p cache_path:=/some/other/path.yaml
-
-Then point policy_node at the cache instead of letting it auto-capture:
-    ros2 run dog_deploy policy_node --ros-args ... -p home_position_deg_cache_path:=~/.dog_home_cache.yaml
-"""
 import os
 
 import rclpy
@@ -42,14 +12,7 @@ from dog_deploy.home_correction import apply_back_leg_correction
 
 NUM_MOTORS = 8
 DEFAULT_CACHE_PATH = os.path.expanduser('~/.dog_home_cache.yaml')
-# 'regular' IS DEFAULT_CACHE_PATH above -- unchanged path/meaning, so
-# anything already pointing at ~/.dog_home_cache.yaml keeps working
-# exactly as before. 'edited' is a NEW, second, always-written snapshot
-# (see home_correction.py) -- a reference/inspection copy only; deploy
-# time (policy_node.py's home_switch_back_leg_fraction) recomputes the
-# same correction fresh from whatever 'regular' just captured, it does
-# NOT read this file, so a stale edited snapshot here can't cause a
-# deploy to silently use an out-of-date correction.
+# 'regular' IS DEFAULT_CACHE_PATH above
 DEFAULT_EDITED_CACHE_PATH = os.path.expanduser('~/.dog_home_cache_edited.yaml')
 # fraction=1.0 reproduces the original correction exactly -- see
 # home_correction.py's docstring.
@@ -83,11 +46,7 @@ class SetHomeAndCache(Node):
         if not response.success:
             raise RuntimeError('set_home reported success=false -- aborting, cache NOT written')
 
-        # response.motor_id/home_deg are parallel arrays, not guaranteed to
-        # already be in motor_id-ascending order (SetHome.srv doesn't
-        # document an order) -- sort explicitly so the cache is always
-        # written in the canonical motor_id 1..8 order policy_node.py
-        # expects, regardless of what order actuator happens to respond in.
+        # response.motor_id/home_deg are parallel arrays, not guaranteed to already be in motor_id-ascending order (SetHome.srv doesn't document an order)
         home_by_motor_id = dict(zip(response.motor_id, response.home_deg))
         if sorted(home_by_motor_id.keys()) != list(range(1, NUM_MOTORS + 1)):
             raise RuntimeError(

@@ -92,55 +92,49 @@ you actually want. Both commands below assume `source install/setup.bash`
     hardware-unfriendly control) + a per-step survival bonus. Weights in
     `_compute_reward_stand`/`_compute_reward_walk` are a starting point,
     not tuned.
-  - **Belt/pulley calf decoupling (2026-07-25).** Each leg's calf motor
-    drives its lower pulley through a timing belt to a torso-mounted
-    upper pulley; the lower pulley free-spins on a bearing relative to
-    the thigh. Real effect: rotating ONLY the thigh never changes the
-    calf's real-world orientation — the belt cancels the "carried along"
-    rotation a plain hinge would otherwise apply. `dog.mjcf.xml`'s calf
-    joint is a plain thigh-relative hinge (the belt/pulley/tendon itself
-    was never physically modeled), so `DogEnv` compensates in software:
-    `action`/`obs` for a calf motor represent the real motor's ABSOLUTE
-    (torso-relative) angle, matching what `actuator`/`dog_deploy` already
-    read/command natively — only the raw MJCF `ctrl`/`qpos` for a calf
-    get converted to/from that absolute value (`step()`/`_get_obs()`, via
+  - **Belt/pulley calf decoupling.** Each leg's calf motor drives its
+    lower pulley through a timing belt to a torso-mounted upper pulley;
+    the lower pulley free-spins on a bearing relative to the thigh. Real
+    effect: rotating ONLY the thigh never changes the calf's real-world
+    orientation — the belt cancels the "carried along" rotation a plain
+    hinge would otherwise apply. `dog.mjcf.xml`'s calf joint is a plain
+    thigh-relative hinge (the belt/pulley/tendon itself isn't physically
+    modeled), so `DogEnv` compensates in software: `action`/`obs` for a
+    calf motor represent the real motor's ABSOLUTE (torso-relative)
+    angle, matching what `actuator`/`dog_deploy` already read/command
+    natively — only the raw MJCF `ctrl`/`qpos` for a calf get converted
+    to/from that absolute value (`step()`/`_get_obs()`, via
     `calf_belt_sign` — a per-leg sign, NOT uniform across all 4, derived
     from each leg's own joint-axis geometry, see `dog_env.py`'s
-    `__init__`). **Any checkpoint trained before this fix landed is
-    stale** — its calf semantics don't match the current env.
-  - **Sim directions match the real robot motor-for-motor since
-    2026-07-26** (`AXIS_FLIP` in `generate_dog_mjcf.py`, the final
-    chapter of this project's long sign saga — see that dict's comment
-    for the history of wrong turns that preceded it). The generator
-    deliberately negates the URDF's
-    auto-detected joint axis for 6 of the 8 joints so that every
-    joint's raw sim qpos direction equals the real motor's direction;
-    consequently `motor_mapping.yaml`'s sign is `+1` for all 8 motors,
-    and the raw `mujoco.viewer` shows real-life directions directly.
-    Directions are still mirrored left-vs-right (real motors are
-    mirror-mounted; sim now mirrors that faithfully): "extend toward
-    standing" is POSITIVE thigh qpos for the right legs (a, c),
-    NEGATIVE for the left (b, d) — which is exactly what
+    `__init__`). Checkpoints trained before this fix landed are stale —
+    their calf semantics don't match the current env.
+  - **Sim directions match the real robot motor-for-motor**
+    (`AXIS_FLIP` in `generate_dog_mjcf.py`). The generator deliberately
+    negates the URDF's auto-detected joint axis for 6 of the 8 joints so
+    that every joint's raw sim qpos direction equals the real motor's
+    direction; consequently `motor_mapping.yaml`'s sign is `+1` for all
+    8 motors, and the raw `mujoco.viewer` shows real-life directions
+    directly. Directions are still mirrored left-vs-right (real motors
+    are mirror-mounted; sim mirrors that faithfully): "extend toward
+    standing" is POSITIVE thigh qpos for the right legs (a, c), NEGATIVE
+    for the left (b, d) — which is exactly what
     `THIGH_SYMMETRY_SIGN`/`CALF_SYMMETRY_SIGN` (`[1,-1,1,-1]`) correct
-    for in the stand task's symmetry reward. Any sign/direction
-    question should be settled by direct forward-kinematics (sweep the
-    joint, read the foot's world position via `mj_forward`), never by
-    trusting a documented convention — that's the method that ended
-    the saga.
+    for in the stand task's symmetry reward. Settle any sign/direction
+    question by direct forward-kinematics (sweep the joint, read the
+    foot's world position via `mj_forward`) rather than trusting a
+    documented convention.
 - **Termination**: torso falls below `FALL_HEIGHT_M` or tips past
   `MAX_TILT_RAD`. **Truncation**: `MAX_EPISODE_STEPS`.
 - `domain_randomization=True` randomizes ground friction on every reset
-  (ported from the reference repo's domain-randomization script) and, as
-  of 2026-07-27, also injects gaussian noise into every observation
-  (motor qpos/qvel + IMU accel/gyro, NOT `prev_action`) — see
-  `_get_obs()`'s comment and `MOTOR_POS_NOISE_STD_RAD` et al. in
-  `dog_env.py` for magnitudes (placeholder sensor-noise scales, refine
-  using real `dog_deploy` log_csv data if wanted). Added after real
-  deployment showed a policy that looked converged in sim still
-  chattering on real hardware — sim's observation had always been
-  perfectly clean, so a policy never had reason to learn robustness to
-  the small measurement noise real encoders/IMUs actually produce.
-  Opt-in, off by default.
+  (ported from the reference repo's domain-randomization script) and
+  also injects gaussian noise into every observation (motor qpos/qvel +
+  IMU accel/gyro, NOT `prev_action`) — see `_get_obs()`'s comment and
+  `MOTOR_POS_NOISE_STD_RAD` et al. in `dog_env.py` for magnitudes
+  (placeholder sensor-noise scales, refine using real `dog_deploy`
+  log_csv data if wanted). Exists because sim's observation is
+  perfectly clean by default, so without it a policy has no reason to
+  learn robustness to the small measurement noise real encoders/IMUs
+  actually produce. Opt-in, off by default.
 
 ## Training
 

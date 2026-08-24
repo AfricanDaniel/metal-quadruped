@@ -1,16 +1,5 @@
-"""Persists "liked" models (2026-08-19, user request -- a heart-shaped
-like button on each checkpoint, plus a Liked section listing them all for
-easy MuJoCo viewing later) across dashboard restarts -- unlike procs.py's
-_state (in-memory only, fine for ephemeral "last form values" but not for
-something the user explicitly wants to keep long-term), this is written
-to a small JSON file on disk.
+"""Persists "liked" models (2026-08-19, user request."""
 
-A "like" is keyed by (host, folder, fname, basename) -- host is 'local'
-or 'sheep', matching this dashboard's own two checkpoint-hosting tabs;
-the same basename can exist in both places (a Sheep checkpoint that's
-since been downloaded locally too), so host is part of the identity, not
-just a display label.
-"""
 import json
 import os
 import threading
@@ -37,9 +26,7 @@ def _load():
 
 
 def _save(data):
-    # Atomic write (tmp + os.replace) -- avoids a half-written file if the
-    # dashboard is killed mid-save, same reasoning as every other on-disk
-    # marker in this app (training_actions.py's own run.json markers).
+    # Atomic write (tmp + os.replace)
     tmp = _LIKES_PATH + '.tmp'
     with open(tmp, 'w') as f:
         json.dump(data, f, indent=2)
@@ -69,8 +56,8 @@ def toggle_like(host, folder, fname, basename):
 
 
 def list_likes():
-    """[{host, folder, fname, basename, liked_at}], most recently liked
-    first."""
+    """[{host, folder, fname, basename, liked_at}], most recently liked first."""
+
     with _lock:
         data = _load()
     items = list(data.values())

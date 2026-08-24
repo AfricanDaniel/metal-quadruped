@@ -1,29 +1,6 @@
 #!/usr/bin/env python3
-"""Move one motor to an exact target position specified RELATIVE TO HOME,
-regardless of where it currently sits.
+"""Move one motor to an exact target position specified RELATIVE TO HOME, regardless of where it currently sits. Why thi..."""
 
-Why this exists: `adjust_motor_position`'s `degrees` field is relative to
-the motor's CURRENT position, not home -- but preset_pose.yaml (and this
-whole bench-testing process) thinks in degrees relative to home. Manually
-computing "target_absolute - current_absolute" by hand, live, while also
-tracking which motor is which, is exactly the kind of arithmetic that's
-easy to get wrong under pressure (it happened twice in a row during real
-testing -- once using the target itself as the delta, once using a stale
-current reading after the motor drifted under gravity in the gap between
-reading and commanding). This script does that arithmetic for you, reading
-the CURRENT position immediately before computing the delta, so there's no
-stale-reading gap either.
-
-Usage:
-    python3 move_to_relative.py --motor 2 --home-deg -42.57 --target-deg 26.73
-
---home-deg is that specific motor's own value from the most recent
-set_home response (each motor has a different one -- e.g. motor 2's
-home_deg, not motor 1's).
-
-Requires: sourced install/setup.bash (for the actuator service types) and
-the actuator node already running.
-"""
 import argparse
 import time
 
@@ -89,10 +66,7 @@ def main():
           f'(this is the accepted TARGET, not a confirmation it has arrived yet -- '
           f'the move is ramped, not instant)')
 
-    # The move ramps at DEFAULT_POSE_SPEED_DEG_S deg/s in a background timer,
-    # not synchronously within the service call above -- reading back
-    # immediately would catch it mid-ramp (or barely started). Wait out the
-    # ramp's own duration (+ margin) before treating the read-back as final.
+    # The move ramps at DEFAULT_POSE_SPEED_DEG_S deg/s in a background timer, not synchronously within the service call above
     ramp_s = abs(delta) / DEFAULT_POSE_SPEED_DEG_S + 0.3
     print(f'Waiting {ramp_s:.2f}s for the ramp to finish...')
     time.sleep(ramp_s)
